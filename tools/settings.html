@@ -384,11 +384,13 @@ const CHR_OTA_DATA = 'e3f0a00a-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_PROVIDER = 'e3f0a00b-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_GEMINI_KEY = 'e3f0a00c-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 
-// OTA transfer parameters. 512B plaintext chunks fit comfortably in the
-// firmware's 1024-byte access-callback scratch buffer (after 28B of AES-GCM
-// framing) and survive the existing CONFIG_BT_NIMBLE_ATT_MAX_PREP_ENTRIES=64
-// prepared-write reassembly limit.
-const OTA_CHUNK_SIZE = 512;
+// OTA transfer parameters. The chunk size is bounded by the Web Bluetooth
+// GATT value-length cap of 512 bytes total on writeValueWithResponse — and
+// we wrap each chunk in 12 B nonce + 16 B AES-GCM tag, so the plaintext can
+// be at most 512 − 28 = 484 B. 480 leaves a 4-byte safety margin and still
+// fits comfortably in the firmware's 1024-byte access-callback scratch /
+// NimBLE's CONFIG_BT_NIMBLE_ATT_MAX_PREP_ENTRIES=64 reassembly limit.
+const OTA_CHUNK_SIZE = 480;
 
 // Device Information Service (Bluetooth SIG-assigned, UUID 0x180A).
 // Web Bluetooth accepts the standard short names.
