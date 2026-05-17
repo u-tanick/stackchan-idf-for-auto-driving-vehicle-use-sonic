@@ -337,10 +337,12 @@
   <details class="jtts-section" id="ota-section">
     <summary>ファームウェア更新 (OTA)</summary>
     <p class="hint" style="margin-bottom:0.5rem">
-      build/stackchan_idf.bin を選んで「書き込み」を押すと、暗号化された BLE 経由で
-      新ファームを別パーティションに書き込み、再起動します。
-      成功後はブラウザ側で BLE が切断されるので、手動で再接続してください。
+      GitHub Release から選ぶか、ローカルの <code>build/stackchan_idf.bin</code> を
+      選んで「書き込み」を押すと、暗号化された BLE 経由で新ファームを別パーティションに書き込み、
+      再起動します。成功後はブラウザ側で BLE が切断されるので、手動で再接続してください。
     </p>
+    <label for="ota-release">リリース</label>
+    <select id="ota-release" style="margin-bottom:0.5rem"><option value="">(自前ファイルを使う)</option></select>
     <div class="ota-row">
       <input type="file" id="ota-file" accept=".bin">
       <button id="btn-ota" type="button" disabled>書き込み</button>
@@ -426,9 +428,9 @@ function setBleUi(connected) {
   document.getElementById('btn-apply').disabled = !connected;
   document.getElementById('btn-disconnect').disabled = !connected;
   document.getElementById('btn-connect').disabled = connected;
-  // OTA button: only enabled when a file has been picked AND we're connected.
-  const hasFile = document.getElementById('ota-file').files.length > 0;
-  document.getElementById('btn-ota').disabled = !(connected && hasFile);
+  // OTA button gating moved to refreshOtaButton() — it now also considers
+  // the release dropdown and the connection's actual chr availability.
+  if (typeof refreshOtaButton === 'function') refreshOtaButton();
 }
 
 function updateStatus(data) {
@@ -601,6 +603,121 @@ function canonicaliseJttsForm() {
   return JSON.stringify(sorted);
 }
 
+// --- Capability gating ---
+// Some firmware revisions don't expose every characteristic. Show only the UI
+// sections backed by characteristics that resolved during connect. The OTA
+// section is the lightest dependency (just KeyExchange + OtaCtrl + OtaData),
+// so very old firmware still gets a path to upgrade itself.
+function applyCapabilityGating() {
+  const hasSettings = !!(chrSsid && chrPass && chrApply && chrStatus);
+  const hasOpenAiKey = !!chrKey;
+  const hasGemini = !!(chrProvider && chrGeminiKey);
+  const hasEnable = !!chrEn;
+  const hasJtts = !!chrJtts;
+  const hasOta = !!(chrOtaCtrl && chrOtaData);
+
+  // Hide individual form fields when the backing chr is missing.
+  const setVisible = (selector, visible) => {
+    for (const el of document.querySelectorAll(selector)) {
+      el.style.display = visible ? '' : 'none';
+    }
+  };
+  setVisible('label[for="provider"], #provider', hasGemini);
+  setVisible('#provider + p.hint', hasGemini);
+  setVisible('label[for="gemini-apikey"], #gemini-apikey', hasGemini);
+  setVisible('label[for="apikey"], #apikey', hasOpenAiKey);
+  setVisible('label.toggle-label[for="openai-enabled"]', hasEnable);
+  setVisible('#openai-enabled + span', hasEnable);
+  document.getElementById('jtts-section').style.display = hasJtts ? '' : 'none';
+  document.getElementById('ota-section').style.display = hasOta ? '' : 'none';
+  document.getElementById('btn-apply').style.display = hasSettings ? '' : 'none';
+}
+
+// --- ZIP extraction (deflate-raw via DecompressionStream, no deps) ---
+// Same algorithm as docs/index.html; duplicated here so settings.html stays
+// usable as a single-file artifact (file:// / sshfs / local http.server).
+async function extractZip(buffer) {
+  const dv = new DataView(buffer);
+  const view = new Uint8Array(buffer);
+  const len = buffer.byteLength;
+  let eocd = -1;
+  const minOffset = Math.max(0, len - (0xffff + 22));
+  for (let i = len - 22; i >= minOffset; i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('ZIP: EOCD not found');
+  const totalEntries = dv.getUint16(eocd + 10, true);
+  const cdOffset = dv.getUint32(eocd + 16, true);
+  const decoder = new TextDecoder('utf-8');
+  const entries = new Map();
+  let p = cdOffset;
+  for (let i = 0; i < totalEntries; i++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) throw new Error('ZIP: bad central dir entry');
+    const compMethod = dv.getUint16(p + 10, true);
+    const compSize   = dv.getUint32(p + 20, true);
+    const nameLen    = dv.getUint16(p + 28, true);
+    const extraLen   = dv.getUint16(p + 30, true);
+    const commentLen = dv.getUint16(p + 32, true);
+    const localOff   = dv.getUint32(p + 42, true);
+    const name = decoder.decode(view.subarray(p + 46, p + 46 + nameLen));
+    p += 46 + nameLen + extraLen + commentLen;
+    if (name.endsWith('/')) continue;
+    if (dv.getUint32(localOff, true) !== 0x04034b50) throw new Error('ZIP: bad local header');
+    const lNameLen  = dv.getUint16(localOff + 26, true);
+    const lExtraLen = dv.getUint16(localOff + 28, true);
+    const dataStart = localOff + 30 + lNameLen + lExtraLen;
+    const compData = view.subarray(dataStart, dataStart + compSize);
+    let outBuf;
+    if (compMethod === 0) {
+      outBuf = compData.slice().buffer;
+    } else if (compMethod === 8) {
+      const stream = new Blob([compData]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      outBuf = await new Response(stream).arrayBuffer();
+    } else {
+      throw new Error(`ZIP: unsupported compression method ${compMethod} for ${name}`);
+    }
+    entries.set(name.split('/').pop(), outBuf);
+  }
+  return entries;
+}
+
+// Load release list (same versions.json the Web Flasher uses). Populates the
+// OTA release dropdown — independent of BLE state, so a user can pick a
+// release before the device is even connected.
+let otaReleases = [];
+async function loadOtaReleases() {
+  const sel = document.getElementById('ota-release');
+  if (!sel) return;
+  try {
+    const r = await fetch('./versions.json', { cache: 'no-cache' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    otaReleases = await r.json();
+    sel.innerHTML = '<option value="">(自前ファイルを使う)</option>';
+    for (const rel of otaReleases) {
+      const o = document.createElement('option');
+      o.value = rel.tag;
+      o.textContent = rel.tag;
+      sel.appendChild(o);
+    }
+  } catch (e) {
+    sel.innerHTML = '<option value="">(リリース一覧取得失敗)</option>';
+  }
+}
+
+async function fetchReleaseFirmware(tag) {
+  const rel = otaReleases.find((r) => r.tag === tag);
+  if (!rel) throw new Error(`unknown release ${tag}`);
+  const zipUrl = `./firmware/${rel.tag}/${rel.zip}`;
+  log(`Downloading ${rel.zip}…`);
+  const r = await fetch(zipUrl);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const zipBuf = await r.arrayBuffer();
+  const entries = await extractZip(zipBuf);
+  const bin = entries.get('stackchan_idf.bin');
+  if (!bin) throw new Error('stackchan_idf.bin not found in ZIP');
+  return new Blob([bin], { type: 'application/octet-stream' });
+}
+
 // --- OTA over BLE ---
 // Drives the begin / chunked write / end flow, posts progress + B/s into the
 // status box. All traffic goes through the AES-GCM session.
@@ -749,21 +866,56 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
     log('GATT 接続完了', 'ok');
 
     svc = await bleServer.getPrimaryService(SVC_UUID);
-    [chrSsid, chrPass, chrKey, chrApply, chrStatus, chrKx, chrEn, chrJtts, chrOtaCtrl, chrOtaData, chrProvider, chrGeminiKey] = await Promise.all([
-      svc.getCharacteristic(CHR_SSID),
-      svc.getCharacteristic(CHR_PASS),
-      svc.getCharacteristic(CHR_KEY),
-      svc.getCharacteristic(CHR_APPLY),
-      svc.getCharacteristic(CHR_STATUS),
-      svc.getCharacteristic(CHR_KX),
-      svc.getCharacteristic(CHR_EN),
-      svc.getCharacteristic(CHR_JTTS),
-      svc.getCharacteristic(CHR_OTA_CTRL),
-      svc.getCharacteristic(CHR_OTA_DATA),
-      svc.getCharacteristic(CHR_PROVIDER),
-      svc.getCharacteristic(CHR_GEMINI_KEY),
-    ]);
-    log('Characteristics 取得完了', 'ok');
+
+    // Probe every characteristic independently. Older firmware revisions
+    // may not expose the newer ones (Provider / GeminiApiKey / JttsConfig
+    // / OpenAiEnabled / OTA), and we still want the UI to come up with
+    // whatever IS available — particularly OTA, so a user can flash the
+    // current build to a device too old to know about the new chrs.
+    const probes = [
+      ['ssid',       CHR_SSID],
+      ['pass',       CHR_PASS],
+      ['key',        CHR_KEY],
+      ['apply',      CHR_APPLY],
+      ['status',     CHR_STATUS],
+      ['kx',         CHR_KX],
+      ['en',         CHR_EN],
+      ['jtts',       CHR_JTTS],
+      ['otaCtrl',    CHR_OTA_CTRL],
+      ['otaData',    CHR_OTA_DATA],
+      ['provider',   CHR_PROVIDER],
+      ['geminiKey',  CHR_GEMINI_KEY],
+    ];
+    const settled = await Promise.allSettled(
+      probes.map(([_, uuid]) => svc.getCharacteristic(uuid)));
+    const found = {};
+    const missing = [];
+    for (let i = 0; i < probes.length; ++i) {
+      const [name] = probes[i];
+      if (settled[i].status === 'fulfilled') found[name] = settled[i].value;
+      else missing.push(name);
+    }
+    chrSsid     = found.ssid     ?? null;
+    chrPass     = found.pass     ?? null;
+    chrKey      = found.key      ?? null;
+    chrApply    = found.apply    ?? null;
+    chrStatus   = found.status   ?? null;
+    chrKx       = found.kx       ?? null;
+    chrEn       = found.en       ?? null;
+    chrJtts     = found.jtts     ?? null;
+    chrOtaCtrl  = found.otaCtrl  ?? null;
+    chrOtaData  = found.otaData  ?? null;
+    chrProvider = found.provider ?? null;
+    chrGeminiKey= found.geminiKey?? null;
+    log(`Characteristics 取得完了 (missing: ${missing.length ? missing.join(', ') : 'none'})`,
+        missing.length ? 'info' : 'ok');
+
+    if (!chrKx) {
+      // No KeyExchange chr → no encrypted session → nothing else works.
+      // Bail with a clear message rather than leaving the UI half-alive.
+      log('KeyExchange characteristic がありません。古すぎるファームウェアです。', 'err');
+      throw new Error('KeyExchange unsupported by this firmware');
+    }
 
     // X25519 handshake. After this, every other read/write is encrypted.
     await setupSession();
@@ -776,76 +928,89 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
       log(`デバイス情報の取得失敗: ${e.message}`, 'err');
     }
 
-    try {
-      const ssidBytes = await readEncrypted(chrSsid);
-      const ssidStr = dec.decode(ssidBytes);
-      if (ssidStr) {
-        document.getElementById('ssid').placeholder = ssidStr + ' (現在の値)';
-        log(`現在の SSID: ${ssidStr}`);
-      }
-    } catch (e) {
-      log(`SSID 読み取りエラー: ${e.message}`, 'err');
-    }
-
-    try {
-      const stBytes = await readEncrypted(chrStatus);
-      updateStatus(new DataView(stBytes.buffer, stBytes.byteOffset, stBytes.byteLength));
-    } catch (e) {
-      log(`Status 読み取りエラー: ${e.message}`, 'err');
-    }
-
-    try {
-      const enBytes = await readEncrypted(chrEn);
-      const enabled = enBytes.length > 0 && enBytes[0] !== 0;
-      document.getElementById('openai-enabled').checked = enabled;
-      document.getElementById('openai-enabled').dataset.initial = enabled ? '1' : '0';
-      log(`会話機能: ${enabled ? '有効' : '無効'}`);
-    } catch (e) {
-      log(`有効状態の取得失敗: ${e.message}`, 'err');
-    }
-
-    try {
-      const provBytes = await readEncrypted(chrProvider);
-      const provider = provBytes.length > 0 ? provBytes[0] : 0;
-      const sel = document.getElementById('provider');
-      sel.value = String(provider);
-      sel.dataset.initial = String(provider);
-      log(`プロバイダ: ${provider === 1 ? 'Gemini Live' : 'OpenAI Realtime'}`);
-    } catch (e) {
-      log(`プロバイダ取得失敗: ${e.message}`, 'err');
-    }
-
-    try {
-      const jttsBytes = await readEncrypted(chrJtts);
-      const jttsJson = dec.decode(jttsBytes);
-      writeJttsForm(jttsJson);
-      jttsInitialJson = canonicaliseJttsForm();
-      if (jttsJson) {
-        log(`jtts 設定読み込み: ${jttsBytes.length}B`);
-      } else {
-        log('jtts 設定: ファーム既定値');
-      }
-    } catch (e) {
-      log(`jtts 設定の取得失敗: ${e.message}`, 'err');
-    }
-
-    // Subscribe to Status notifications — notify payloads are encrypted too.
-    await chrStatus.startNotifications();
-    chrStatus.addEventListener('characteristicvaluechanged', async e => {
+    if (chrSsid) {
       try {
-        const wire = new Uint8Array(e.target.value.buffer);
-        if (wire.length < 12 + 16) return;
-        const iv = wire.subarray(0, 12);
-        const ctTag = wire.subarray(12);
-        const pt = new Uint8Array(
-          await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aesKey, ctTag));
-        updateStatus(new DataView(pt.buffer, pt.byteOffset, pt.byteLength));
-      } catch (err) {
-        log(`Status 通知の復号エラー: ${err.message}`, 'err');
+        const ssidBytes = await readEncrypted(chrSsid);
+        const ssidStr = dec.decode(ssidBytes);
+        if (ssidStr) {
+          document.getElementById('ssid').placeholder = ssidStr + ' (現在の値)';
+          log(`現在の SSID: ${ssidStr}`);
+        }
+      } catch (e) {
+        log(`SSID 読み取りエラー: ${e.message}`, 'err');
       }
-    });
-    log('Status 通知を登録しました', 'ok');
+    }
 
+    if (chrStatus) {
+      try {
+        const stBytes = await readEncrypted(chrStatus);
+        updateStatus(new DataView(stBytes.buffer, stBytes.byteOffset, stBytes.byteLength));
+      } catch (e) {
+        log(`Status 読み取りエラー: ${e.message}`, 'err');
+      }
+    }
+
+    if (chrEn) {
+      try {
+        const enBytes = await readEncrypted(chrEn);
+        const enabled = enBytes.length > 0 && enBytes[0] !== 0;
+        document.getElementById('openai-enabled').checked = enabled;
+        document.getElementById('openai-enabled').dataset.initial = enabled ? '1' : '0';
+        log(`会話機能: ${enabled ? '有効' : '無効'}`);
+      } catch (e) {
+        log(`有効状態の取得失敗: ${e.message}`, 'err');
+      }
+    }
+
+    if (chrProvider) {
+      try {
+        const provBytes = await readEncrypted(chrProvider);
+        const provider = provBytes.length > 0 ? provBytes[0] : 0;
+        const sel = document.getElementById('provider');
+        sel.value = String(provider);
+        sel.dataset.initial = String(provider);
+        log(`プロバイダ: ${provider === 1 ? 'Gemini Live' : 'OpenAI Realtime'}`);
+      } catch (e) {
+        log(`プロバイダ取得失敗: ${e.message}`, 'err');
+      }
+    }
+
+    if (chrJtts) {
+      try {
+        const jttsBytes = await readEncrypted(chrJtts);
+        const jttsJson = dec.decode(jttsBytes);
+        writeJttsForm(jttsJson);
+        jttsInitialJson = canonicaliseJttsForm();
+        if (jttsJson) {
+          log(`jtts 設定読み込み: ${jttsBytes.length}B`);
+        } else {
+          log('jtts 設定: ファーム既定値');
+        }
+      } catch (e) {
+        log(`jtts 設定の取得失敗: ${e.message}`, 'err');
+      }
+    }
+
+    // Subscribe to Status notifications — payloads are encrypted too.
+    if (chrStatus) {
+      await chrStatus.startNotifications();
+      chrStatus.addEventListener('characteristicvaluechanged', async e => {
+        try {
+          const wire = new Uint8Array(e.target.value.buffer);
+          if (wire.length < 12 + 16) return;
+          const iv = wire.subarray(0, 12);
+          const ctTag = wire.subarray(12);
+          const pt = new Uint8Array(
+            await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aesKey, ctTag));
+          updateStatus(new DataView(pt.buffer, pt.byteOffset, pt.byteLength));
+        } catch (err) {
+          log(`Status 通知の復号エラー: ${err.message}`, 'err');
+        }
+      });
+      log('Status 通知を登録しました', 'ok');
+    }
+
+    applyCapabilityGating();
     setBleUi(true);
   } catch (e) {
     log(`接続失敗: ${e.message}`, 'err');
@@ -896,49 +1061,57 @@ document.getElementById('btn-apply').addEventListener('click', async () => {
   try {
     // Write only fields that have input (empty = unchanged). All payloads
     // travel through the AES-GCM session established at connect.
-    if (ssid) {
+    if (ssid && chrSsid) {
       await writeEncrypted(chrSsid, strToBytes(ssid));
       log('SSID 書き込み完了', 'ok');
     }
-    if (pass) {
+    if (pass && chrPass) {
       await writeEncrypted(chrPass, strToBytes(pass));
       log('パスワード 書き込み完了', 'ok');
     }
-    if (key) {
+    if (key && chrKey) {
       await writeEncrypted(chrKey, strToBytes(key));
       log('OpenAI キー 書き込み完了', 'ok');
     }
-    if (gkey) {
+    if (gkey && chrGeminiKey) {
       await writeEncrypted(chrGeminiKey, strToBytes(gkey));
       log('Gemini キー 書き込み完了', 'ok');
     }
 
-    // Provider: only write if changed from initial.
+    // Provider: only write if changed from initial AND chr is present.
     const provSel = document.getElementById('provider');
-    if (provSel.dataset.initial !== undefined && provSel.value !== provSel.dataset.initial) {
+    if (chrProvider && provSel.dataset.initial !== undefined && provSel.value !== provSel.dataset.initial) {
       await writeEncrypted(chrProvider, new Uint8Array([Number(provSel.value)]));
       log(`プロバイダを ${provSel.options[provSel.selectedIndex].text} に切替`, 'ok');
     }
 
-    // Only push the enable flag if it changed from what we read at connect.
+    // Only push the enable flag if it changed AND chr is present.
     const enCheckbox = document.getElementById('openai-enabled');
     const enInitial = enCheckbox.dataset.initial;
     const enWanted = enCheckbox.checked ? '1' : '0';
-    if (enInitial !== undefined && enInitial !== enWanted) {
+    if (chrEn && enInitial !== undefined && enInitial !== enWanted) {
       await writeEncrypted(chrEn, new Uint8Array([enCheckbox.checked ? 1 : 0]));
       log(`OpenAI 会話機能を ${enCheckbox.checked ? '有効' : '無効'} に切り替え`, 'ok');
     }
 
-    // jtts: only write if the form contents differ from what we read.
-    const jttsCanonical = canonicaliseJttsForm();
-    if (jttsCanonical !== jttsInitialJson) {
-      const jttsObj = readJttsForm();
-      // Object.keys==0 means "fall back to firmware defaults" — send empty.
-      const payload = Object.keys(jttsObj).length === 0 ? '' : JSON.stringify(jttsObj);
-      await writeEncrypted(chrJtts, strToBytes(payload));
-      log(`jtts 設定を更新 (${payload.length}B)`, 'ok');
+    // jtts: only write if the form contents differ AND chr is present.
+    if (chrJtts) {
+      const jttsCanonical = canonicaliseJttsForm();
+      if (jttsCanonical !== jttsInitialJson) {
+        const jttsObj = readJttsForm();
+        // Object.keys==0 means "fall back to firmware defaults" — send empty.
+        const payload = Object.keys(jttsObj).length === 0 ? '' : JSON.stringify(jttsObj);
+        await writeEncrypted(chrJtts, strToBytes(payload));
+        log(`jtts 設定を更新 (${payload.length}B)`, 'ok');
+      }
     }
 
+    if (!chrApply) {
+      log('Apply chr が無いので適用はスキップ(古いファーム?)', 'err');
+      btn.disabled = false;
+      btn.textContent = '保存 & 再起動';
+      return;
+    }
     log('Apply を送信しています…');
     // Sentinel: single byte 0x01, encrypted like everything else.
     await writeEncrypted(chrApply, new Uint8Array([0x01]));
@@ -959,19 +1132,60 @@ document.getElementById('btn-apply').addEventListener('click', async () => {
 });
 
 // --- OTA controls ---
+function refreshOtaButton() {
+  const fileChosen = document.getElementById('ota-file').files.length > 0;
+  const releaseChosen = document.getElementById('ota-release').value !== '';
+  document.getElementById('btn-ota').disabled =
+    !chrOtaCtrl || (!fileChosen && !releaseChosen);
+}
 document.getElementById('ota-file').addEventListener('change', e => {
   const file = e.target.files && e.target.files[0];
-  document.getElementById('btn-ota').disabled = !file || !chrOtaCtrl;
   if (file) {
+    // Selecting a file overrides any release pick (mutually exclusive).
+    document.getElementById('ota-release').value = '';
     document.getElementById('ota-stats').textContent = `${file.name} (${fmtBytes(file.size)})`;
   }
+  refreshOtaButton();
 });
-document.getElementById('btn-ota').addEventListener('click', () => {
-  const file = document.getElementById('ota-file').files[0];
-  if (!file) return;
-  if (!confirm(`新ファーム ${file.name} (${fmtBytes(file.size)}) を書き込みます。よろしいですか？`)) return;
-  performOta(file);
+document.getElementById('ota-release').addEventListener('change', e => {
+  if (e.target.value) {
+    // Selecting a release overrides any file pick.
+    document.getElementById('ota-file').value = '';
+    document.getElementById('ota-stats').textContent = `Release: ${e.target.value}`;
+  }
+  refreshOtaButton();
 });
+document.getElementById('btn-ota').addEventListener('click', async () => {
+  const fileInput = document.getElementById('ota-file');
+  const releaseSel = document.getElementById('ota-release');
+  const releaseTag = releaseSel.value;
+
+  let blob, name;
+  if (releaseTag) {
+    try {
+      blob = await fetchReleaseFirmware(releaseTag);
+      name = `${releaseTag}/stackchan_idf.bin`;
+    } catch (e) {
+      log(`リリース取得失敗: ${e.message}`, 'err');
+      return;
+    }
+  } else if (fileInput.files[0]) {
+    blob = fileInput.files[0];
+    name = fileInput.files[0].name;
+  } else {
+    return;
+  }
+
+  if (!confirm(`新ファーム ${name} (${fmtBytes(blob.size)}) を書き込みます。よろしいですか？`)) return;
+  // performOta expects .name / .size / .stream() — File satisfies all three,
+  // so wrap a raw Blob in a File constructor.
+  const carrier = (blob instanceof File) ? blob :
+    new File([blob], name.replace('/', '_'), { type: 'application/octet-stream' });
+  performOta(carrier);
+});
+
+// Kick off the release list early — independent of BLE connect.
+loadOtaReleases();
 </script>
 </body>
 </html>
