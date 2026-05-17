@@ -94,6 +94,8 @@ The repo is `ciniml/stackchan-idf` (use `--repo` consistently when invoking `gh`
 - **404 on actions/configure-pages first run** — pages.yml has `enablement: true`.
 - **`-dirty` version suffix** — `tools/apply-m5-patches.sh` dirties the M5Unified submodule worktree which propagates to the parent's `git describe --dirty`. release.yml writes `version.txt` after the patch step; ESP-IDF prefers that over `git describe`.
 - **ESP-IDF v6 dropped built-in `json` (cJSON)** — release.yml pinned to `release-v5.4`.
+- **Web Bluetooth 512-byte attribute-value cap** — Chrome rejects `writeValueWithResponse` payloads > 512 B. AES-GCM wraps each chunk in 12 B nonce + 16 B tag, so plaintext is bounded by 484 B. `OTA_CHUNK_SIZE` in tools/settings.html is 480.
+- **pages.yml path filter** — must include `tools/settings.html` in addition to `docs/**`, otherwise edits to the canonical settings page don't auto-deploy.
 
 ## Hardware regression test (manual, not in the recipe)
 
