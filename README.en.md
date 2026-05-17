@@ -4,6 +4,16 @@
 
 Firmware for M5Stack CoreS3 + Stack-chan base, written against ESP-IDF 5.4 / C++20.
 
+## Web Flasher / Settings page
+
+Released firmware can be flashed straight from the browser (Chrome / Edge):
+
+- **Flash**: <https://ciniml.github.io/stackchan-idf/>
+- **BLE Settings**: <https://ciniml.github.io/stackchan-idf/settings.html>
+
+Push a tag `vX.Y.Z` and CI builds the firmware, attaches it to a Release,
+and the GitHub Pages site picks it up in its version dropdown.
+
 ## Features
 
 - **Avatar**: 30 fps face rendering with M5GFX — breath / saccade / blink animators and six expressions (Neutral / Happy / Sad / Angry / Doubt / Sleepy) with matching effects.

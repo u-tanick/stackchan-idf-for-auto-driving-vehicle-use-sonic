@@ -4,6 +4,16 @@
 
 M5Stack CoreS3 + Stack-chan ベース用のファームウェアです。ESP-IDF 5.4 / C++20 で書かれています。
 
+## Web Flasher / 設定ページ
+
+GitHub Releases に置かれたファームウェアをブラウザから書き込めます (Chrome / Edge):
+
+- **書き込み**: <https://ciniml.github.io/stackchan-idf/>
+- **BLE 設定**: <https://ciniml.github.io/stackchan-idf/settings.html>
+
+タグ `vX.Y.Z` を push すると CI がビルドして Release を作り、Pages サイトの
+バージョン一覧にも自動で追加されます。
+
 ## 機能
 
 - **Avatar (顔描画)**: M5GFX で 30 fps 描画。呼吸 / saccade (眼球サッカード) / blink、6 表情 (Neutral / Happy / Sad / Angry / Doubt / Sleepy) と表情に応じたエフェクト。
