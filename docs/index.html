@@ -353,13 +353,32 @@ $('btnFlash').addEventListener('click', async () => {
     });
     progEl.value = 100;
     log('Flash complete. Resetting…', 'ok');
-    await loader.after();
-    log('Done.', 'ok');
+    // CoreS3 uses the ESP32-S3 internal USB-CDC/JTAG bridge rather than an
+    // external USB-UART chip. esptool-js's default `after()` does a hard
+    // reset via RTS toggling, but the second argument selects the USB-JTAG
+    // serial reset variant which is what actually works on CoreS3 (without
+    // it the chip stays in download mode and the user has to mash the
+    // reset button manually).
+    try {
+      await loader.after('hard_reset', true);
+    } catch (e) {
+      log('after("hard_reset", true) failed, falling back: ' + e.message, 'warn');
+      try { await loader.after(); } catch (_) { /* ignore */ }
+    }
+    // Release the port so the device's own USB-CDC can come up after
+    // boot — leaving the WebSerial session attached blocks it.
+    try { if (transport) await transport.disconnect(); } catch (_) { /* ignore */ }
+    transport = null;
+    loader = null;
+    chipInfoEl.textContent = '';
+    $('btnConnect').disabled = false;
+    $('btnDisconnect').disabled = true;
+    log('Done — device reset and USB port released.', 'ok');
   } catch (e) {
     log('Flash failed: ' + (e?.message || e), 'warn');
   } finally {
-    $('btnFlash').disabled = false;
-    $('btnDisconnect').disabled = false;
+    // btnFlash stays disabled until reconnect; btnDisconnect handled above.
+    $('btnFlash').disabled = !loader;
   }
 });
 
