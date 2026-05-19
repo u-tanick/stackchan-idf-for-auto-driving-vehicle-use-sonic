@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <string_view>
 #include <utility>
 
 #include <cJSON.h>
@@ -368,8 +369,24 @@ private:
                 const auto* bytes = reinterpret_cast<const std::uint8_t*>(data->data_ptr);
                 const std::uint16_t code = (bytes[0] << 8) | bytes[1];
                 const int reason_len = data->data_len - 2;
-                ESP_LOGW(kTag, "ws close: code=%u reason='%.*s'", code,
-                         reason_len, reinterpret_cast<const char*>(bytes + 2));
+                const char* reason = reinterpret_cast<const char*>(bytes + 2);
+                ESP_LOGW(kTag, "ws close: code=%u reason='%.*s'", code, reason_len, reason);
+
+                // Gemini returns code=1008 with reason
+                // "BidiGenerateContent session not found" when the cached
+                // resumption handle has expired or been invalidated on the
+                // server. Without clearing session_handle_ the conv-task
+                // recovery path replays the same dead handle on every
+                // reconnect and we ping-pong forever. Drop the handle so
+                // send_setup() opens a fresh session on the next attempt.
+                if (code == 1008 && reason_len > 0 &&
+                    std::string_view(reason, reason_len).find("session not found") != std::string_view::npos) {
+                    if (!session_handle_.empty()) {
+                        ESP_LOGW(kTag, "discarding stale resumption handle (%u bytes)",
+                                 static_cast<unsigned>(session_handle_.size()));
+                        session_handle_.clear();
+                    }
+                }
             }
             return;
         }
