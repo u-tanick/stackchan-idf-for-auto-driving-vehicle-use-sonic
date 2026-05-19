@@ -122,13 +122,16 @@ static int gap_event_cb(struct ble_gap_event* event, void* /*arg*/)
                 ESP_LOGW(kTag, "set_prefered_le_phy: rc=%d", rc);
             }
 
-            // 3. Request a tighter connection interval. 12–24 × 1.25 ms
-            // = 15–30 ms; latency 0 so every event is honoured. Chrome
-            // can refuse, but on Linux/BlueZ and recent Android it
-            // accepts. 400 × 10 ms = 4 s supervision timeout.
+            // 3. Request the tightest connection interval the central will
+            // tolerate. 6 × 1.25 ms = 7.5 ms (the BLE-spec minimum); peers
+            // that refuse fall back to whatever they prefer. 30 ms (the
+            // earlier default) capped throughput at ~5 KiB/s — quartering
+            // the CI gives us ~4× the connection events / sec and should
+            // push effective throughput into the 15–20 KiB/s range that
+            // streaming AAC playback requires.
             struct ble_gap_upd_params params{};
-            params.itvl_min = 12;
-            params.itvl_max = 24;
+            params.itvl_min = 6;
+            params.itvl_max = 12;
             params.latency = 0;
             params.supervision_timeout = 400;
             rc = ble_gap_update_params(conn, &params);

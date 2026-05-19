@@ -104,7 +104,11 @@ CONFIG_MDNS_RESOLVE_TEST_SERVICES=n
 # we issue in BLE_GAP_EVENT_CONNECT (config_service.cpp) this drops
 # the typical 30–50 ms Chrome default to ~15 ms, which is the single
 # biggest lever on OTA throughput. Supervision timeout 400 = 4 s.
-CONFIG_BT_NIMBLE_SVC_GAP_PPCP_MIN_CONN_INTERVAL=12
-CONFIG_BT_NIMBLE_SVC_GAP_PPCP_MAX_CONN_INTERVAL=24
+# 6 × 1.25 ms = 7.5 ms minimum, 12 × 1.25 ms = 15 ms max. The audio streamer
+# wants the tightest CI the central can stomach; if the peer narrows the
+# range we'll still end up at whatever it accepts. Without this we landed
+# at 30 ms which capped throughput at ~5 KiB/s.
+CONFIG_BT_NIMBLE_SVC_GAP_PPCP_MIN_CONN_INTERVAL=6
+CONFIG_BT_NIMBLE_SVC_GAP_PPCP_MAX_CONN_INTERVAL=12
 CONFIG_BT_NIMBLE_SVC_GAP_PPCP_SLAVE_LATENCY=0
 CONFIG_BT_NIMBLE_SVC_GAP_PPCP_SUPERVISION_TMO=400

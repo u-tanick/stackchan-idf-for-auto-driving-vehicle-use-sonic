@@ -110,7 +110,7 @@ docker-clean:
 AUDIO_CLI_BIN  ?= tools/audio-cli/target/release/audio-cli
 AUDIO_DEVICE   ?= Stackchan-E2604E
 AUDIO_FILE     ?= tools/audio-cli/out.aac
-AUDIO_RATE     ?= 6
+AUDIO_RATE     ?= 100
 AUDIO_FLUSH    ?= 16
 AUDIO_CHUNK    ?= 250
 AUDIO_LOG_SEC  ?= 120
