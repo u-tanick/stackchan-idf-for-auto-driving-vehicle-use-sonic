@@ -1084,7 +1084,11 @@ async function audioPlay() {
     const beginPayload = strToBytes(JSON.stringify({
       op: 'begin', codec: 'aac', sample_rate: AAC_SAMPLE_RATE, channels: AAC_CHANNELS,
     }));
-    await writeEncrypted(chrAudioCtrl, beginPayload);
+    // Audio chr writes go plaintext. Payload is ephemeral playback audio,
+    // not credentials, and the AES-GCM overhead (~11% wire + per-chunk
+    // CPU) directly cuts into the BLE bandwidth the streaming decoder
+    // depends on.
+    await chrAudioCtrl.writeValueWithResponse(beginPayload);
 
     // 5. Build encoder. Each encoded chunk is appended to a queue and
     // drained by a sender that fires writes-without-response back-to-back
@@ -1165,9 +1169,9 @@ async function audioPlay() {
         const frame = sendQueue.shift();
         const useNoResp = fastPath && (++framesSinceFlush % FLUSH_EVERY) !== 0;
         if (useNoResp) {
-          await writeEncryptedNoResp(chrAudioData, frame);
+          await chrAudioData.writeValueWithoutResponse(frame);
         } else {
-          await writeEncrypted(chrAudioData, frame);
+          await chrAudioData.writeValueWithResponse(frame);
           framesSinceFlush = 0;
         }
         if (firstSentAt === 0) firstSentAt = performance.now();
@@ -1196,18 +1200,18 @@ async function audioPlay() {
     await senderPromise;
 
     if (audioAbortRequested) {
-      try { await writeEncrypted(chrAudioCtrl, strToBytes(JSON.stringify({op: 'abort'}))); }
+      try { await chrAudioCtrl.writeValueWithResponse(strToBytes(JSON.stringify({op: 'abort'}))); }
       catch (_) { /* ignore */ }
       stats.textContent = '中断';
       log('音声送信を中断しました', 'info');
     } else {
-      await writeEncrypted(chrAudioCtrl, strToBytes(JSON.stringify({op: 'end'})));
+      await chrAudioCtrl.writeValueWithResponse(strToBytes(JSON.stringify({op: 'end'})));
       stats.textContent = `完了 ${(bytesSent/1024).toFixed(1)} KiB`;
       log('音声送信完了', 'ok');
     }
   } catch (e) {
     log('音声送信エラー: ' + e.message, 'err');
-    try { await writeEncrypted(chrAudioCtrl, strToBytes(JSON.stringify({op: 'abort'}))); }
+    try { await chrAudioCtrl.writeValueWithResponse(strToBytes(JSON.stringify({op: 'abort'}))); }
     catch (_) { /* ignore */ }
     document.getElementById('audio-stats').textContent = '失敗: ' + e.message;
   } finally {

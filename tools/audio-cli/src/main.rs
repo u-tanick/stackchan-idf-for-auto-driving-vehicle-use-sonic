@@ -235,13 +235,22 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("AudioData chr not found"))?
         .clone();
 
-    // begin
+    // Suppress the unused-warning for the cipher when audio chrs go
+    // plaintext. The handshake itself is still required (the device
+    // expects an established session for any settings chr write), even
+    // though audio_ctrl + audio_data take the plain bypass on the device.
+    let _ = &cipher;
+
+    // begin — plaintext. Audio payloads are ephemeral playback samples,
+    // not credentials, so the AES-GCM overhead (12 + 16 wire bytes per
+    // chunk + per-chunk CPU on both ends) buys us no security benefit
+    // worth the BLE bandwidth cost.
     let begin_json = format!(
         r#"{{"op":"begin","codec":"aac","sample_rate":{},"channels":1}}"#,
         args.sample_rate
     );
     peripheral
-        .write(&ctrl, &encrypt(&cipher, begin_json.as_bytes()), WriteType::WithResponse)
+        .write(&ctrl, begin_json.as_bytes(), WriteType::WithResponse)
         .await
         .context("send begin")?;
     println!("begin sent — streaming {} bytes...", file_bytes.len());
@@ -262,20 +271,19 @@ async fn main() -> Result<()> {
         if let Ok(()) = tokio::time::timeout(Duration::from_millis(0), &mut ctrl_c).await.unwrap_or(Err(std::io::Error::new(std::io::ErrorKind::Other, ""))) {
             println!("\nctrl-c — aborting");
             let _ = peripheral
-                .write(&ctrl, &encrypt(&cipher, br#"{"op":"abort"}"#), WriteType::WithResponse)
+                .write(&ctrl, br#"{"op":"abort"}"#, WriteType::WithResponse)
                 .await;
             break 'stream;
         }
 
-        let wire = encrypt(&cipher, chunk);
-
+        // Plaintext audio bytes (see begin write above for the rationale).
         let use_no_resp = args.flush_every > 1 && (chunks_sent + 1) % args.flush_every != 0;
         let wtype = if use_no_resp {
             WriteType::WithoutResponse
         } else {
             WriteType::WithResponse
         };
-        if let Err(e) = peripheral.write(&data, &wire, wtype).await {
+        if let Err(e) = peripheral.write(&data, chunk, wtype).await {
             eprintln!("\nwrite failed at chunk {}: {}", chunks_sent, e);
             return Err(e.into());
         }
@@ -306,7 +314,7 @@ async fn main() -> Result<()> {
 
     // end
     peripheral
-        .write(&ctrl, &encrypt(&cipher, br#"{"op":"end"}"#), WriteType::WithResponse)
+        .write(&ctrl, br#"{"op":"end"}"#, WriteType::WithResponse)
         .await
         .context("send end")?;
     let total_s = start.elapsed().as_secs_f64();

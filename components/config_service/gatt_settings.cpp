@@ -367,6 +367,55 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             return 0;
         }
 
+        // Audio streaming intentionally bypasses the AES-GCM session. The
+        // payload is ephemeral playback audio (no credentials, no PII), and
+        // the AES-GCM overhead (~11% wire bytes + per-chunk CPU on both
+        // sides) eats into the BLE bandwidth budget that the streaming
+        // decoder is already tight on.
+        if (attr_handle == g_audio_ctrl_handle) {
+            if (out_len > kMaxJttsConfigBytes) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            const std::string cmd(reinterpret_cast<const char*>(buf.data()), out_len);
+            ESP_LOGD(kTag, "audio_ctrl write: %u B sink=%p active=%d cmd='%.*s'",
+                     static_cast<unsigned>(out_len),
+                     static_cast<const void*>(g_audio_sink),
+                     g_audio_session_active ? 1 : 0,
+                     static_cast<int>(std::min<std::size_t>(out_len, 80)), cmd.c_str());
+            const bool is_begin = cmd.find("\"begin\"") != std::string::npos;
+            const bool is_end   = cmd.find("\"end\"")   != std::string::npos;
+            const bool is_abort = cmd.find("\"abort\"") != std::string::npos;
+
+            if (g_audio_sink != nullptr) {
+                if (is_begin) {
+                    std::uint32_t sr = 24000;
+                    std::uint8_t ch = 1;
+                    auto sr_pos = cmd.find("\"sample_rate\"");
+                    if (sr_pos != std::string::npos) {
+                        sr = std::strtoul(cmd.c_str() + cmd.find(':', sr_pos) + 1, nullptr, 10);
+                    }
+                    auto ch_pos = cmd.find("\"channels\"");
+                    if (ch_pos != std::string::npos) {
+                        ch = static_cast<std::uint8_t>(
+                            std::strtoul(cmd.c_str() + cmd.find(':', ch_pos) + 1, nullptr, 10));
+                    }
+                    if (g_audio_sink->on_begin) g_audio_sink->on_begin(sr, ch);
+                    g_audio_session_active = true;
+                } else if (is_end) {
+                    if (g_audio_sink->on_end) g_audio_sink->on_end();
+                    g_audio_session_active = false;
+                } else if (is_abort) {
+                    if (g_audio_sink->on_abort) g_audio_sink->on_abort(/*user_initiated=*/true);
+                    g_audio_session_active = false;
+                }
+            }
+            return 0;
+        }
+        if (attr_handle == g_audio_data_handle) {
+            if (g_audio_sink != nullptr && g_audio_sink->on_data && g_audio_session_active) {
+                g_audio_sink->on_data(buf.data(), out_len);
+            }
+            return 0;
+        }
+
         // All other writes require an established session and carry
         // [12B nonce][ciphertext][16B tag]. Decrypt before validating lengths.
         xSemaphoreTake(g_mutex, portMAX_DELAY);
@@ -450,57 +499,6 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             xSemaphoreTake(g_mutex, portMAX_DELAY);
             g_staging.gemini_api_key = std::move(val);
             xSemaphoreGive(g_mutex);
-            return 0;
-        }
-        if (attr_handle == g_audio_ctrl_handle) {
-            // Plaintext JSON command. Body cap matches kMaxJttsConfigBytes for
-            // convenience; commands are tiny in practice.
-            if (pt.size() > kMaxJttsConfigBytes) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
-            const std::string cmd(reinterpret_cast<const char*>(pt.data()), pt.size());
-            ESP_LOGD(kTag, "audio_ctrl write: %u B sink=%p active=%d cmd='%.*s'",
-                     static_cast<unsigned>(pt.size()),
-                     static_cast<const void*>(g_audio_sink),
-                     g_audio_session_active ? 1 : 0,
-                     static_cast<int>(std::min<std::size_t>(pt.size(), 80)), cmd.c_str());
-            // Parse the op out of the JSON manually to avoid pulling cJSON in
-            // here; the payload is short and we only care about a few keys.
-            const bool is_begin = cmd.find("\"begin\"") != std::string::npos;
-            const bool is_end   = cmd.find("\"end\"")   != std::string::npos;
-            const bool is_abort = cmd.find("\"abort\"") != std::string::npos;
-
-            if (g_audio_sink != nullptr) {
-                if (is_begin) {
-                    // Parse sample_rate / channels with simple lookups.
-                    std::uint32_t sr = 24000;
-                    std::uint8_t ch = 1;
-                    auto sr_pos = cmd.find("\"sample_rate\"");
-                    if (sr_pos != std::string::npos) {
-                        sr = std::strtoul(cmd.c_str() + cmd.find(':', sr_pos) + 1, nullptr, 10);
-                    }
-                    auto ch_pos = cmd.find("\"channels\"");
-                    if (ch_pos != std::string::npos) {
-                        ch = static_cast<std::uint8_t>(
-                            std::strtoul(cmd.c_str() + cmd.find(':', ch_pos) + 1, nullptr, 10));
-                    }
-                    if (g_audio_sink->on_begin) g_audio_sink->on_begin(sr, ch);
-                    g_audio_session_active = true;
-                } else if (is_end) {
-                    if (g_audio_sink->on_end) g_audio_sink->on_end();
-                    g_audio_session_active = false;
-                } else if (is_abort) {
-                    if (g_audio_sink->on_abort) g_audio_sink->on_abort(/*user_initiated=*/true);
-                    g_audio_session_active = false;
-                }
-            }
-            return 0;
-        }
-        if (attr_handle == g_audio_data_handle) {
-            // Raw AAC ADTS bytes; just forward to the sink. No length cap
-            // beyond what the scratch buffer can hold — the AAC decoder
-            // handles sync on its end so chunking is arbitrary.
-            if (g_audio_sink != nullptr && g_audio_sink->on_data && g_audio_session_active) {
-                g_audio_sink->on_data(pt.data(), pt.size());
-            }
             return 0;
         }
         if (attr_handle == g_apply_handle) {
