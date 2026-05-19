@@ -28,7 +28,8 @@ SDKCONFIG_DEFAULTS_HW  := $(SDKCONFIG_DEFAULTS_HW);sdkconfig.defaults.local
 endif
 
 .PHONY: build clean set-target flash flash-monitor monitor monitor-log erase-flash \
-        build-docker docker-shell docker-clean
+        build-docker docker-shell docker-clean \
+        audio-cli audio-play audio-test
 
 # Capture serial output non-interactively (for CI / agent contexts where
 # idf.py monitor refuses to attach without a TTY). SECONDS defaults to 8.
@@ -98,6 +99,55 @@ docker-clean:
 		idf.py -B $(DOCKER_BUILD_DIR) -DSDKCONFIG=$(DOCKER_SDKCONFIG) \
 		       fullclean)
 	@rm -f $(DOCKER_SDKCONFIG)
+
+# --- BLE audio streaming CLI (tools/audio-cli) ------------------------------
+#
+# Wraps the Rust CLI for end-to-end BLE audio test. The combined target
+# starts the device serial log capture in the background so the AAC
+# decoder diagnostics line up with the CLI's send progress in the same
+# transcript.
+
+AUDIO_CLI_BIN  ?= tools/audio-cli/target/release/audio-cli
+AUDIO_DEVICE   ?= Stackchan-E2604E
+AUDIO_FILE     ?= tools/audio-cli/out.aac
+AUDIO_RATE     ?= 6
+AUDIO_FLUSH    ?= 16
+AUDIO_CHUNK    ?= 250
+AUDIO_LOG_SEC  ?= 120
+
+audio-cli:
+	cd tools/audio-cli && cargo build --release
+
+audio-play: audio-cli
+	$(AUDIO_CLI_BIN) \
+	    --device "$(AUDIO_DEVICE)" \
+	    --file "$(AUDIO_FILE)" \
+	    --chunk-size $(AUDIO_CHUNK) \
+	    --rate-kbps $(AUDIO_RATE) \
+	    --flush-every $(AUDIO_FLUSH)
+
+# Parallel: serial log capture in the background while audio-play runs in
+# the foreground. The device-side `audio-stream:` and `cfg-gatt:` lines
+# interleave with the CLI's "sent N / total B" progress so the failure
+# mode is obvious in one pane.
+audio-test: audio-cli
+	@echo "=== launching serial log capture (PORT=$(if $(PORT),$(PORT),/dev/ttyACM0), $(AUDIO_LOG_SEC) s) ==="
+	@python3 tools/monitor_log.py \
+	    --port $(if $(PORT),$(PORT),/dev/ttyACM0) \
+	    --seconds $(AUDIO_LOG_SEC) > /tmp/audio-test-monitor.log 2>&1 & \
+	    MONITOR_PID=$$!; \
+	    sleep 2; \
+	    echo "=== streaming $(AUDIO_FILE) to $(AUDIO_DEVICE) ==="; \
+	    $(AUDIO_CLI_BIN) \
+	        --device "$(AUDIO_DEVICE)" \
+	        --file "$(AUDIO_FILE)" \
+	        --chunk-size $(AUDIO_CHUNK) \
+	        --rate-kbps $(AUDIO_RATE) \
+	        --flush-every $(AUDIO_FLUSH); \
+	    echo "=== waiting for monitor to finish ==="; \
+	    wait $$MONITOR_PID; \
+	    echo "=== device log (tail) ==="; \
+	    tail -n 80 /tmp/audio-test-monitor.log
 
 docker-shell:
 	docker run --rm -it \

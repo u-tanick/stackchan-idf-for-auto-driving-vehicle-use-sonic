@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <optional>
 #include <span>
 #include <string>
@@ -106,6 +107,18 @@ static const ble_uuid128_t kGeminiApiKeyUuid = BLE_UUID128_INIT(
 static const ble_uuid128_t kWifiIpUuid = BLE_UUID128_INIT(
     0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
     0x2a, 0x4d, 0x1c, 0x7b, 0x0d, 0xa0, 0xf0, 0xe3);
+// AudioControl — encrypted JSON command channel for the BLE audio streamer.
+// WRITE accepts {"op":"begin","codec":"aac","sample_rate":24000,"channels":1}
+// / {"op":"end"} / {"op":"abort"}. READ is unused (returns empty).
+static const ble_uuid128_t kAudioCtrlUuid = BLE_UUID128_INIT(
+    0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
+    0x2a, 0x4d, 0x1c, 0x7b, 0x0e, 0xa0, 0xf0, 0xe3);
+// AudioData — encrypted WRITE-only AAC ADTS bytes. Each chunk is appended
+// to the sink's stream buffer; the AAC decoder syncs on ADTS headers so
+// chunking can be arbitrary (no need to align to frame boundaries).
+static const ble_uuid128_t kAudioDataUuid = BLE_UUID128_INIT(
+    0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
+    0x2a, 0x4d, 0x1c, 0x7b, 0x0f, 0xa0, 0xf0, 0xe3);
 
 // --- Mutable state guarded by g_mutex ---
 static SemaphoreHandle_t g_mutex = nullptr;
@@ -136,6 +149,16 @@ static uint16_t g_ota_data_handle = 0;
 static uint16_t g_provider_handle = 0;
 static uint16_t g_gemini_key_handle = 0;
 static uint16_t g_wifi_ip_handle = 0;
+static uint16_t g_audio_ctrl_handle = 0;
+static uint16_t g_audio_data_handle = 0;
+
+// Registered sink, owned by main/audio_stream_sink. nullptr → audio streaming
+// quietly drops on the floor. Reads from the GATT host task only, so a plain
+// pointer suffices (set_audio_stream_sink isn't called from a hot path).
+static const AudioStreamSink* g_audio_sink = nullptr;
+// Tracks whether the current connection has an active begin() so we can fire
+// on_abort() on disconnect even without an explicit end/abort command.
+static bool g_audio_session_active = false;
 
 // Largest plaintext payload we accept on a single write — chosen to fit the
 // jtts config JSON comfortably. The encrypted wire form adds 12 (nonce) + 16
@@ -429,6 +452,64 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             xSemaphoreGive(g_mutex);
             return 0;
         }
+        if (attr_handle == g_audio_ctrl_handle) {
+            // Plaintext JSON command. Body cap matches kMaxJttsConfigBytes for
+            // convenience; commands are tiny in practice.
+            if (pt.size() > kMaxJttsConfigBytes) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            const std::string cmd(reinterpret_cast<const char*>(pt.data()), pt.size());
+            ESP_LOGI(kTag, "audio_ctrl write: %u B sink=%p active=%d cmd='%.*s'",
+                     static_cast<unsigned>(pt.size()),
+                     static_cast<const void*>(g_audio_sink),
+                     g_audio_session_active ? 1 : 0,
+                     static_cast<int>(std::min<std::size_t>(pt.size(), 80)), cmd.c_str());
+            // Parse the op out of the JSON manually to avoid pulling cJSON in
+            // here; the payload is short and we only care about a few keys.
+            const bool is_begin = cmd.find("\"begin\"") != std::string::npos;
+            const bool is_end   = cmd.find("\"end\"")   != std::string::npos;
+            const bool is_abort = cmd.find("\"abort\"") != std::string::npos;
+
+            if (g_audio_sink != nullptr) {
+                if (is_begin) {
+                    // Parse sample_rate / channels with simple lookups.
+                    std::uint32_t sr = 24000;
+                    std::uint8_t ch = 1;
+                    auto sr_pos = cmd.find("\"sample_rate\"");
+                    if (sr_pos != std::string::npos) {
+                        sr = std::strtoul(cmd.c_str() + cmd.find(':', sr_pos) + 1, nullptr, 10);
+                    }
+                    auto ch_pos = cmd.find("\"channels\"");
+                    if (ch_pos != std::string::npos) {
+                        ch = static_cast<std::uint8_t>(
+                            std::strtoul(cmd.c_str() + cmd.find(':', ch_pos) + 1, nullptr, 10));
+                    }
+                    if (g_audio_sink->on_begin) g_audio_sink->on_begin(sr, ch);
+                    g_audio_session_active = true;
+                } else if (is_end) {
+                    if (g_audio_sink->on_end) g_audio_sink->on_end();
+                    g_audio_session_active = false;
+                } else if (is_abort) {
+                    if (g_audio_sink->on_abort) g_audio_sink->on_abort(/*user_initiated=*/true);
+                    g_audio_session_active = false;
+                }
+            }
+            return 0;
+        }
+        if (attr_handle == g_audio_data_handle) {
+            // Raw AAC ADTS bytes; just forward to the sink. No length cap
+            // beyond what the scratch buffer can hold — the AAC decoder
+            // handles sync on its end so chunking is arbitrary.
+            static unsigned data_seen = 0;
+            if ((++data_seen % 64) == 1) {
+                ESP_LOGI(kTag, "audio_data #%u: %u B sink=%p active=%d",
+                         data_seen, static_cast<unsigned>(pt.size()),
+                         static_cast<const void*>(g_audio_sink),
+                         g_audio_session_active ? 1 : 0);
+            }
+            if (g_audio_sink != nullptr && g_audio_sink->on_data && g_audio_session_active) {
+                g_audio_sink->on_data(pt.data(), pt.size());
+            }
+            return 0;
+        }
         if (attr_handle == g_apply_handle) {
             if (pt.empty()) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
 
@@ -562,6 +643,20 @@ static ble_gatt_chr_def kChrs[] = {
         .flags = BLE_GATT_CHR_F_READ,
         .val_handle = &g_wifi_ip_handle,
     },
+    {
+        .uuid = &kAudioCtrlUuid.u,
+        .access_cb = gatt_access_cb,
+        .flags = BLE_GATT_CHR_F_WRITE,
+        .val_handle = &g_audio_ctrl_handle,
+    },
+    {
+        .uuid = &kAudioDataUuid.u,
+        .access_cb = gatt_access_cb,
+        // WRITE_NO_RSP so the browser can pipeline chunks without an
+        // ATT_WRITE_RSP round-trip per packet — the same trick OTA uses.
+        .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
+        .val_handle = &g_audio_data_handle,
+    },
     {} // terminator: uuid = nullptr
 };
 
@@ -647,7 +742,20 @@ void reset_session()
     // Any half-finished OTA must not survive a disconnect — esp_ota_abort
     // releases the partition so the bootloader keeps running the old image.
     ota::abort();
+    // Same for in-flight audio streaming — abort so the decoder gets reset.
+    // user_initiated = false because this is a transport-layer drop (BLE
+    // disconnect), not the browser asking to abort. The sink may still
+    // play any PCM it already accumulated as a graceful degradation.
+    if (g_audio_sink != nullptr && g_audio_session_active && g_audio_sink->on_abort) {
+        g_audio_sink->on_abort(/*user_initiated=*/false);
+    }
+    g_audio_session_active = false;
     xSemaphoreGive(g_mutex);
+}
+
+void set_audio_stream_sink(const AudioStreamSink* sink)
+{
+    g_audio_sink = sink;
 }
 
 } // namespace stackchan::config::gatt

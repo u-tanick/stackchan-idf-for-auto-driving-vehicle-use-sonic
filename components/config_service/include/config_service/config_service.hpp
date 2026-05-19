@@ -58,4 +58,25 @@ tl::expected<void, Error> start(const DeviceConfig& current);
 // Thread-safe — may be called from any task.
 void notify_wifi_connected(bool connected);
 
+// Audio playback sink. The BLE settings service streams PCM16 LE mono
+// chunks to whichever sink is registered here (set up at boot from
+// main/audio_stream_sink.cpp). Callbacks run on the NimBLE host task,
+// so the sink should hand off to a worker thread rather than blocking
+// inline.
+struct AudioStreamSink {
+    void (*on_begin)(std::uint32_t sample_rate, std::uint8_t channels);
+    void (*on_data)(const std::uint8_t* pcm16le, std::size_t bytes);
+    void (*on_end)();
+    // on_abort is invoked from two distinct paths: explicit op:'abort'
+    // from the browser (user_initiated == true) and BLE disconnect
+    // teardown (user_initiated == false). The sink can use this flag to
+    // decide whether to discard partially-received data or fall through
+    // to playback (graceful-degraded recovery from a dropped link).
+    void (*on_abort)(bool user_initiated);
+};
+
+// Register the audio sink. nullptr unregisters. Last writer wins; not
+// thread-safe to call concurrently with the GATT host task.
+void set_audio_stream_sink(const AudioStreamSink* sink);
+
 } // namespace stackchan::config

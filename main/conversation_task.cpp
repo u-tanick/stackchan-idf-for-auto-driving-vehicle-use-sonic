@@ -75,6 +75,7 @@ enum class Local : std::uint8_t {
     Listening,  // mic streaming up
     Thinking,   // speech_stopped seen; accumulating the reply
     Speaking,   // playing the reply through the speaker
+    Yielded,    // I2S handed off to BLE audio streamer (mic + speaker ended)
 };
 
 const char* kInstructions =
@@ -206,6 +207,45 @@ public:
         }
 
         for (;;) {
+            // Full conversation shutdown for BLE audio streaming. Yielding
+            // just the mic isn't enough — the live WebSocket + mbedtls
+            // session keeps Wi-Fi pumping and squeezes internal RAM,
+            // which starves the AAC decoder (observed: error 30 only
+            // after Wi-Fi associates). When audio_stream_active fires we
+            // stop the client entirely so internal RAM rebounds; the
+            // streamer publishes conversation_yielded_i2s once we're
+            // fully torn down. On clear we reconnect from scratch.
+            if (state_.audio_stream_active.load(std::memory_order_acquire)) {
+                if (local_ != Local::Yielded) {
+                    ESP_LOGI(kTag, "yielding to BLE audio stream — stopping conversation");
+                    M5.Mic.end();
+                    M5.Speaker.end();
+                    state_.mouth_open.store(0.0f, std::memory_order_relaxed);
+                    client_->stop();
+                    vTaskDelay(pdMS_TO_TICKS(500));
+                    flush_events();
+                    assistant_pcm_.clear();
+                    assistant_text_.clear();
+                    set_local(Local::Yielded);
+                    state_.conversation_active.store(false, std::memory_order_relaxed);
+                    state_.conversation_idle.store(false, std::memory_order_relaxed);
+                    state_.conversation_yielded_i2s.store(true, std::memory_order_release);
+                }
+                vTaskDelay(pdMS_TO_TICKS(100));
+                continue;
+            }
+            if (local_ == Local::Yielded) {
+                ESP_LOGI(kTag, "BLE audio done — restarting conversation");
+                state_.conversation_yielded_i2s.store(false, std::memory_order_release);
+                if (!connect()) {
+                    ESP_LOGW(kTag, "reconnect after audio stream failed; retrying in 5 s");
+                    vTaskDelay(pdMS_TO_TICKS(5000));
+                    continue;
+                }
+                // connect() leaves us in Local::Init waiting for the
+                // session-ready event; outer loop will drain_events()
+                // and the existing handler progresses us to Listening.
+            }
             drain_events();
             service_state();
         }
@@ -339,6 +379,11 @@ private:
             break;
         case Local::Speaking:
             service_playback();
+            break;
+        case Local::Yielded:
+            // Handled at the top of run() — we should never actually
+            // dispatch on this state, but the compiler insists.
+            vTaskDelay(pdMS_TO_TICKS(100));
             break;
         }
     }

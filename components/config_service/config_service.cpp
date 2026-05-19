@@ -323,4 +323,9 @@ void notify_wifi_connected(bool connected)
     gatt::set_wifi_connected(connected);
 }
 
+void set_audio_stream_sink(const AudioStreamSink* sink)
+{
+    gatt::set_audio_stream_sink(sink);
+}
+
 } // namespace stackchan::config

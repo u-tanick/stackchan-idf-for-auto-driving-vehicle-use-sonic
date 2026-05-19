@@ -26,4 +26,7 @@ void set_wifi_connected(bool connected);
 // next connection runs a fresh X25519 handshake.
 void reset_session();
 
+// Register the audio playback sink. See config_service.hpp for the contract.
+void set_audio_stream_sink(const AudioStreamSink* sink);
+
 } // namespace stackchan::config::gatt

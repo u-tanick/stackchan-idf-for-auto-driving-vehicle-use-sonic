@@ -361,6 +361,24 @@
     </div>
   </details>
 
+  <details class="jtts-section" id="audio-section">
+    <summary>音声ファイル再生 (BLE ストリーミング)</summary>
+    <p class="hint" style="margin-bottom:0.5rem">
+      ローカルの音声ファイル (.mp3 / .wav / .m4a / .aac など) を選んで「再生」を押すと、
+      ブラウザ側で 24 kHz mono AAC-LC に再エンコードし、BLE 経由でストリーミング送信します。
+      ｽﾀｯｸﾁｬﾝ側で AAC をデコードしながら再生し、音量に合わせて口を動かします。
+    </p>
+    <div class="ota-row">
+      <input type="file" id="audio-file" accept="audio/*">
+      <button id="btn-audio-play" type="button" disabled>再生</button>
+      <button id="btn-audio-stop" type="button" disabled>停止</button>
+    </div>
+    <div class="ota-status" id="audio-status">
+      <div class="ota-bar"><div class="ota-bar-fill" id="audio-bar-fill"></div></div>
+      <div class="ota-stats" id="audio-stats">未開始</div>
+    </div>
+  </details>
+
   <div class="actions">
     <button id="btn-connect">BLE 接続</button>
     <button id="btn-apply" disabled>保存 &amp; 再起動</button>
@@ -392,6 +410,8 @@ const CHR_OTA_DATA = 'e3f0a00a-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_PROVIDER = 'e3f0a00b-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_GEMINI_KEY = 'e3f0a00c-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_WIFI_IP = 'e3f0a00d-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+const CHR_AUDIO_CTRL = 'e3f0a00e-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+const CHR_AUDIO_DATA = 'e3f0a00f-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 
 // OTA transfer parameters. The chunk size is bounded by the Web Bluetooth
 // GATT value-length cap of 512 bytes total on writeValueWithResponse — and
@@ -414,7 +434,7 @@ const DIS_CHRS = {
 
 // --- State ---
 let bleDevice = null, bleServer = null, svc = null;
-let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrWifiIp = null;
+let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrWifiIp = null, chrAudioCtrl = null, chrAudioData = null;
 let jttsInitialJson = '';  // last read JSON, used to detect Apply-time changes
 let otaInFlight = false;
 let aesKey = null;  // CryptoKey for AES-256-GCM, derived per connection
@@ -957,6 +977,250 @@ async function writeEncryptedNoResp(chr, plainBytes) {
   await chr.writeValueWithoutResponse(wire);
 }
 
+// --- Audio streaming (WebCodecs AudioEncoder → AAC-LC → ADTS → BLE) ---
+//
+// We re-encode the user's file to 24 kHz mono AAC-LC at 64 kbps so the
+// stream sits comfortably within BLE's ~10–20 KB/s effective bandwidth
+// (raw AAC-LC payload at 64 kbps is ~8 KB/s). The device decodes from
+// ADTS, so we prepend a 7-byte ADTS header to each encoded chunk that
+// the WebCodecs encoder hands back as a raw frame.
+// Chrome's WebCodecs AAC encoder accepts only {44100, 48000} Hz and
+// bitrates >= 96000. We use 48 kHz to skip an explicit resample step (the
+// OfflineAudioContext renders straight to 48 kHz). Wire rate is fixed by
+// the bitrate (96 kbps ≈ 12 KB/s) regardless of sample rate. The device's
+// AAC decoder auto-detects sample rate from the ADTS header and configures
+// the speaker accordingly.
+const AAC_SAMPLE_RATE = 48000;
+const AAC_CHANNELS = 1;
+const AAC_BITRATE = 96000;
+// Sample-rate index table from ISO/IEC 14496-3 §1.6.3.4.
+const AAC_SRI = { 96000:0, 88200:1, 64000:2, 48000:3, 44100:4, 32000:5, 24000:6, 22050:7, 16000:8, 12000:9, 11025:10, 8000:11 };
+
+let audioInFlight = false;
+let audioAbortRequested = false;
+
+function adtsHeader(payloadLen, sampleRate, channels) {
+  // AAC-LC profile (= AOT 2) → ADTS profile field = AOT - 1 = 1
+  const profile = 1;
+  const sri = AAC_SRI[sampleRate];
+  if (sri === undefined) throw new Error('unsupported AAC sample rate: ' + sampleRate);
+  const totalLen = payloadLen + 7;
+  const h = new Uint8Array(7);
+  h[0] = 0xFF;
+  h[1] = 0xF1; // sync(8..11) | MPEG-4(0) | layer(00) | protection_absent(1)
+  h[2] = ((profile & 0x3) << 6) | ((sri & 0xF) << 2) | ((channels >> 2) & 0x1);
+  h[3] = ((channels & 0x3) << 6) | ((totalLen >> 11) & 0x3);
+  h[4] = (totalLen >> 3) & 0xFF;
+  h[5] = ((totalLen & 0x7) << 5) | 0x1F;
+  h[6] = 0xFC;
+  return h;
+}
+
+async function audioPlay() {
+  if (audioInFlight) return;
+  if (!chrAudioCtrl || !chrAudioData) {
+    log('音声ストリーミング非対応のファームウェアです', 'err');
+    return;
+  }
+  const fileInput = document.getElementById('audio-file');
+  const file = fileInput.files && fileInput.files[0];
+  if (!file) { log('音声ファイルを選択してください', 'err'); return; }
+  if (typeof AudioEncoder === 'undefined') {
+    log('WebCodecs AudioEncoder が使えません (Chrome / Edge 94+ が必要)', 'err');
+    return;
+  }
+
+  audioInFlight = true;
+  audioAbortRequested = false;
+  const playBtn = document.getElementById('btn-audio-play');
+  const stopBtn = document.getElementById('btn-audio-stop');
+  const stats = document.getElementById('audio-stats');
+  const barFill = document.getElementById('audio-bar-fill');
+  playBtn.disabled = true;
+  stopBtn.disabled = false;
+  barFill.style.width = '0%';
+  stats.textContent = 'デコード中…';
+
+  try {
+    // 1. Decode the source file to PCM (any format AudioContext understands).
+    const arr = await file.arrayBuffer();
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const decoded = await ctx.decodeAudioData(arr);
+    await ctx.close();
+
+    // 2. Mix to mono.
+    const mono = new Float32Array(decoded.length);
+    if (decoded.numberOfChannels === 1) {
+      mono.set(decoded.getChannelData(0));
+    } else {
+      const l = decoded.getChannelData(0);
+      const r = decoded.getChannelData(1);
+      for (let i = 0; i < decoded.length; ++i) mono[i] = 0.5 * (l[i] + r[i]);
+    }
+
+    // 3. Resample mono to the target rate via an OfflineAudioContext —
+    // shortest path that preserves quality without us writing a kernel.
+    let resampled = mono;
+    if (decoded.sampleRate !== AAC_SAMPLE_RATE) {
+      const offline = new OfflineAudioContext(
+        1,
+        Math.ceil(mono.length * AAC_SAMPLE_RATE / decoded.sampleRate),
+        AAC_SAMPLE_RATE);
+      const src = offline.createBufferSource();
+      const srcBuf = offline.createBuffer(1, mono.length, decoded.sampleRate);
+      srcBuf.copyToChannel(mono, 0);
+      src.buffer = srcBuf;
+      src.connect(offline.destination);
+      src.start();
+      const rendered = await offline.startRendering();
+      resampled = rendered.getChannelData(0);
+    }
+
+    const totalSamples = resampled.length;
+    const durationMs = Math.round(totalSamples * 1000 / AAC_SAMPLE_RATE);
+    log(`AAC エンコード開始: ${(file.size/1024).toFixed(1)} KiB → ${durationMs} ms @ ${AAC_SAMPLE_RATE}Hz mono`);
+
+    // 4. Tell the device to spin up the decoder.
+    const beginPayload = strToBytes(JSON.stringify({
+      op: 'begin', codec: 'aac', sample_rate: AAC_SAMPLE_RATE, channels: AAC_CHANNELS,
+    }));
+    await writeEncrypted(chrAudioCtrl, beginPayload);
+
+    // 5. Build encoder. Each encoded chunk is appended to a queue and
+    // drained by a sender that fires writes-without-response back-to-back
+    // (same trick as OTA, just over the AudioData chr).
+    const sendQueue = [];
+    let encodeDone = false;
+    let bytesSent = 0;
+    let firstSentAt = 0;
+
+    const encoder = new AudioEncoder({
+      output: (chunk) => {
+        const aac = new Uint8Array(chunk.byteLength);
+        chunk.copyTo(aac);
+        const header = adtsHeader(aac.length, AAC_SAMPLE_RATE, AAC_CHANNELS);
+        const frame = new Uint8Array(header.length + aac.length);
+        frame.set(header, 0);
+        frame.set(aac, header.length);
+        sendQueue.push(frame);
+      },
+      error: (e) => { log('AAC encoder error: ' + e, 'err'); },
+    });
+    encoder.configure({
+      codec: 'mp4a.40.2',
+      sampleRate: AAC_SAMPLE_RATE,
+      numberOfChannels: AAC_CHANNELS,
+      bitrate: AAC_BITRATE,
+    });
+
+    // Submit the PCM in 1024-sample windows (1 AAC frame each). Run in a
+    // microtask loop so we don't block the UI thread.
+    const FRAME = 1024;
+    let submittedSamples = 0;
+    const submitNext = () => {
+      while (submittedSamples < totalSamples) {
+        if (audioAbortRequested) break;
+        const n = Math.min(FRAME, totalSamples - submittedSamples);
+        const slice = resampled.subarray(submittedSamples, submittedSamples + n);
+        const ad = new AudioData({
+          format: 'f32-planar',
+          sampleRate: AAC_SAMPLE_RATE,
+          numberOfFrames: n,
+          numberOfChannels: AAC_CHANNELS,
+          timestamp: submittedSamples * 1e6 / AAC_SAMPLE_RATE,
+          data: slice,
+        });
+        encoder.encode(ad);
+        ad.close();
+        submittedSamples += n;
+      }
+    };
+
+    // 6. Sender drain — pull frames off the queue as they appear and
+    // pipeline them out. Bulk frames use writeValueWithoutResponse (no
+    // per-frame ATT_WRITE_RSP wait), but every 16th frame is sent with
+    // response so the browser's BLE stack gets a sync point. Without
+    // that, Chrome lets the write queue grow unbounded and drops the
+    // link after ~30–40 s with HCI 0x13 "remote user terminated"
+    // (observed). Same rate-limit mechanism the OTA path relies on
+    // (OtaStatus read every 16 chunks).
+    const fastPath = !!chrAudioData.properties.writeWithoutResponse;
+    const FLUSH_EVERY = fastPath ? 16 : 1;
+    // Target throughput cap. Observed BLE effective rate on this build
+    // tops out around 7–8 KiB/s; pushing harder than that piles up the
+    // host BLE adapter's queue and Chrome reliably drops the link after
+    // ~40 s with HCI 0x13 "remote user terminated". Pacing here keeps
+    // the queue shallow and the link stable.
+    const TARGET_KBPS = 6;
+    const TARGET_BPS = TARGET_KBPS * 1024;
+    let framesSinceFlush = 0;
+
+    const senderPromise = (async () => {
+      while (!audioAbortRequested && (!encodeDone || sendQueue.length > 0)) {
+        if (sendQueue.length === 0) {
+          await new Promise(r => setTimeout(r, 5));
+          continue;
+        }
+        const frame = sendQueue.shift();
+        const useNoResp = fastPath && (++framesSinceFlush % FLUSH_EVERY) !== 0;
+        if (useNoResp) {
+          await writeEncryptedNoResp(chrAudioData, frame);
+        } else {
+          await writeEncrypted(chrAudioData, frame);
+          framesSinceFlush = 0;
+        }
+        if (firstSentAt === 0) firstSentAt = performance.now();
+        bytesSent += frame.length;
+
+        // Pacing: sleep if we're racing past the target rate. Catches up
+        // naturally if we fall behind (the negative lag short-circuits).
+        const elapsedS = (performance.now() - firstSentAt) / 1000;
+        const expectedS = bytesSent / TARGET_BPS;
+        const lagMs = (expectedS - elapsedS) * 1000;
+        if (lagMs > 5) {
+          await new Promise(r => setTimeout(r, lagMs));
+        }
+
+        const pct = Math.min(100, Math.floor(submittedSamples * 100 / totalSamples));
+        barFill.style.width = pct + '%';
+        const rate = elapsedS > 0.1 ? (bytesSent / elapsedS / 1024).toFixed(1) : '—';
+        stats.textContent = `送信中 ${pct}% / ${(bytesSent/1024).toFixed(1)} KiB / ${rate} KiB/s`;
+      }
+    })();
+
+    submitNext();
+    await encoder.flush();
+    encoder.close();
+    encodeDone = true;
+    await senderPromise;
+
+    if (audioAbortRequested) {
+      try { await writeEncrypted(chrAudioCtrl, strToBytes(JSON.stringify({op: 'abort'}))); }
+      catch (_) { /* ignore */ }
+      stats.textContent = '中断';
+      log('音声送信を中断しました', 'info');
+    } else {
+      await writeEncrypted(chrAudioCtrl, strToBytes(JSON.stringify({op: 'end'})));
+      stats.textContent = `完了 ${(bytesSent/1024).toFixed(1)} KiB`;
+      log('音声送信完了', 'ok');
+    }
+  } catch (e) {
+    log('音声送信エラー: ' + e.message, 'err');
+    try { await writeEncrypted(chrAudioCtrl, strToBytes(JSON.stringify({op: 'abort'}))); }
+    catch (_) { /* ignore */ }
+    document.getElementById('audio-stats').textContent = '失敗: ' + e.message;
+  } finally {
+    audioInFlight = false;
+    audioAbortRequested = false;
+    document.getElementById('btn-audio-play').disabled = !chrAudioData;
+    document.getElementById('btn-audio-stop').disabled = true;
+  }
+}
+
+function audioStop() {
+  audioAbortRequested = true;
+}
+
 // --- Connect ---
 document.getElementById('btn-connect').addEventListener('click', async () => {
   if (!navigator.bluetooth) {
@@ -1006,6 +1270,8 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
       ['provider',   CHR_PROVIDER],
       ['geminiKey',  CHR_GEMINI_KEY],
       ['wifiIp',     CHR_WIFI_IP],
+      ['audioCtrl',  CHR_AUDIO_CTRL],
+      ['audioData',  CHR_AUDIO_DATA],
     ];
     const settled = await Promise.allSettled(
       probes.map(([_, uuid]) => svc.getCharacteristic(uuid)));
@@ -1029,6 +1295,8 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
     chrProvider = found.provider ?? null;
     chrGeminiKey= found.geminiKey?? null;
     chrWifiIp   = found.wifiIp   ?? null;
+    chrAudioCtrl= found.audioCtrl?? null;
+    chrAudioData= found.audioData?? null;
     log(`Characteristics 取得完了 (missing: ${missing.length ? missing.join(', ') : 'none'})`,
         missing.length ? 'info' : 'ok');
 
@@ -1147,7 +1415,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
 function onDisconnected() {
   log('切断されました', 'err');
   setBleUi(false);
-  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrWifiIp = null;
+  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrWifiIp = chrAudioCtrl = chrAudioData = null;
   aesKey = null;
   clearDeviceInfo();
   delete document.getElementById('openai-enabled').dataset.initial;
@@ -1159,6 +1427,12 @@ function onDisconnected() {
     document.getElementById('ota-bar-fill').style.width = '0';
     document.getElementById('ota-stats').textContent = '未開始';
     document.getElementById('ota-file').value = '';
+  }
+  document.getElementById('btn-audio-play').disabled = true;
+  document.getElementById('btn-audio-stop').disabled = true;
+  if (!audioInFlight) {
+    document.getElementById('audio-bar-fill').style.width = '0';
+    document.getElementById('audio-stats').textContent = '未開始';
   }
 }
 
@@ -1251,6 +1525,16 @@ document.getElementById('btn-apply').addEventListener('click', async () => {
       btn.textContent = '保存 & 再起動';
     }
   }
+});
+
+// --- Audio streaming controls ---
+document.getElementById('btn-audio-play').addEventListener('click', audioPlay);
+document.getElementById('btn-audio-stop').addEventListener('click', audioStop);
+document.getElementById('audio-file').addEventListener('change', e => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  document.getElementById('audio-stats').textContent = `${file.name} (${fmtBytes(file.size)})`;
+  document.getElementById('btn-audio-play').disabled = !chrAudioData;
 });
 
 // --- OTA controls ---

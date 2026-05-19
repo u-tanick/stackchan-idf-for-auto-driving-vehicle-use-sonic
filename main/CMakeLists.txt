@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "app_main.cpp"
         "audio_codec.cpp"
+        "audio_stream_sink.cpp"
         "conversation_task.cpp"
         "render_task.cpp"
         "servo_task.cpp"
@@ -16,6 +17,7 @@ idf_component_register(
         config_service
         wifi_config_service
         jtts
+        espressif__esp_audio_codec
         json
         M5Unified
         M5GFX

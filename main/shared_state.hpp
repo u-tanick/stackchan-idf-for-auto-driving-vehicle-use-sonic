@@ -37,6 +37,18 @@ public:
     // this is set, but keeps babble / expression-cycle / mouth-sync to itself.
     std::atomic<bool> conversation_idle{false};
 
+    // Cooperative I2S handoff for BLE audio streaming. CoreS3 shares the
+    // I2S_NUM_1 bus between mic + speaker, so audio_stream_sink can't just
+    // grab the speaker while the conv-task is mid-listening (mic_task would
+    // race the M5.Mic.end teardown and stack-overflow). Instead:
+    //   1. audio_stream_sink sets audio_stream_active = true,
+    //   2. conv-task observes, ends mic + speaker, sets conversation_yielded_i2s = true,
+    //   3. audio_stream_sink begins the speaker + plays,
+    //   4. audio_stream_sink ends the speaker + clears audio_stream_active,
+    //   5. conv-task sees the flag clear and re-enters Listening.
+    std::atomic<bool> audio_stream_active{false};
+    std::atomic<bool> conversation_yielded_i2s{false};
+
     // Show `text` in the balloon.
     //  - hold_ms: minimum on-screen time (0 = use avatar defaults — short
     //    text holds a few seconds, long text plays one marquee pass).

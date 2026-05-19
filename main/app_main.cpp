@@ -17,6 +17,7 @@
 #include <esp_ota_ops.h>
 #include <esp_heap_caps.h>
 
+#include "audio_stream_sink.hpp"
 #include "avatar/expression.hpp"
 #include "board/board.hpp"
 #include "board/si12t_touch.hpp"
@@ -374,6 +375,15 @@ extern "C" void app_main()
 
     static stackchan::config::DeviceConfig cfg = stackchan::config::load();
 
+    // SharedState + audio_stream sink must be live BEFORE config::start
+    // brings the BLE GATT service online. Otherwise a client that
+    // connects early (well within the 5–10 s of Wi-Fi / mic / servo
+    // bring-up that follows) sends `begin` to an unregistered sink and
+    // the entire audio session is silently dropped — every subsequent
+    // audio_data write sees g_audio_sink == nullptr and bails.
+    g_state = new stackchan::app::SharedState{};
+    stackchan::app::audio_stream::start(*g_state);
+
     if (auto r = stackchan::config::start(cfg); !r) {
         ESP_LOGE(kTag, "BLE config service failed to start: %d (continuing without BLE)",
                  static_cast<int>(r.error()));
@@ -391,7 +401,6 @@ extern "C" void app_main()
     // UART. SCS0009 needs ~1 s after Vmotor comes up before it answers PING.
     vTaskDelay(pdMS_TO_TICKS(1500));
 
-    g_state = new stackchan::app::SharedState{};
     g_render_args = new stackchan::app::RenderTaskArgs{.display = &board.display(), .state = g_state};
     g_servo_args = new stackchan::app::ServoTaskArgs{.state = g_state};
     g_touch = board.touch_sensor();
