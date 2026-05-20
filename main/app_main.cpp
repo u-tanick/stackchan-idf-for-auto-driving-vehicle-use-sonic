@@ -342,11 +342,18 @@ extern "C" void app_main()
         auto spk = M5.Speaker.config();
         spk.task_priority = 6;
         spk.dma_buf_count = 16;
+        // Pin to core 1. Default (tskNO_AFFINITY) lets the speaker task
+        // land on core 0 where NimBLE + Wi-Fi live; at priority 6 it
+        // out-prioritises NimBLE's host task and steals CPU during
+        // audio playback, which drops BLE RX throughput from ~22 KiB/s
+        // to ~10 KiB/s and turns BLE audio streaming choppy.
+        spk.task_pinned_core = 1;
         M5.Speaker.config(spk);
         M5.Speaker.end();
 
         auto mic = M5.Mic.config();
         mic.task_priority = 6;
+        mic.task_pinned_core = 1;
         M5.Mic.config(mic);
         M5.Mic.end();
     }

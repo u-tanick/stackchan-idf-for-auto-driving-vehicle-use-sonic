@@ -443,8 +443,20 @@ void start(SharedState& state)
         return;
     }
 
+    // Priority 7 puts us above:
+    //   - render task (5) — avatar frames may stutter a beat during heavy
+    //     BLE traffic, acceptable trade-off for smooth audio
+    //   - servo task (4)
+    //   - speaker / mic tasks (6) — playRaw still works because the
+    //     worker yields between chunks
+    //
+    // The chain we're protecting is:
+    //   NimBLE on_data (core 0) → xStreamBufferSend (200ms blocking)
+    //   → consumer here (core 1) → drain promptly so NimBLE never blocks
+    // When this consumer is starved the producer side back-pressures
+    // and BLE throughput collapses from ~22 KiB/s to ~10 KiB/s.
     if (xTaskCreatePinnedToCoreWithCaps(worker_task, "audio-stream", 8192, nullptr,
-                                         tskIDLE_PRIORITY + 4, &g_worker, 1,
+                                         tskIDLE_PRIORITY + 7, &g_worker, 1,
                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         ESP_LOGE(kTag, "xTaskCreate audio-stream failed");
         return;

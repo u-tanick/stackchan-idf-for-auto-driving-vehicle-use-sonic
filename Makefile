@@ -130,13 +130,29 @@ audio-play: audio-cli
 # the foreground. The device-side `audio-stream:` and `cfg-gatt:` lines
 # interleave with the CLI's "sent N / total B" progress so the failure
 # mode is obvious in one pane.
+#
+# The CLI is held back until the conv-task reports "session ready" so the
+# streaming test runs against the real BLE/Wi-Fi radio-contention picture
+# the conversation backend creates, not the wide-open BLE we'd see
+# pre-association.
+AUDIO_TEST_READY_TIMEOUT ?= 60
 audio-test: audio-cli
 	@echo "=== launching serial log capture (PORT=$(if $(PORT),$(PORT),/dev/ttyACM0), $(AUDIO_LOG_SEC) s) ==="
 	@python3 tools/monitor_log.py \
 	    --port $(if $(PORT),$(PORT),/dev/ttyACM0) \
 	    --seconds $(AUDIO_LOG_SEC) > /tmp/audio-test-monitor.log 2>&1 & \
 	    MONITOR_PID=$$!; \
-	    sleep 2; \
+	    echo "=== waiting for conv-task: session ready (≤$(AUDIO_TEST_READY_TIMEOUT) s) ==="; \
+	    for i in $$(seq 1 $(AUDIO_TEST_READY_TIMEOUT)); do \
+	        if grep -q "conv-task: session ready" /tmp/audio-test-monitor.log 2>/dev/null; then \
+	            echo "conv-task ready at +$${i}s"; \
+	            break; \
+	        fi; \
+	        sleep 1; \
+	    done; \
+	    if ! grep -q "conv-task: session ready" /tmp/audio-test-monitor.log 2>/dev/null; then \
+	        echo "WARN: conv-task: session ready did not show within $(AUDIO_TEST_READY_TIMEOUT)s — running test anyway"; \
+	    fi; \
 	    echo "=== streaming $(AUDIO_FILE) to $(AUDIO_DEVICE) ==="; \
 	    $(AUDIO_CLI_BIN) \
 	        --device "$(AUDIO_DEVICE)" \
