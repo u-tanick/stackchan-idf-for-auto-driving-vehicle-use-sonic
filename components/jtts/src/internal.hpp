@@ -30,6 +30,14 @@ struct Segment {
 
 bool parse_kana(std::u32string_view kana, std::vector<Mora>& out);
 
+// 東京式無声化: /i/ /u/ が無声子音の間または無声子音+文末で囁かれる。
+// 該当する Mora の devoiced フラグを立てる。
+void apply_devoicing(std::vector<Mora>& moras);
+
+// 文末 F0 降下 (declination)。最終 ~280 ms で F0 を base*1.0 → base*0.78 に
+// 線形低下させ、フラット過ぎる音声にイントネーションを付ける。
+void apply_prosody(std::vector<Segment>& segs, const Options& opt);
+
 void build_segments(std::span<const Mora> moras, std::span<Segment> /*unused-placeholder*/);
 void build_segments(std::span<const Mora> moras, std::vector<Segment>& out, const Options& opt);
 

@@ -55,6 +55,7 @@ tl::expected<void, Error> synthesize(std::u32string_view kana,
     if (!internal::parse_kana(kana, moras)) {
         return tl::make_unexpected(Error::InvalidKana);
     }
+    internal::apply_devoicing(moras);
 
     std::vector<internal::Segment> segs;
     internal::build_segments(moras, segs, opt);
@@ -62,6 +63,7 @@ tl::expected<void, Error> synthesize(std::u32string_view kana,
         return tl::make_unexpected(Error::InvalidKana);
     }
     apply_formant_scale(segs, opt.formant_scale);
+    internal::apply_prosody(segs, opt);
 
     std::size_t estimated_samples = 0;
     for (const auto& s : segs) {

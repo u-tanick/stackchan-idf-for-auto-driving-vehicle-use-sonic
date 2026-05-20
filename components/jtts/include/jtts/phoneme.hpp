@@ -50,6 +50,10 @@ constexpr bool is_glide(Consonant c) {
     return c == Consonant::Y || c == Consonant::W;
 }
 
+constexpr bool is_voiceless_consonant(Consonant c) {
+    return is_voiceless_stop(c) || is_voiceless_fric(c) || is_affricate(c);
+}
+
 enum class MoraKind : std::uint8_t {
     CV,
     MoraicN,
@@ -62,6 +66,9 @@ struct Mora {
     Consonant c = Consonant::None;
     Vowel v = Vowel::None;
     bool palatalized = false;
+    // 東京式の無声化: /i/ /u/ が無声子音の間 (もしくは無声子音+文末) で
+    // 声帯振動を止める。apply_devoicing() で立つ。
+    bool devoiced = false;
 };
 
 }  // namespace stackchan::jtts
