@@ -36,6 +36,7 @@ const SVC_UUID: Uuid = Uuid::from_u128(0xe3f0a000_7b1c_4d2a_9e6f_2c5a8d4b1f00);
 const CHR_KX: Uuid = Uuid::from_u128(0xe3f0a006_7b1c_4d2a_9e6f_2c5a8d4b1f00);
 const CHR_AUDIO_CTRL: Uuid = Uuid::from_u128(0xe3f0a00e_7b1c_4d2a_9e6f_2c5a8d4b1f00);
 const CHR_AUDIO_DATA: Uuid = Uuid::from_u128(0xe3f0a00f_7b1c_4d2a_9e6f_2c5a8d4b1f00);
+const CHR_AUDIO_CREDIT: Uuid = Uuid::from_u128(0xe3f0a010_7b1c_4d2a_9e6f_2c5a8d4b1f00);
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -55,9 +56,11 @@ struct Args {
     #[arg(long, default_value_t = 250)]
     chunk_size: usize,
 
-    /// Target throughput in KiB/s. Pacing matches the browser's strategy
-    /// for keeping the BLE adapter queue shallow.
-    #[arg(long, default_value_t = 6.0)]
+    /// Optional throughput ceiling in KiB/s, applied *on top of* the
+    /// credit-based flow control. 0 (the default) means no artificial cap —
+    /// the AudioCredit characteristic alone paces the stream to the device's
+    /// playback rate. Set a value only to debug a slower link.
+    #[arg(long, default_value_t = 0.0)]
     rate_kbps: f64,
 
     /// Every Nth write uses with-response (sync point). Set 1 to make
@@ -158,6 +161,22 @@ async fn run_handshake(peripheral: &Peripheral) -> Result<Aes256Gcm> {
     Ok(Aes256Gcm::new_from_slice(&aes_key).expect("32-byte key"))
 }
 
+// Read the device's current audio-buffer free space (uint32 LE) from the
+// AudioCredit characteristic.
+async fn read_credit(
+    peripheral: &Peripheral,
+    credit_chr: &btleplug::api::Characteristic,
+) -> Result<u32> {
+    let v = peripheral.read(credit_chr).await?;
+    let bytes = [
+        *v.first().unwrap_or(&0),
+        *v.get(1).unwrap_or(&0),
+        *v.get(2).unwrap_or(&0),
+        *v.get(3).unwrap_or(&0),
+    ];
+    Ok(u32::from_le_bytes(bytes))
+}
+
 fn encrypt(cipher: &Aes256Gcm, plaintext: &[u8]) -> Vec<u8> {
     // Wire format: [12B nonce][ciphertext][16B GCM tag].
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
@@ -234,6 +253,11 @@ async fn main() -> Result<()> {
         .find(|c| c.uuid == CHR_AUDIO_DATA)
         .ok_or_else(|| anyhow!("AudioData chr not found"))?
         .clone();
+    let credit_chr = chars
+        .iter()
+        .find(|c| c.uuid == CHR_AUDIO_CREDIT)
+        .ok_or_else(|| anyhow!("AudioCredit chr not found — firmware too old?"))?
+        .clone();
 
     // Suppress the unused-warning for the cipher when audio chrs go
     // plaintext. The handshake itself is still required (the device
@@ -262,6 +286,17 @@ async fn main() -> Result<()> {
     let mut chunks_sent: usize = 0;
     let total = file_bytes.len();
 
+    // Credit-based flow control. The device exposes its current buffer free
+    // space (uint32 LE) on the AudioCredit characteristic. We never have
+    // more bytes outstanding than we last read free: read credit, send up to
+    // that many no-response writes, read again. Free space only grows
+    // between reads (single producer; the device drains as it plays), so the
+    // value is a safe lower bound and we never overflow. When the device
+    // buffer is full the read returns ~0 and we poll until playback frees
+    // space — that's what paces the whole stream to the playback rate.
+    let mut credit: u32 = read_credit(&peripheral, &credit_chr).await?;
+    let mut credit_reads: usize = 1;
+
     // Ctrl-C → send abort + disconnect cleanly. Spawn a watcher.
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
@@ -276,7 +311,21 @@ async fn main() -> Result<()> {
             break 'stream;
         }
 
+        // Block until the device has room for this chunk. Refresh the credit
+        // window whenever our running estimate dips below the chunk size;
+        // poll-sleep while the device reports full.
+        let need = chunk.len() as u32;
+        while credit < need {
+            credit = read_credit(&peripheral, &credit_chr).await?;
+            credit_reads += 1;
+            if credit < need {
+                tokio::time::sleep(Duration::from_millis(15)).await;
+            }
+        }
+
         // Plaintext audio bytes (see begin write above for the rationale).
+        // No-response writes for throughput; an occasional with-response
+        // write keeps the host adapter's TX queue from ballooning.
         let use_no_resp = args.flush_every > 1 && (chunks_sent + 1) % args.flush_every != 0;
         let wtype = if use_no_resp {
             WriteType::WithoutResponse
@@ -290,21 +339,24 @@ async fn main() -> Result<()> {
 
         chunks_sent += 1;
         bytes_sent += chunk.len() as u64;
+        credit = credit.saturating_sub(need);
 
-        // Pace.
-        let elapsed_s = start.elapsed().as_secs_f64();
-        let expected_s = bytes_sent as f64 / target_bps;
-        let lag_ms = (expected_s - elapsed_s) * 1000.0;
-        if lag_ms > 5.0 {
-            tokio::time::sleep(Duration::from_millis(lag_ms as u64)).await;
+        // Optional throughput ceiling on top of credit flow control.
+        if target_bps > 0.0 {
+            let elapsed_s = start.elapsed().as_secs_f64();
+            let expected_s = bytes_sent as f64 / target_bps;
+            let lag_ms = (expected_s - elapsed_s) * 1000.0;
+            if lag_ms > 5.0 {
+                tokio::time::sleep(Duration::from_millis(lag_ms as u64)).await;
+            }
         }
 
         if chunks_sent % 32 == 0 || bytes_sent as usize == total {
             let rate = bytes_sent as f64 / start.elapsed().as_secs_f64() / 1024.0;
             let pct = (bytes_sent as f64) * 100.0 / (total as f64);
             print!(
-                "\r  {:>5.1}%  {:>5} chunks  {:>7} / {:>7} B  {:>5.1} KiB/s   ",
-                pct, chunks_sent, bytes_sent, total, rate
+                "\r  {:>5.1}%  {:>5} chunks  {:>7} / {:>7} B  {:>5.1} KiB/s  credit={:>6}B reads={}   ",
+                pct, chunks_sent, bytes_sent, total, rate, credit, credit_reads
             );
             use std::io::Write as _;
             let _ = std::io::stdout().flush();
@@ -319,10 +371,11 @@ async fn main() -> Result<()> {
         .context("send end")?;
     let total_s = start.elapsed().as_secs_f64();
     println!(
-        "end sent — {} bytes in {:.1}s ({:.1} KiB/s)",
+        "end sent — {} bytes in {:.1}s ({:.1} KiB/s, {} credit reads)",
         bytes_sent,
         total_s,
-        bytes_sent as f64 / total_s / 1024.0
+        bytes_sent as f64 / total_s / 1024.0,
+        credit_reads
     );
 
     // Give the device a moment to finish its receive phase and kick off

@@ -113,12 +113,22 @@ static const ble_uuid128_t kWifiIpUuid = BLE_UUID128_INIT(
 static const ble_uuid128_t kAudioCtrlUuid = BLE_UUID128_INIT(
     0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
     0x2a, 0x4d, 0x1c, 0x7b, 0x0e, 0xa0, 0xf0, 0xe3);
-// AudioData — encrypted WRITE-only AAC ADTS bytes. Each chunk is appended
-// to the sink's stream buffer; the AAC decoder syncs on ADTS headers so
-// chunking can be arbitrary (no need to align to frame boundaries).
+// AudioData — plaintext WRITE-without-response AAC ADTS bytes. Each chunk is
+// appended to the sink's stream buffer; the AAC decoder syncs on ADTS headers
+// so chunking can be arbitrary (no need to align to frame boundaries).
 static const ble_uuid128_t kAudioDataUuid = BLE_UUID128_INIT(
     0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
     0x2a, 0x4d, 0x1c, 0x7b, 0x0f, 0xa0, 0xf0, 0xe3);
+// AudioCredit — plaintext READ-only uint32 LE: the number of bytes the audio
+// sink can accept right now without dropping. Because AudioData is written
+// without response there's no per-write backpressure, so the sender polls
+// this for credit-based flow control: read credit, send up to that many
+// bytes, read again. Free space only grows between reads (single producer,
+// drains as it plays), so it's a safe lower bound — the sender never
+// overflows the device. 0 means "full, wait"; also 0 with no active session.
+static const ble_uuid128_t kAudioCreditUuid = BLE_UUID128_INIT(
+    0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
+    0x2a, 0x4d, 0x1c, 0x7b, 0x10, 0xa0, 0xf0, 0xe3);
 
 // --- Mutable state guarded by g_mutex ---
 static SemaphoreHandle_t g_mutex = nullptr;
@@ -151,6 +161,7 @@ static uint16_t g_gemini_key_handle = 0;
 static uint16_t g_wifi_ip_handle = 0;
 static uint16_t g_audio_ctrl_handle = 0;
 static uint16_t g_audio_data_handle = 0;
+static uint16_t g_audio_credit_handle = 0;
 
 // Registered sink, owned by main/audio_stream_sink. nullptr → audio streaming
 // quietly drops on the floor. Reads from the GATT host task only, so a plain
@@ -240,6 +251,25 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
                 return BLE_ATT_ERR_UNLIKELY;
             }
             int rc = os_mbuf_append(ctxt->om, pub->data(), pub->size());
+            return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+        }
+
+        // AudioCredit — plaintext, no session. Returns the sink's current
+        // free space as a uint32 LE so the sender can pace its no-response
+        // AudioData writes (credit-based flow control). 0 if no sink / no
+        // active session.
+        if (attr_handle == g_audio_credit_handle) {
+            std::uint32_t credit = 0;
+            if (g_audio_sink != nullptr && g_audio_sink->credit != nullptr &&
+                g_audio_session_active) {
+                credit = g_audio_sink->credit();
+            }
+            std::array<std::uint8_t, 4> le{
+                static_cast<std::uint8_t>(credit & 0xff),
+                static_cast<std::uint8_t>((credit >> 8) & 0xff),
+                static_cast<std::uint8_t>((credit >> 16) & 0xff),
+                static_cast<std::uint8_t>((credit >> 24) & 0xff)};
+            int rc = os_mbuf_append(ctxt->om, le.data(), le.size());
             return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
         }
 
@@ -410,6 +440,10 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             return 0;
         }
         if (attr_handle == g_audio_data_handle) {
+            // Write-without-response: the return code never reaches the
+            // sender, so a full buffer can only be dropped here (logged
+            // inside on_data). The sender avoids ever reaching that state by
+            // polling AudioCredit and pacing — see the credit() handler.
             if (g_audio_sink != nullptr && g_audio_sink->on_data && g_audio_session_active) {
                 g_audio_sink->on_data(buf.data(), out_len);
             }
@@ -647,6 +681,14 @@ static ble_gatt_chr_def kChrs[] = {
         // ATT_WRITE_RSP round-trip per packet — the same trick OTA uses.
         .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
         .val_handle = &g_audio_data_handle,
+    },
+    {
+        .uuid = &kAudioCreditUuid.u,
+        .access_cb = gatt_access_cb,
+        // READ-only credit window for pacing the no-response AudioData
+        // writes (see the kAudioCreditUuid comment).
+        .flags = BLE_GATT_CHR_F_READ,
+        .val_handle = &g_audio_credit_handle,
     },
     {} // terminator: uuid = nullptr
 };

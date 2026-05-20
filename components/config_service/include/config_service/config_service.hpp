@@ -65,7 +65,16 @@ void notify_wifi_connected(bool connected);
 // inline.
 struct AudioStreamSink {
     void (*on_begin)(std::uint32_t sample_rate, std::uint8_t channels);
-    void (*on_data)(const std::uint8_t* pcm16le, std::size_t bytes);
+    // Returns true if the chunk was accepted (buffered whole), false if the
+    // sink's buffer was full and the chunk was dropped. AudioData uses
+    // write-WITHOUT-response, so this return value can't propagate back to
+    // the sender — it's a device-side diagnostic only. Real flow control is
+    // credit-based (see credit() below): the sender polls the sink's free
+    // space and never has more bytes outstanding than it last saw free, so
+    // on_data should never actually have to drop. The sink must accept a
+    // chunk whole or not at all (a partial accept would split an ADTS frame
+    // and desync the decoder).
+    bool (*on_data)(const std::uint8_t* pcm16le, std::size_t bytes);
     void (*on_end)();
     // on_abort is invoked from two distinct paths: explicit op:'abort'
     // from the browser (user_initiated == true) and BLE disconnect
@@ -73,6 +82,14 @@ struct AudioStreamSink {
     // decide whether to discard partially-received data or fall through
     // to playback (graceful-degraded recovery from a dropped link).
     void (*on_abort)(bool user_initiated);
+    // Bytes the sink can accept right now without dropping. Exposed via a
+    // READ characteristic (AudioCredit) for credit-based flow control over
+    // the no-response AudioData writes: the sender reads this, sends up to
+    // that many bytes, then reads again. Because the sink has a single
+    // producer (the BLE host) and only ever drains between reads, free space
+    // measured at a read is a safe lower bound for the writes that follow —
+    // the sender never overflows it. Returns 0 when no session is active.
+    std::uint32_t (*credit)();
 };
 
 // Register the audio sink. nullptr unregisters. Last writer wins; not

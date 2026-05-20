@@ -417,6 +417,13 @@ const CHR_GEMINI_KEY = 'e3f0a00c-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_WIFI_IP = 'e3f0a00d-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_AUDIO_CTRL = 'e3f0a00e-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_AUDIO_DATA = 'e3f0a00f-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+// AudioCredit — READ uint32 LE, the device's current audio-buffer free space
+// in bytes. AudioData is written without response (for throughput) so there's
+// no per-write backpressure; the sender polls this for credit-based flow
+// control instead, never sending more than it last saw free. This is what
+// paces the stream to the device's playback rate so its PCM ring can't
+// overrun (which corrupted ADTS framing → garbled "overwritten" playback).
+const CHR_AUDIO_CREDIT = 'e3f0a010-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 
 // OTA transfer parameters. The chunk size is bounded by the Web Bluetooth
 // GATT value-length cap of 512 bytes total on writeValueWithResponse — and
@@ -439,7 +446,7 @@ const DIS_CHRS = {
 
 // --- State ---
 let bleDevice = null, bleServer = null, svc = null;
-let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrWifiIp = null, chrAudioCtrl = null, chrAudioData = null;
+let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrWifiIp = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null;
 let jttsInitialJson = '';  // last read JSON, used to detect Apply-time changes
 let otaInFlight = false;
 let aesKey = null;  // CryptoKey for AES-256-GCM, derived per connection
@@ -1177,15 +1184,25 @@ async function audioPlay() {
     // (OtaStatus read every 16 chunks).
     const fastPath = !!chrAudioData.properties.writeWithoutResponse;
     const FLUSH_EVERY = fastPath ? 16 : 1;
-    // No explicit pacing — let BLE find its natural ceiling. The old 10
-    // KiB/s cap was below the 12 KiB/s AAC playback rate and caused
-    // playback to underflow on the device side. The 16-frame
-    // write-with-response sync (FLUSH_EVERY) is what actually keeps
-    // Chrome's BLE adapter queue shallow enough to avoid the HCI 0x13
-    // "remote user terminated" we hit during early encrypted-OTA work.
-    const TARGET_KBPS = 100;
-    const TARGET_BPS = TARGET_KBPS * 1024;
+    // Credit-based flow control. AudioData is written without response (for
+    // throughput), so there's no per-write backpressure. Instead the device
+    // exposes its current buffer free space (uint32 LE) on AudioCredit; we
+    // never send more than we last read free. Free space only grows between
+    // reads (single producer; the device drains as it plays), so the value
+    // is a safe lower bound and we can't overflow it. When the device buffer
+    // fills (playback can't keep up) the read returns ~0 and we poll until it
+    // frees space — that's what paces the stream to the playback rate so the
+    // PCM ring never overruns. Replaces the old fixed-rate guesswork that
+    // overran the ring (garbled "overwritten" playback) or starved it.
     let framesSinceFlush = 0;
+    let credit = 0;        // bytes we believe the device can still accept
+    let creditReads = 0;
+    const readCredit = async () => {
+      const dv = await chrAudioCredit.readValue();
+      creditReads++;
+      return dv.byteLength >= 4 ? dv.getUint32(0, /*littleEndian=*/true) : 0;
+    };
+    if (chrAudioCredit) credit = await readCredit();
 
     const senderPromise = (async () => {
       while (!audioAbortRequested && (!encodeDone || sendQueue.length > 0)) {
@@ -1194,6 +1211,17 @@ async function audioPlay() {
           continue;
         }
         const frame = sendQueue.shift();
+
+        // Wait for device room. Refresh the credit window whenever our
+        // running estimate dips below this frame; poll while it reports full.
+        if (chrAudioCredit) {
+          while (!audioAbortRequested && credit < frame.length) {
+            credit = await readCredit();
+            if (credit < frame.length) await new Promise(r => setTimeout(r, 15));
+          }
+          if (audioAbortRequested) break;
+        }
+
         const useNoResp = fastPath && (++framesSinceFlush % FLUSH_EVERY) !== 0;
         if (useNoResp) {
           await chrAudioData.writeValueWithoutResponse(frame);
@@ -1203,20 +1231,13 @@ async function audioPlay() {
         }
         if (firstSentAt === 0) firstSentAt = performance.now();
         bytesSent += frame.length;
+        credit = Math.max(0, credit - frame.length);
 
-        // Pacing: sleep if we're racing past the target rate. Catches up
-        // naturally if we fall behind (the negative lag short-circuits).
         const elapsedS = (performance.now() - firstSentAt) / 1000;
-        const expectedS = bytesSent / TARGET_BPS;
-        const lagMs = (expectedS - elapsedS) * 1000;
-        if (lagMs > 5) {
-          await new Promise(r => setTimeout(r, lagMs));
-        }
-
         const pct = Math.min(100, Math.floor(submittedSamples * 100 / totalSamples));
         barFill.style.width = pct + '%';
         const rate = elapsedS > 0.1 ? (bytesSent / elapsedS / 1024).toFixed(1) : '—';
-        stats.textContent = `送信中 ${pct}% / ${(bytesSent/1024).toFixed(1)} KiB / ${rate} KiB/s`;
+        stats.textContent = `送信中 ${pct}% / ${(bytesSent/1024).toFixed(1)} KiB / ${rate} KiB/s / credit ${(credit/1024).toFixed(1)} KiB`;
       }
     })();
 
@@ -1304,6 +1325,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
       ['wifiIp',     CHR_WIFI_IP],
       ['audioCtrl',  CHR_AUDIO_CTRL],
       ['audioData',  CHR_AUDIO_DATA],
+      ['audioCredit',CHR_AUDIO_CREDIT],
     ];
     const settled = await Promise.allSettled(
       probes.map(([_, uuid]) => svc.getCharacteristic(uuid)));
@@ -1329,6 +1351,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
     chrWifiIp   = found.wifiIp   ?? null;
     chrAudioCtrl= found.audioCtrl?? null;
     chrAudioData= found.audioData?? null;
+    chrAudioCredit = found.audioCredit ?? null;
     log(`Characteristics 取得完了 (missing: ${missing.length ? missing.join(', ') : 'none'})`,
         missing.length ? 'info' : 'ok');
 
@@ -1448,7 +1471,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
 function onDisconnected() {
   log('切断されました', 'err');
   setBleUi(false);
-  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrWifiIp = chrAudioCtrl = chrAudioData = null;
+  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrWifiIp = chrAudioCtrl = chrAudioData = chrAudioCredit = null;
   aesKey = null;
   clearDeviceInfo();
   delete document.getElementById('openai-enabled').dataset.initial;

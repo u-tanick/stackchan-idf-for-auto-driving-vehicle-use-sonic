@@ -28,8 +28,10 @@ namespace {
 
 constexpr const char* kTag = "audio-stream";
 
-// AAC ADTS bytes inbound from BLE land here.
-constexpr std::size_t kStreamBufferBytes = 32 * 1024;
+// AAC ADTS bytes inbound from BLE land here. 64 KiB ≈ 5 s of 96 kbps AAC —
+// enough to ride out a burst while the worker drains + decodes into the
+// PCM ring without forcing on_data to drop.
+constexpr std::size_t kStreamBufferBytes = 64 * 1024;
 constexpr std::size_t kStreamBufferTrigger = 256;
 
 // Speaker channel reserved for BLE audio playback so it never collides
@@ -89,10 +91,41 @@ void on_begin(std::uint32_t sample_rate, std::uint8_t channels)
              static_cast<unsigned>(channels));
 }
 
-void on_data(const std::uint8_t* data, std::size_t bytes)
+bool on_data(const std::uint8_t* data, std::size_t bytes)
 {
-    if (g_stream == nullptr || !g_active.load(std::memory_order_acquire)) return;
-    xStreamBufferSend(g_stream, data, bytes, pdMS_TO_TICKS(200));
+    if (g_stream == nullptr || !g_active.load(std::memory_order_acquire)) return true;
+    // MUST be non-blocking: this runs on the NimBLE host task. Blocking
+    // here (we used to wait up to 200 ms when the buffer was full) stalls
+    // the host task, the controller can't hand it freshly-received ACL
+    // data, its ACL buffer pool fills, and the whole BLE link wedges
+    // ("ACL buf alloc failed" / "MBUF alloc stuck").
+    //
+    // All-or-nothing: a partial write would split an ADTS frame and desync
+    // the decoder (the "buffer overwritten" garble). If the whole chunk
+    // won't fit we drop it and log. In practice the sender paces itself via
+    // the AudioCredit characteristic (credit()) so it never sends more than
+    // we can hold — this drop path is a backstop, not the steady state.
+    if (xStreamBufferSpacesAvailable(g_stream) < bytes) {
+        static unsigned drops = 0;
+        if ((++drops % 32) == 1) {
+            ESP_LOGW(kTag, "stream buffer full, dropped %u B (x%u) — sender outran credit",
+                     static_cast<unsigned>(bytes), drops);
+        }
+        return false;
+    }
+    xStreamBufferSend(g_stream, data, bytes, 0);
+    return true;
+}
+
+// Free space the sink can accept right now, in bytes. The AudioCredit
+// characteristic surfaces this so the sender can pace its no-response
+// AudioData writes. Reflects the whole backpressure chain: when the PCM
+// ring fills, the worker stops draining the stream buffer, its free space
+// collapses toward 0, and the sender throttles to the playback rate.
+std::uint32_t credit()
+{
+    if (g_stream == nullptr || !g_active.load(std::memory_order_acquire)) return 0;
+    return static_cast<std::uint32_t>(xStreamBufferSpacesAvailable(g_stream));
 }
 
 void on_end()
@@ -116,6 +149,7 @@ const config::AudioStreamSink kSink{
     .on_data = &on_data,
     .on_end = &on_end,
     .on_abort = &on_abort,
+    .credit = &credit,
 };
 
 // --- PCM ring ---------------------------------------------------------

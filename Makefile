@@ -110,7 +110,13 @@ docker-clean:
 AUDIO_CLI_BIN  ?= tools/audio-cli/target/release/audio-cli
 AUDIO_DEVICE   ?= Stackchan-E2604E
 AUDIO_FILE     ?= tools/audio-cli/out.aac
-AUDIO_RATE     ?= 100
+# Throughput ceiling in KiB/s, applied on top of the device's credit-based
+# flow control. 0 = no artificial cap: the CLI polls the AudioCredit
+# characteristic and paces itself to the device's playback rate, so the PCM
+# ring can't overrun. Set a non-zero value only to debug a slower link.
+# (Fixed-rate guessing is what overran the ring before — too fast garbled
+# playback, too slow starved it.)
+AUDIO_RATE     ?= 0
 AUDIO_FLUSH    ?= 16
 AUDIO_CHUNK    ?= 250
 AUDIO_LOG_SEC  ?= 120
