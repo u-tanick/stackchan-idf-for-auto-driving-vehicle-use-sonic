@@ -159,17 +159,65 @@ struct Ring {
     }
 };
 
-// Drive mouth_open from the chunk peak.
+// Mouth-open state. Reset at the start of each playback.
+float g_mouth_smoothed = 0.0f;
+float g_db_baseline = -30.0f;   // slow-tracked average loudness of the clip
+bool g_db_baseline_init = false;
+
+// Map chunk loudness to mouth open. A fixed dBFS window still pinned the
+// mouth open for music, because mastered music sits at a near-constant
+// loud RMS (~-20..-14 dBFS) — there's always *some* sound, so any absolute
+// threshold is permanently exceeded. Instead track the clip's running
+// average loudness and drive the mouth from how far each chunk sits
+// *relative to that baseline*: steady passages → mostly closed, louder
+// beats / sung notes → open, quiet gaps → shut. This self-calibrates to
+// whatever level the source happens to be at.
 void update_mouth(const std::int16_t* samples, std::size_t n)
 {
     if (g_state == nullptr || n == 0) return;
-    std::int32_t peak = 0;
+
+    double sum_sq = 0.0;
     for (std::size_t i = 0; i < n; ++i) {
-        const std::int32_t v = std::abs(static_cast<std::int32_t>(samples[i]));
-        if (v > peak) peak = v;
+        const double s = samples[i];
+        sum_sq += s * s;
     }
-    const float open = std::min(1.0f, static_cast<float>(peak) / 32767.0f * 1.5f);
-    g_state->mouth_open.store(open, std::memory_order_relaxed);
+    const double rms = std::sqrt(sum_sq / static_cast<double>(n)); // 0 .. 32768
+    const float db = (rms >= 1.0)
+                         ? 20.0f * std::log10(static_cast<float>(rms) / 32768.0f)
+                         : -96.0f;
+
+    // Track the average loudness, but only over chunks that actually carry
+    // signal (> -55 dB) so silence doesn't drag the baseline down. Seed it
+    // from the first real chunk for fast convergence.
+    constexpr float kSilenceDb = -55.0f;
+    if (db > kSilenceDb) {
+        if (!g_db_baseline_init) {
+            g_db_baseline = db;
+            g_db_baseline_init = true;
+        } else {
+            g_db_baseline += 0.03f * (db - g_db_baseline); // ~1 s time constant
+        }
+    }
+
+    // Relative window centred on the baseline: baseline-kLowDb maps to
+    // closed, baseline+kHighDb to fully open. Biased so steady material
+    // (db ≈ baseline) sits low (~0.2) and only louder-than-average moments
+    // open the mouth wide.
+    constexpr float kLowDb = 2.0f;   // this far below baseline → closed
+    constexpr float kHighDb = 8.0f;  // this far above baseline → open
+    // (baseline itself maps to kLowDb/(kLowDb+kHighDb) = 0.2 → mostly shut)
+    float target = (db - (g_db_baseline - kLowDb)) / (kLowDb + kHighDb);
+    target = std::clamp(target, 0.0f, 1.0f);
+
+    // Asymmetric smoothing: open almost instantly (attack), close a touch
+    // slower (release). Near-1.0 attack means a loud onset is on-screen
+    // within a chunk (~21 ms); the release still rounds off the tail so it
+    // doesn't strobe between chunks.
+    constexpr float kAttack = 0.95f;
+    constexpr float kRelease = 0.65f;
+    const float a = (target > g_mouth_smoothed) ? kAttack : kRelease;
+    g_mouth_smoothed += a * (target - g_mouth_smoothed);
+    g_state->mouth_open.store(g_mouth_smoothed, std::memory_order_relaxed);
 }
 
 // --- Worker ----------------------------------------------------------
@@ -378,6 +426,8 @@ void worker_task(void* /*arg*/)
                 M5.Speaker.begin();
                 i2s_acquired = true;
                 playback_started = true;
+                g_mouth_smoothed = 0.0f;       // fresh envelope per clip
+                g_db_baseline_init = false;     // re-learn loudness baseline
                 ESP_LOGI(kTag, "playback started: %u samples pre-rolled @ %u Hz",
                          static_cast<unsigned>(ring.available_read()),
                          static_cast<unsigned>(pcm_sample_rate));
