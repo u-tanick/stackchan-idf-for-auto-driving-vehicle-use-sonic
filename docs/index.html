@@ -17,9 +17,10 @@
   button { cursor: pointer; }
   button:disabled { opacity: .5; cursor: not-allowed; }
   .row { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
-  #log { background: #111; color: #eee; padding: .8rem; border-radius: 6px;
+  #log, #monitorLog { background: #111; color: #eee; padding: .8rem; border-radius: 6px;
          min-height: 12rem; max-height: 24rem; overflow: auto; white-space: pre-wrap;
          font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .85rem; }
+  #monitorLog { min-height: 18rem; max-height: 32rem; }
   progress { width: 100%; height: 1.1rem; }
   .warn { color: #c33; }
   .ok { color: #2a8; }
@@ -76,6 +77,28 @@
     <button id="btnFlash" disabled>Flash</button>
   </div>
   <progress id="prog" value="0" max="100"></progress>
+</fieldset>
+
+<fieldset>
+  <legend>4. シリアルモニタ / Monitor</legend>
+  <p class="small" style="margin:.2rem 0 .6rem">
+    フラッシュ後にデバイスのログを確認できます。Connect/Disconnect とは別系統で、
+    Flash で使った USB ポートを再利用します(一度認可済みなら再選択不要)。
+  </p>
+  <div class="row">
+    <label>Baud:
+      <select id="selMonitorBaud">
+        <option value="115200" selected>115200</option>
+        <option value="921600">921600</option>
+        <option value="2000000">2000000</option>
+      </select>
+    </label>
+    <button id="btnMonitorStart">Start</button>
+    <button id="btnMonitorStop" disabled>Stop</button>
+    <button id="btnMonitorClear">Clear</button>
+    <label><input type="checkbox" id="chkMonitorAutostart" checked> Flash 完了後に自動開始</label>
+  </div>
+  <pre id="monitorLog"></pre>
 </fieldset>
 
 <fieldset>
@@ -381,6 +404,143 @@ $('btnFlash').addEventListener('click', async () => {
     $('btnFlash').disabled = !loader;
   }
 });
+
+// --- Serial monitor -------------------------------------------------
+//
+// Reuses the WebSerial port the user already authorised for flashing.
+// navigator.serial.getPorts() returns previously-granted ports without
+// re-prompting — if there's exactly one we just open it; otherwise we
+// fall through to requestPort() which raises the picker again. Monitor
+// state is fully independent of esptool's `transport` so the two flows
+// don't clobber each other, but the flash button auto-stops the monitor
+// first (we can't have two readers on one port).
+
+let monitorPort = null;
+let monitorReader = null;
+let monitorAbort = null;
+let monitorPartialAnsi = '';
+const monitorLogEl = $('monitorLog');
+
+// Cap the monitor log at ~256 KiB of text to keep the DOM responsive
+// during long sessions; trim from the front when we exceed.
+const MONITOR_LOG_MAX_CHARS = 256 * 1024;
+const MONITOR_LOG_TRIM_TO   = 192 * 1024;
+
+function appendMonitor(text) {
+  // Strip ANSI CSI sequences (colour / cursor moves). ESP-IDF logs colour
+  // by level so the raw stream is full of `\x1b[0;33m` etc.
+  // Handle splits across reads: stash an incomplete sequence and prepend
+  // on the next call.
+  text = monitorPartialAnsi + text;
+  monitorPartialAnsi = '';
+  const trailing = text.match(/\x1b\[?[0-9;]*$/);
+  if (trailing && trailing.index === text.length - trailing[0].length) {
+    monitorPartialAnsi = trailing[0];
+    text = text.slice(0, trailing.index);
+  }
+  text = text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
+
+  if (!text) return;
+  monitorLogEl.appendChild(document.createTextNode(text));
+  if (monitorLogEl.textContent.length > MONITOR_LOG_MAX_CHARS) {
+    monitorLogEl.textContent = monitorLogEl.textContent.slice(-MONITOR_LOG_TRIM_TO);
+  }
+  monitorLogEl.scrollTop = monitorLogEl.scrollHeight;
+}
+
+async function startMonitor() {
+  if (monitorPort) return;
+  try {
+    let port;
+    const existing = await navigator.serial.getPorts();
+    if (existing.length === 1) {
+      port = existing[0];
+    } else {
+      port = await navigator.serial.requestPort();
+    }
+    const baud = parseInt($('selMonitorBaud').value, 10) || 115200;
+    await port.open({ baudRate: baud, bufferSize: 4096 });
+    monitorPort = port;
+    monitorAbort = new AbortController();
+    $('btnMonitorStart').disabled = true;
+    $('btnMonitorStop').disabled = false;
+    log(`Monitor started @ ${baud}`, 'ok');
+    pumpMonitor(monitorAbort.signal);
+  } catch (e) {
+    log('Monitor start failed: ' + (e?.message || e), 'warn');
+    monitorPort = null;
+  }
+}
+
+async function pumpMonitor(signal) {
+  const decoder = new TextDecoder('utf-8', { fatal: false });
+  while (!signal.aborted && monitorPort && monitorPort.readable) {
+    const reader = monitorPort.readable.getReader();
+    monitorReader = reader;
+    try {
+      while (!signal.aborted) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value && value.byteLength) {
+          appendMonitor(decoder.decode(value, { stream: true }));
+        }
+      }
+    } catch (e) {
+      if (!signal.aborted) {
+        log('Monitor read error: ' + (e?.message || e), 'warn');
+      }
+      break;
+    } finally {
+      try { reader.releaseLock(); } catch (_) {}
+      monitorReader = null;
+    }
+  }
+}
+
+async function stopMonitor() {
+  if (!monitorPort) return;
+  monitorAbort?.abort();
+  try { await monitorReader?.cancel(); } catch (_) {}
+  try { await monitorPort.close(); } catch (_) {}
+  monitorPort = null;
+  monitorAbort = null;
+  monitorReader = null;
+  monitorPartialAnsi = '';
+  $('btnMonitorStart').disabled = false;
+  $('btnMonitorStop').disabled = true;
+  log('Monitor stopped.', 'ok');
+}
+
+$('btnMonitorStart').addEventListener('click', startMonitor);
+$('btnMonitorStop').addEventListener('click', stopMonitor);
+$('btnMonitorClear').addEventListener('click', () => { monitorLogEl.textContent = ''; });
+
+// Auto-stop monitor whenever flash flow needs the port. The flash handler
+// (above) already disconnects + reopens; we just need to drop our reader
+// first to avoid "port already in use".
+const _origFlashHandler = $('btnFlash').onclick;
+$('btnFlash').addEventListener('click', async () => {
+  if (monitorPort) {
+    log('Stopping monitor for flash…');
+    await stopMonitor();
+  }
+}, /*useCapture=*/true);
+
+// Wrap the original handler chain so auto-start can fire after the flash
+// resolves — we listen for the "Done — device reset and USB port released"
+// log line via a MutationObserver to keep the logic loosely coupled.
+new MutationObserver((mutations) => {
+  for (const m of mutations) {
+    for (const n of m.addedNodes) {
+      if (n.textContent && n.textContent.includes('USB port released')) {
+        if ($('chkMonitorAutostart').checked && !monitorPort) {
+          // Small delay so the chip finishes its initial boot prints.
+          setTimeout(() => startMonitor(), 800);
+        }
+      }
+    }
+  }
+}).observe(logEl, { childList: true });
 
 loadReleases();
 </script>
