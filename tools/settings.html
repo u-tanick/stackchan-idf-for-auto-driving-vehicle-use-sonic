@@ -456,12 +456,21 @@ function setBleUi(connected) {
   const dot = document.getElementById('ble-dot');
   dot.className = 'dot ' + (connected ? 'ble-connected' : '');
   document.getElementById('ble-label').textContent = connected ? 'BLE 接続中' : '未接続';
-  document.getElementById('btn-apply').disabled = !connected;
+  const applyBtn = document.getElementById('btn-apply');
+  applyBtn.disabled = !connected;
+  // Reset label — a prior Apply may have left it on "再起動中…", which
+  // sticks across reconnects without this.
+  applyBtn.textContent = '保存 & 再起動';
   document.getElementById('btn-disconnect').disabled = !connected;
   document.getElementById('btn-connect').disabled = connected;
   // OTA button gating moved to refreshOtaButton() — it now also considers
   // the release dropdown and the connection's actual chr availability.
   if (typeof refreshOtaButton === 'function') refreshOtaButton();
+  // Audio play needs both the chr (set during post-connect discovery)
+  // and a selected file; the file may have been picked *before* connect,
+  // so re-evaluate on every UI transition.
+  const audioFile = document.getElementById('audio-file').files[0];
+  document.getElementById('btn-audio-play').disabled = !(connected && chrAudioData && audioFile);
 }
 
 function updateStatus(data) {
@@ -1537,9 +1546,14 @@ document.getElementById('btn-audio-play').addEventListener('click', audioPlay);
 document.getElementById('btn-audio-stop').addEventListener('click', audioStop);
 document.getElementById('audio-file').addEventListener('change', e => {
   const file = e.target.files && e.target.files[0];
-  if (!file) return;
-  document.getElementById('audio-stats').textContent = `${file.name} (${fmtBytes(file.size)})`;
-  document.getElementById('btn-audio-play').disabled = !chrAudioData;
+  if (file) {
+    document.getElementById('audio-stats').textContent = `${file.name} (${fmtBytes(file.size)})`;
+  }
+  // Play button is gated on (connected && chr && file). Run the central
+  // logic so pre-connect file picks AND mid-session file changes both
+  // settle the button correctly.
+  const connected = !!(bleDevice && bleDevice.gatt && bleDevice.gatt.connected);
+  document.getElementById('btn-audio-play').disabled = !(connected && chrAudioData && file);
 });
 
 // --- OTA controls ---
