@@ -131,3 +131,17 @@ CONFIG_BT_NIMBLE_ACL_BUF_COUNT=16
 # must be <= 12; pin it to 6 (the conservative default) so a fresh build
 # from defaults doesn't trip the #error.
 CONFIG_ESP_WIFI_RX_BA_WIN=6
+
+# TLS handshake internal-RAM peak reduction. The reconnect path was still
+# failing with "esp-aes: Failed to allocate memory": the recover-wait gate
+# saw 24 KiB largest-free, but the handshake itself cratered internal RAM
+# to ~5.6 KiB and the first post-handshake AES write failed. Root cause is
+# the esp-aes hardware path bouncing the (PSRAM-resident) TLS record into a
+# DMA-capable *internal* buffer sized to the record. With
+# SSL_IN_CONTENT_LEN=16384 that bounce is up to 16 KiB.
+#   - Halve the inbound record to 8 KiB. Google / OpenAI cert chains are
+#     ~3-4 KiB so they still fit; the AES bounce peak drops ~8 KiB.
+#   - Free private-key / DHM data mid-handshake (no client cert here so
+#     it's mostly the DHM scratch, but every KiB helps the peak).
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=8192
+CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
