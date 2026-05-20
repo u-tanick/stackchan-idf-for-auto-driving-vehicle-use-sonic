@@ -337,7 +337,30 @@ private:
         // otherwise the next drain_events() picks up that disconnect and
         // treats it as a fresh failure of the new client, looping us back
         // into recovery.
-        vTaskDelay(pdMS_TO_TICKS(2000));
+        //
+        // Wait until internal RAM has recovered before reconnecting. The
+        // failure mode this catches: TLS handshake on a fresh WS allocates
+        // a DMA descriptor for esp-aes; if we restart too fast after a
+        // failed session the previous session's TLS state is still being
+        // freed in the background, internal heap is fragmented, and the
+        // alloc fails ("esp-aes: Failed to allocate memory" / SSL write
+        // error). 16 KiB of largest contiguous internal block has empirically
+        // been the threshold above which the AES DMA alloc succeeds.
+        constexpr std::size_t kMinInternalLargestB = 16 * 1024;
+        constexpr std::uint32_t kBackoffStepMs = 500;
+        constexpr int kMaxBackoffSteps = 20; // 10 s cap
+        for (int i = 0; i < kMaxBackoffSteps; ++i) {
+            vTaskDelay(pdMS_TO_TICKS(kBackoffStepMs));
+            const std::size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+            if (i == 0 || (i % 4) == 3) {
+                ESP_LOGI(kTag,
+                         "recover wait: INT free=%u largest=%u  PSRAM free=%u",
+                         static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                         static_cast<unsigned>(largest),
+                         static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+            }
+            if (largest >= kMinInternalLargestB && i >= 3) break; // min 2 s settle
+        }
         flush_events();
         assistant_pcm_.clear();
         assistant_text_.clear();
