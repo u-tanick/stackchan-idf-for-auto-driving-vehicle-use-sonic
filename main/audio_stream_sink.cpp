@@ -58,11 +58,20 @@ std::atomic<bool> g_end_requested{false};
 std::atomic<bool> g_abort_requested{false};
 std::atomic<bool> g_user_aborted{false};
 std::atomic<bool> g_active{false};
+// Set once at start() from cfg.openai_enabled. When the realtime
+// conversation backend is enabled, streaming is refused — the two fight
+// over the radio/CPU and playback stutters (see app_main).
+bool g_conversation_enabled = false;
 
 // --- Callbacks (run on the NimBLE host task) ---
 
 void on_begin(std::uint32_t sample_rate, std::uint8_t channels)
 {
+    if (g_conversation_enabled) {
+        ESP_LOGW(kTag, "begin rejected — conversation mode is enabled "
+                       "(disable 会話機能 to stream audio)");
+        return;
+    }
     g_end_requested.store(false, std::memory_order_release);
     g_abort_requested.store(false, std::memory_order_release);
     g_user_aborted.store(false, std::memory_order_release);
@@ -430,11 +439,12 @@ void worker_task(void* /*arg*/)
 
 } // namespace
 
-void start(SharedState& state)
+void start(SharedState& state, bool conversation_enabled)
 {
-    ESP_LOGI(kTag, "start(): allocating stream buffer (%u B)",
-             static_cast<unsigned>(kStreamBufferBytes));
+    ESP_LOGI(kTag, "start(): allocating stream buffer (%u B), conversation=%d",
+             static_cast<unsigned>(kStreamBufferBytes), conversation_enabled ? 1 : 0);
     g_state = &state;
+    g_conversation_enabled = conversation_enabled;
 
     g_stream = xStreamBufferCreateWithCaps(kStreamBufferBytes, kStreamBufferTrigger,
                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);

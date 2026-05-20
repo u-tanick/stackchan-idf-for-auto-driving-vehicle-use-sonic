@@ -154,6 +154,18 @@ void demo_loop(const std::string& jtts_config_json)
 
         const bool conv_active = g_state->conversation_active.load(std::memory_order_relaxed);
         const bool conv_idle = g_state->conversation_idle.load(std::memory_order_relaxed);
+        const bool audio_streaming = g_state->audio_stream_active.load(std::memory_order_relaxed);
+
+        // While a BLE audio stream is playing, the streamer owns the speaker
+        // and drives mouth_open itself. Stand down completely — stop any
+        // in-flight babble (its playRaw would fight the stream on the I2S
+        // bus) and don't touch mouth_open.
+        if (audio_streaming) {
+            if (speech.is_speaking()) speech.stop();
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
         // Idle behaviours (random head poses, nadenade) run when there is no
         // conversation OR the conversation is idly listening. The full demo
         // (mouth-sync, Wi-Fi balloon, babble, expression cycle) runs only when
@@ -398,7 +410,11 @@ extern "C" void app_main()
     // the entire audio session is silently dropped — every subsequent
     // audio_data write sees g_audio_sink == nullptr and bails.
     g_state = new stackchan::app::SharedState{};
-    stackchan::app::audio_stream::start(*g_state);
+    // BLE audio streaming and the realtime voice conversation are mutually
+    // exclusive — both saturate the radio/CPU and running them together
+    // makes streaming playback choppy. Pass the conversation-enabled flag
+    // so the sink refuses `begin` while voice chat is on.
+    stackchan::app::audio_stream::start(*g_state, cfg.openai_enabled);
 
     if (auto r = stackchan::config::start(cfg); !r) {
         ESP_LOGE(kTag, "BLE config service failed to start: %d (continuing without BLE)",

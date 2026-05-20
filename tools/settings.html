@@ -373,6 +373,11 @@
       <button id="btn-audio-play" type="button" disabled>再生</button>
       <button id="btn-audio-stop" type="button" disabled>停止</button>
     </div>
+    <p class="hint" id="audio-conv-note" style="display:none;color:#c0392b">
+      ⚠ 会話機能が有効なため使用できません。無線/CPU を奪い合って再生が
+      途切れるため排他です。「会話機能を有効にする」を OFF にして
+      保存・再起動すると利用できます。
+    </p>
     <div class="ota-status" id="audio-status">
       <div class="ota-bar"><div class="ota-bar-fill" id="audio-bar-fill"></div></div>
       <div class="ota-stats" id="audio-stats">未開始</div>
@@ -466,11 +471,20 @@ function setBleUi(connected) {
   // OTA button gating moved to refreshOtaButton() — it now also considers
   // the release dropdown and the connection's actual chr availability.
   if (typeof refreshOtaButton === 'function') refreshOtaButton();
-  // Audio play needs both the chr (set during post-connect discovery)
-  // and a selected file; the file may have been picked *before* connect,
-  // so re-evaluate on every UI transition.
-  const audioFile = document.getElementById('audio-file').files[0];
-  document.getElementById('btn-audio-play').disabled = !(connected && chrAudioData && audioFile);
+  if (typeof refreshAudioButton === 'function') refreshAudioButton();
+}
+
+// Audio play needs the chr (set during post-connect discovery), a selected
+// file, and conversation mode OFF (mutually exclusive — the device rejects
+// `begin` while voice chat is enabled). The file may have been picked
+// before connect, so re-evaluate on every UI transition.
+function refreshAudioButton() {
+  const connected = !!(bleDevice && bleDevice.gatt && bleDevice.gatt.connected);
+  const file = document.getElementById('audio-file').files[0];
+  const convEnabled = document.getElementById('openai-enabled').checked;
+  document.getElementById('audio-conv-note').style.display = convEnabled ? '' : 'none';
+  document.getElementById('btn-audio-play').disabled =
+    !(connected && chrAudioData && file && !convEnabled);
 }
 
 function updateStatus(data) {
@@ -1031,6 +1045,10 @@ async function audioPlay() {
     log('音声ストリーミング非対応のファームウェアです', 'err');
     return;
   }
+  if (document.getElementById('openai-enabled').checked) {
+    log('会話機能 ON 時は排他のため再生できません。OFF にして保存・再起動してください。', 'err');
+    return;
+  }
   const fileInput = document.getElementById('audio-file');
   const file = fileInput.files && fileInput.files[0];
   if (!file) { log('音声ファイルを選択してください', 'err'); return; }
@@ -1360,6 +1378,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
         const enabled = enBytes.length > 0 && enBytes[0] !== 0;
         document.getElementById('openai-enabled').checked = enabled;
         document.getElementById('openai-enabled').dataset.initial = enabled ? '1' : '0';
+        refreshAudioButton(); // gate streaming on the just-loaded conv state
         log(`会話機能: ${enabled ? '有効' : '無効'}`);
       } catch (e) {
         log(`有効状態の取得失敗: ${e.message}`, 'err');
@@ -1549,12 +1568,11 @@ document.getElementById('audio-file').addEventListener('change', e => {
   if (file) {
     document.getElementById('audio-stats').textContent = `${file.name} (${fmtBytes(file.size)})`;
   }
-  // Play button is gated on (connected && chr && file). Run the central
-  // logic so pre-connect file picks AND mid-session file changes both
-  // settle the button correctly.
-  const connected = !!(bleDevice && bleDevice.gatt && bleDevice.gatt.connected);
-  document.getElementById('btn-audio-play').disabled = !(connected && chrAudioData && file);
+  refreshAudioButton();
 });
+// Conversation toggle is mutually exclusive with streaming — re-gate the
+// audio button (and show/hide the note) whenever it changes.
+document.getElementById('openai-enabled').addEventListener('change', refreshAudioButton);
 
 // --- OTA controls ---
 function refreshOtaButton() {

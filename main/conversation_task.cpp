@@ -344,26 +344,42 @@ private:
         // failed session the previous session's TLS state is still being
         // freed in the background, internal heap is fragmented, and the
         // alloc fails ("esp-aes: Failed to allocate memory" / SSL write
-        // error). 16 KiB of largest contiguous internal block has empirically
-        // been the threshold above which the AES DMA alloc succeeds.
-        constexpr std::size_t kMinInternalLargestB = 16 * 1024;
+        // error).
+        //
+        // The metric that matters is the largest free *DMA-capable* block,
+        // NOT MALLOC_CAP_INTERNAL: esp-aes allocates its DMA descriptor /
+        // bounce buffer from MALLOC_CAP_DMA, a subset of internal SRAM.
+        // We were gating on INTERNAL (which showed 26 KiB) while the DMA
+        // pool was actually starved — so the gate "passed" and the AES
+        // alloc still failed, looping forever.
+        constexpr std::size_t kMinDmaLargestB = 16 * 1024;
         constexpr std::uint32_t kBackoffStepMs = 500;
         constexpr int kMaxBackoffSteps = 20; // 10 s cap
         for (int i = 0; i < kMaxBackoffSteps; ++i) {
+            // Bail immediately if a BLE audio stream wants the stage —
+            // the main loop's yield path will stop us cleanly and there's
+            // no point reconnecting just to be torn down. This also keeps
+            // the reconnect storm from stealing CPU / radio from playback.
+            if (state_.audio_stream_active.load(std::memory_order_acquire)) {
+                ESP_LOGI(kTag, "recover aborted — BLE audio active");
+                return;
+            }
             vTaskDelay(pdMS_TO_TICKS(kBackoffStepMs));
-            const std::size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+            const std::size_t dma_largest = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
             if (i == 0 || (i % 4) == 3) {
                 ESP_LOGI(kTag,
-                         "recover wait: INT free=%u largest=%u  PSRAM free=%u",
+                         "recover wait: INT free=%u largest=%u DMA-largest=%u  PSRAM free=%u",
                          static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
-                         static_cast<unsigned>(largest),
+                         static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+                         static_cast<unsigned>(dma_largest),
                          static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
             }
-            if (largest >= kMinInternalLargestB && i >= 3) break; // min 2 s settle
+            if (dma_largest >= kMinDmaLargestB && i >= 3) break; // min 2 s settle
         }
         flush_events();
         assistant_pcm_.clear();
         assistant_text_.clear();
+        if (state_.audio_stream_active.load(std::memory_order_acquire)) return;
         if (!connect()) {
             ESP_LOGE(kTag, "reconnect failed; retrying in 5 s");
             vTaskDelay(pdMS_TO_TICKS(5000));

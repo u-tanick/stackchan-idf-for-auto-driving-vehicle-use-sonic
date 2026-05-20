@@ -12,7 +12,12 @@ namespace stackchan::app::audio_stream {
 // incoming ADTS bytes, plays the decoded PCM through M5.Speaker, and
 // updates `state.mouth_open` from the chunk RMS.
 //
+// `conversation_enabled` reflects cfg.openai_enabled: when the realtime
+// conversation backend is active it contends with BLE for the radio/CPU
+// and makes streaming playback choppy, so a `begin` is rejected outright
+// in that mode (BLE audio + voice chat are mutually exclusive).
+//
 // Must be called after Board::begin() so M5.Speaker is initialised.
-void start(SharedState& state);
+void start(SharedState& state, bool conversation_enabled);
 
 } // namespace stackchan::app::audio_stream
