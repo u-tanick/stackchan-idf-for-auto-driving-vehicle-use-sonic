@@ -123,9 +123,11 @@ CONFIG_BT_NIMBLE_SVC_GAP_PPCP_SUPERVISION_TMO=400
 # transient mbedtls handshake buffers.
 #   - Static RX 10 → 6: 4 × ~1.6 KiB internal DMA buffers freed. 6 is
 #     still ample for a single STA streaming ~12 KiB/s of audio.
-#   - NimBLE ACL 24 → 16: 8 × 255 B freed; OTA/audio chunking still fits.
+# NimBLE ACL stays at the IDF default (24). An earlier 16 here cut BLE
+# audio RX headroom for no real benefit once ALWAYSINTERNAL=1024 freed the
+# internal heap; the real esp-aes fix is the ALWAYSINTERNAL value, not
+# trimming ACL buffers.
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
-CONFIG_BT_NIMBLE_ACL_BUF_COUNT=16
 # IDF enforces WIFI_RX_BA_WIN <= 2 × WIFI_STATIC_RX_BUFFER_NUM at compile
 # time (esp_wifi/src/wifi_init.c). With static RX dropped to 6 the window
 # must be <= 12; pin it to 6 (the conservative default) so a fresh build
