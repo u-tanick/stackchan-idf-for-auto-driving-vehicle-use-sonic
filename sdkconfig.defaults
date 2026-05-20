@@ -112,3 +112,17 @@ CONFIG_BT_NIMBLE_SVC_GAP_PPCP_MIN_CONN_INTERVAL=6
 CONFIG_BT_NIMBLE_SVC_GAP_PPCP_MAX_CONN_INTERVAL=12
 CONFIG_BT_NIMBLE_SVC_GAP_PPCP_SLAVE_LATENCY=0
 CONFIG_BT_NIMBLE_SVC_GAP_PPCP_SUPERVISION_TMO=400
+
+# Free internal (DMA-capable) RAM for the esp-aes hardware accelerator.
+# Symptom: after a Gemini WebSocket transport error, the reconnect's TLS
+# handshake fails with "esp-aes: Failed to allocate memory" → SSL write
+# error → immediate disconnect, looping forever. Cause: internal heap
+# largest-free-block stuck at ~6.6 KiB because Wi-Fi static RX buffers +
+# NimBLE ACL pool consume most DMA-capable SRAM. Trimming both reclaims
+# ~10 KiB of contiguous internal RAM, enough for the AES DMA descriptor +
+# transient mbedtls handshake buffers.
+#   - Static RX 10 → 6: 4 × ~1.6 KiB internal DMA buffers freed. 6 is
+#     still ample for a single STA streaming ~12 KiB/s of audio.
+#   - NimBLE ACL 24 → 16: 8 × 255 B freed; OTA/audio chunking still fits.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+CONFIG_BT_NIMBLE_ACL_BUF_COUNT=16
