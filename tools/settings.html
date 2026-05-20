@@ -1150,13 +1150,13 @@ async function audioPlay() {
     // (OtaStatus read every 16 chunks).
     const fastPath = !!chrAudioData.properties.writeWithoutResponse;
     const FLUSH_EVERY = fastPath ? 16 : 1;
-    // Target throughput cap. With PPCP tightened to 7.5–15 ms CI the device
-    // can sink ~12 KiB/s of AAC, which lets a 96 kbps stream play in real
-    // time without underflow. Cap to 10 KiB/s here — Chrome's BLE adapter
-    // queues filled at full BLE speed historically triggered HCI 0x13
-    // "remote user terminated" after ~40 s; staying just under the device
-    // sink rate keeps the queue shallow without starving playback.
-    const TARGET_KBPS = 10;
+    // No explicit pacing — let BLE find its natural ceiling. The old 10
+    // KiB/s cap was below the 12 KiB/s AAC playback rate and caused
+    // playback to underflow on the device side. The 16-frame
+    // write-with-response sync (FLUSH_EVERY) is what actually keeps
+    // Chrome's BLE adapter queue shallow enough to avoid the HCI 0x13
+    // "remote user terminated" we hit during early encrypted-OTA work.
+    const TARGET_KBPS = 100;
     const TARGET_BPS = TARGET_KBPS * 1024;
     let framesSinceFlush = 0;
 
