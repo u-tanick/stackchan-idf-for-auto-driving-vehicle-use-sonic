@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Extract the <script>…</script> blocks from each HTML file under tools/ and
-# docs/ and run `node --check` over them. Catches typos, unbalanced braces,
-# and dangling identifiers before they ship to the GitHub Pages site.
+# Extract the <script>…</script> blocks from each HTML file under tools/,
+# docs/, and the device-embedded component web pages (components/*/web/*.html,
+# e.g. the Wi-Fi settings page), then run `node --check` over them. Catches
+# typos, unbalanced braces, and dangling identifiers before they ship to the
+# GitHub Pages site or get flashed into the firmware.
 #
 # Usage: ./script/check_html_js.sh [extra-html-file ...]
 #
@@ -24,7 +26,11 @@ if [ "$#" -gt 0 ]; then
 else
     while IFS= read -r -d '' f; do
         targets+=("$f")
-    done < <(find "$root/tools" "$root/docs" -maxdepth 2 -name '*.html' -print0 2>/dev/null)
+    done < <(
+        find "$root/tools" "$root/docs" -maxdepth 2 -name '*.html' -print0 2>/dev/null
+        # Component web pages embedded into the firmware (served over HTTP).
+        find "$root/components" -path '*/web/*.html' -print0 2>/dev/null
+    )
 fi
 
 if [ "${#targets[@]}" -eq 0 ]; then
