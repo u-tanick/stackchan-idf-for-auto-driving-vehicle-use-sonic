@@ -269,6 +269,10 @@
       <span class="key">Wi-Fi 設定 (IP)</span>
       <span class="val"><a id="dis-wifi-ip-url" href="#" target="_blank" rel="noopener">—</a></span>
     </div>
+    <div class="row" id="dis-wifi-audio-row" hidden style="flex-direction:column; align-items:stretch; gap:0.25rem">
+      <span class="key">Wi-Fi 音声 (RTP/L16, 会話機能オフ時)</span>
+      <code id="dis-wifi-audio-cmd" style="font-size:0.72rem; word-break:break-all; white-space:pre-wrap; user-select:all"></code>
+    </div>
   </div>
 
   <label for="ssid">Wi-Fi SSID</label>
@@ -622,6 +626,7 @@ async function fetchDeviceInfo() {
   // string from the device means Wi-Fi isn't connected yet — hide the row.
   const ipRow = document.getElementById('dis-wifi-ip-row');
   const ipLink = document.getElementById('dis-wifi-ip-url');
+  let audioHost = null;
   if (chrWifiIp && aesKey) {
     try {
       const ip = dec.decode(await readEncrypted(chrWifiIp)).trim();
@@ -630,6 +635,7 @@ async function fetchDeviceInfo() {
         ipLink.href = url;
         ipLink.textContent = url;
         ipRow.hidden = false;
+        audioHost = ip;
       } else {
         ipRow.hidden = true;
       }
@@ -638,6 +644,23 @@ async function fetchDeviceInfo() {
     }
   } else {
     ipRow.hidden = true;
+  }
+
+  // Ready-to-copy ffmpeg command for Wi-Fi live audio (RTP/L16). The device
+  // listens on udp/6970, mono 48 kHz. Prefer the live IP; fall back to the
+  // .local hostname. The browser can't send UDP, so this is copy-only.
+  const audioRow = document.getElementById('dis-wifi-audio-row');
+  const audioCmd = document.getElementById('dis-wifi-audio-cmd');
+  if (!audioHost && name && /^stackchan-[0-9a-f]{6}$/i.test(name)) {
+    audioHost = `${name.toLowerCase()}.local`;
+  }
+  if (audioHost) {
+    audioCmd.textContent =
+      `ffmpeg -re -i INPUT.wav -ac 1 -ar 48000 -c:a pcm_s16be \\\n` +
+      `  -f rtp rtp://${audioHost}:6970`;
+    audioRow.hidden = false;
+  } else {
+    audioRow.hidden = true;
   }
 }
 
@@ -655,6 +678,8 @@ function clearDeviceInfo() {
   const ipLink = document.getElementById('dis-wifi-ip-url');
   ipLink.href = '#';
   ipLink.textContent = '—';
+  document.getElementById('dis-wifi-audio-row').hidden = true;
+  document.getElementById('dis-wifi-audio-cmd').textContent = '';
 }
 
 // --- jtts config form <-> JSON ---

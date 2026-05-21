@@ -57,6 +57,19 @@ tl::expected<void, Error> start_mdns()
     mdns_service_add(nullptr, "_http", "_tcp", 80, nullptr, 0);
     mdns_service_add(nullptr, "_stackchan-config", "_tcp", 80, nullptr, 0);
 
+    // Live audio receiver (main/wifi_audio.cpp): RTP on udp/6970. Advertise
+    // the port + the wire format so a sender can discover where/how to push.
+    // Keep the port in sync with kPort in main/wifi_audio.cpp.
+    mdns_service_add(nullptr, "_stackchan-audio", "_udp", 6970, nullptr, 0);
+    mdns_txt_item_t audio_txt[] = {
+        {"proto", "rtp"},
+        {"codec", "L16"},
+        {"rate", "48000"},
+        {"ch", "1"},
+    };
+    mdns_service_txt_set("_stackchan-audio", "_udp", audio_txt,
+                         sizeof(audio_txt) / sizeof(audio_txt[0]));
+
     const esp_app_desc_t* desc = esp_app_get_description();
     if (desc != nullptr) {
         mdns_txt_item_t txt[] = {

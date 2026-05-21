@@ -28,6 +28,7 @@
 #include "servo_task.hpp"
 #include "shared_state.hpp"
 #include "speech.hpp"
+#include "wifi_audio.hpp"
 #include "wifi_sta.hpp"
 
 namespace {
@@ -448,6 +449,10 @@ extern "C" void app_main()
     }
 
     stackchan::app::wifi_start(cfg);
+
+    // Wi-Fi live audio (RTP/L16 today). Like the BLE sink, mutually exclusive
+    // with the conversation backend, so it self-disables when voice chat is on.
+    stackchan::app::wifi_audio::start(*g_state, cfg.openai_enabled);
 
     // Mic / loopback sanity check at startup.
     record_and_playback(2, "mic test");

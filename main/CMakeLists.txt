@@ -7,6 +7,7 @@ idf_component_register(
         "render_task.cpp"
         "servo_task.cpp"
         "speech.cpp"
+        "wifi_audio.cpp"
         "wifi_sta.cpp"
     INCLUDE_DIRS "."
     PRIV_REQUIRES
@@ -28,5 +29,6 @@ idf_component_register(
         esp_netif
         esp_event
         app_update
+        lwip
 )
 target_compile_features(${COMPONENT_LIB} PRIVATE cxx_std_20)
