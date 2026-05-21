@@ -74,6 +74,12 @@ static const ble_uuid128_t kKeyExchangeUuid = BLE_UUID128_INIT(
 static const ble_uuid128_t kOpenAiEnabledUuid = BLE_UUID128_INIT(
     0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
     0x2a, 0x4d, 0x1c, 0x7b, 0x07, 0xa0, 0xf0, 0xe3);
+// RtpAudioEnabled — encrypted 1-byte flag (0=disabled, 1=enabled). Master
+// switch for the Wi-Fi RTP live-audio receiver (main/wifi_audio.cpp). Takes
+// effect on the next boot (Apply reboots), like OpenAiEnabled.
+static const ble_uuid128_t kRtpAudioEnabledUuid = BLE_UUID128_INIT(
+    0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
+    0x2a, 0x4d, 0x1c, 0x7b, 0x11, 0xa0, 0xf0, 0xe3);
 // JttsConfig — encrypted JSON document carrying babble voice parameters and
 // the phrase list. Empty string falls back to compile-time defaults.
 static const ble_uuid128_t kJttsConfigUuid = BLE_UUID128_INIT(
@@ -136,6 +142,7 @@ static SemaphoreHandle_t g_mutex = nullptr;
 struct StagingBuffer {
     std::optional<std::string> ssid, password, api_key, jtts_config, gemini_api_key;
     std::optional<bool> openai_enabled;
+    std::optional<bool> rtp_audio_enabled;
     std::optional<Provider> provider;
 };
 
@@ -153,6 +160,7 @@ static uint16_t g_apply_handle = 0;
 static uint16_t g_status_handle = 0;
 static uint16_t g_kx_handle = 0;
 static uint16_t g_enabled_handle = 0;
+static uint16_t g_rtp_enabled_handle = 0;
 static uint16_t g_jtts_handle = 0;
 static uint16_t g_ota_ctrl_handle = 0;
 static uint16_t g_ota_data_handle = 0;
@@ -304,6 +312,17 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
                 return BLE_ATT_ERR_UNLIKELY;
             }
             const std::uint8_t byte = g_active.openai_enabled ? 1 : 0;
+            const bool ok = append_encrypted(ctxt->om, {&byte, 1});
+            xSemaphoreGive(g_mutex);
+            return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
+        }
+        if (attr_handle == g_rtp_enabled_handle) {
+            xSemaphoreTake(g_mutex, portMAX_DELAY);
+            if (!g_session.is_established()) {
+                xSemaphoreGive(g_mutex);
+                return BLE_ATT_ERR_UNLIKELY;
+            }
+            const std::uint8_t byte = g_active.rtp_audio_enabled ? 1 : 0;
             const bool ok = append_encrypted(ctxt->om, {&byte, 1});
             xSemaphoreGive(g_mutex);
             return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
@@ -496,6 +515,13 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             xSemaphoreGive(g_mutex);
             return 0;
         }
+        if (attr_handle == g_rtp_enabled_handle) {
+            if (pt.size() != 1) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            xSemaphoreTake(g_mutex, portMAX_DELAY);
+            g_staging.rtp_audio_enabled = (pt[0] != 0);
+            xSemaphoreGive(g_mutex);
+            return 0;
+        }
         if (attr_handle == g_jtts_handle) {
             if (pt.size() > kMaxJttsConfigBytes) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
             std::string val(reinterpret_cast<const char*>(pt.data()), pt.size());
@@ -544,6 +570,7 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             if (g_staging.password) merged.wifi_password = *g_staging.password;
             if (g_staging.api_key) merged.openai_api_key = *g_staging.api_key;
             if (g_staging.openai_enabled) merged.openai_enabled = *g_staging.openai_enabled;
+            if (g_staging.rtp_audio_enabled) merged.rtp_audio_enabled = *g_staging.rtp_audio_enabled;
             if (g_staging.jtts_config) merged.jtts_config_json = *g_staging.jtts_config;
             if (g_staging.gemini_api_key) merged.gemini_api_key = *g_staging.gemini_api_key;
             if (g_staging.provider) merged.provider = *g_staging.provider;
@@ -625,6 +652,12 @@ static ble_gatt_chr_def kChrs[] = {
         .access_cb = gatt_access_cb,
         .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
         .val_handle = &g_enabled_handle,
+    },
+    {
+        .uuid = &kRtpAudioEnabledUuid.u,
+        .access_cb = gatt_access_cb,
+        .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+        .val_handle = &g_rtp_enabled_handle,
     },
     {
         .uuid = &kJttsConfigUuid.u,

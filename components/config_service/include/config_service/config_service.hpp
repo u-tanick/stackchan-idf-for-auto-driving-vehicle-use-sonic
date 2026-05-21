@@ -28,6 +28,12 @@ struct DeviceConfig {
     // losing setup). Defaults to true for backwards compatibility with
     // existing NVS contents that pre-date this flag.
     bool openai_enabled = true;
+    // Master switch for the Wi-Fi RTP live-audio receiver (main/wifi_audio.cpp).
+    // When off, the UDP/RTP listener is not started at boot. Defaults to true
+    // for backwards compatibility with NVS contents that pre-date this flag.
+    // Independent of openai_enabled, though the receiver also self-disables
+    // while conversation mode is on (they contend for the I2S bus + CPU).
+    bool rtp_audio_enabled = true;
     // JSON document carrying the user-tunable jtts babble parameters and
     // phrase list. The producer (BLE client) writes the raw JSON; the
     // consumer (main/speech.cpp) parses on startup. Empty → compile-time

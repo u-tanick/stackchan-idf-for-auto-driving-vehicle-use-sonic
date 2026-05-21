@@ -301,6 +301,12 @@
   </label>
   <p class="hint">オフにすると API キーは残したまま会話タスクを起動しません</p>
 
+  <label class="toggle-label" for="rtp-enabled" style="margin-top:1rem">
+    <input type="checkbox" id="rtp-enabled" checked>
+    <span>RTP 音声受信を有効にする</span>
+  </label>
+  <p class="hint">Wi-Fi 経由の RTP/L16 音声(udp/6970)の受信。会話機能オン時は自動的に無効です</p>
+
   <details class="jtts-section" id="jtts-section">
     <summary>アイドル時の声 (jtts) を調整する</summary>
     <p class="hint" style="margin-bottom:0.5rem">空欄や変更なしで「保存」を押すと現在の設定は維持されます。</p>
@@ -417,6 +423,7 @@ const CHR_APPLY   = 'e3f0a004-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_STATUS  = 'e3f0a005-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_KX      = 'e3f0a006-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_EN      = 'e3f0a007-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+const CHR_RTP_EN  = 'e3f0a011-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_JTTS    = 'e3f0a008-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_OTA_CTRL = 'e3f0a009-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_OTA_DATA = 'e3f0a00a-7b1c-4d2a-9e6f-2c5a8d4b1f00';
@@ -454,7 +461,7 @@ const DIS_CHRS = {
 
 // --- State ---
 let bleDevice = null, bleServer = null, svc = null;
-let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrWifiIp = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null;
+let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrWifiIp = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null;
 let jttsInitialJson = '';  // last read JSON, used to detect Apply-time changes
 let otaInFlight = false;
 let aesKey = null;  // CryptoKey for AES-256-GCM, derived per connection
@@ -776,6 +783,7 @@ function applyCapabilityGating() {
   const hasOpenAiKey = !!chrKey;
   const hasGemini = !!(chrProvider && chrGeminiKey);
   const hasEnable = !!chrEn;
+  const hasRtpEnable = !!chrRtpEn;
   const hasJtts = !!chrJtts;
   const hasOta = !!(chrOtaCtrl && chrOtaData);
 
@@ -791,6 +799,8 @@ function applyCapabilityGating() {
   setVisible('label[for="apikey"], #apikey', hasOpenAiKey);
   setVisible('label.toggle-label[for="openai-enabled"]', hasEnable);
   setVisible('#openai-enabled + span', hasEnable);
+  setVisible('label.toggle-label[for="rtp-enabled"]', hasRtpEnable);
+  setVisible('label.toggle-label[for="rtp-enabled"] + p.hint', hasRtpEnable);
   document.getElementById('jtts-section').style.display = hasJtts ? '' : 'none';
   document.getElementById('ota-section').style.display = hasOta ? '' : 'none';
   document.getElementById('btn-apply').style.display = hasSettings ? '' : 'none';
@@ -1366,6 +1376,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
       ['status',     CHR_STATUS],
       ['kx',         CHR_KX],
       ['en',         CHR_EN],
+      ['rtpEn',      CHR_RTP_EN],
       ['jtts',       CHR_JTTS],
       ['otaCtrl',    CHR_OTA_CTRL],
       ['otaData',    CHR_OTA_DATA],
@@ -1392,6 +1403,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
     chrStatus   = found.status   ?? null;
     chrKx       = found.kx       ?? null;
     chrEn       = found.en       ?? null;
+    chrRtpEn    = found.rtpEn    ?? null;
     chrJtts     = found.jtts     ?? null;
     chrOtaCtrl  = found.otaCtrl  ?? null;
     chrOtaData  = found.otaData  ?? null;
@@ -1454,6 +1466,18 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
         log(`会話機能: ${enabled ? '有効' : '無効'}`);
       } catch (e) {
         log(`有効状態の取得失敗: ${e.message}`, 'err');
+      }
+    }
+
+    if (chrRtpEn) {
+      try {
+        const rtpBytes = await readEncrypted(chrRtpEn);
+        const enabled = rtpBytes.length > 0 && rtpBytes[0] !== 0;
+        document.getElementById('rtp-enabled').checked = enabled;
+        document.getElementById('rtp-enabled').dataset.initial = enabled ? '1' : '0';
+        log(`RTP 音声受信: ${enabled ? '有効' : '無効'}`);
+      } catch (e) {
+        log(`RTP 有効状態の取得失敗: ${e.message}`, 'err');
       }
     }
 
@@ -1520,10 +1544,11 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
 function onDisconnected() {
   log('切断されました', 'err');
   setBleUi(false);
-  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrWifiIp = chrAudioCtrl = chrAudioData = chrAudioCredit = null;
+  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrWifiIp = chrAudioCtrl = chrAudioData = chrAudioCredit = null;
   aesKey = null;
   clearDeviceInfo();
   delete document.getElementById('openai-enabled').dataset.initial;
+  delete document.getElementById('rtp-enabled').dataset.initial;
   delete document.getElementById('provider').dataset.initial;
   jttsInitialJson = '';
   writeJttsForm('');
@@ -1593,6 +1618,15 @@ document.getElementById('btn-apply').addEventListener('click', async () => {
     if (chrEn && enInitial !== undefined && enInitial !== enWanted) {
       await writeEncrypted(chrEn, new Uint8Array([enCheckbox.checked ? 1 : 0]));
       log(`OpenAI 会話機能を ${enCheckbox.checked ? '有効' : '無効'} に切り替え`, 'ok');
+    }
+
+    // RTP audio enable: only push if it changed AND chr is present.
+    const rtpCheckbox = document.getElementById('rtp-enabled');
+    const rtpInitial = rtpCheckbox.dataset.initial;
+    const rtpWanted = rtpCheckbox.checked ? '1' : '0';
+    if (chrRtpEn && rtpInitial !== undefined && rtpInitial !== rtpWanted) {
+      await writeEncrypted(chrRtpEn, new Uint8Array([rtpCheckbox.checked ? 1 : 0]));
+      log(`RTP 音声受信を ${rtpCheckbox.checked ? '有効' : '無効'} に切り替え`, 'ok');
     }
 
     // jtts: only write if the form contents differ AND chr is present.

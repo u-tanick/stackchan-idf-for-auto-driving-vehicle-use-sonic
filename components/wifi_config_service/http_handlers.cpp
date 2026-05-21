@@ -44,6 +44,7 @@ SemaphoreHandle_t g_mutex = nullptr;
 struct StagingBuffer {
     std::optional<std::string> ssid, password, api_key, jtts_config, gemini_api_key;
     std::optional<bool> openai_enabled;
+    std::optional<bool> rtp_audio_enabled;
     std::optional<config::Provider> provider;
 };
 
@@ -201,6 +202,7 @@ esp_err_t handle_status_get(httpd_req_t* req)
     body += "\"has_openai_key\":" + std::string(cfg.openai_api_key.empty() ? "false" : "true") + ",";
     body += "\"has_gemini_key\":" + std::string(cfg.gemini_api_key.empty() ? "false" : "true") + ",";
     body += "\"openai_enabled\":" + std::string(cfg.openai_enabled ? "true" : "false") + ",";
+    body += "\"rtp_audio_enabled\":" + std::string(cfg.rtp_audio_enabled ? "true" : "false") + ",";
     body += "\"provider\":" + std::to_string(static_cast<int>(cfg.provider)) + ",";
     body += "\"jtts_config\":\"" + escape_json(cfg.jtts_config_json) + "\"";
     body += "}";
@@ -262,6 +264,17 @@ esp_err_t handle_openai_enabled_post(httpd_req_t* req)
     return send_empty(req);
 }
 
+esp_err_t handle_rtp_enabled_post(httpd_req_t* req)
+{
+    std::string body;
+    if (read_body_str(req, body, 8) != ESP_OK) return ESP_OK;
+    const bool enabled = !body.empty() && (body[0] == '1' || body[0] == 't' || body[0] == 'y');
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_staging.rtp_audio_enabled = enabled;
+    xSemaphoreGive(g_mutex);
+    return send_empty(req);
+}
+
 esp_err_t handle_provider_post(httpd_req_t* req)
 {
     std::string body;
@@ -293,6 +306,7 @@ esp_err_t handle_apply_post(httpd_req_t* req)
     if (g_staging.password)        merged.wifi_password = *g_staging.password;
     if (g_staging.api_key)         merged.openai_api_key = *g_staging.api_key;
     if (g_staging.openai_enabled)  merged.openai_enabled = *g_staging.openai_enabled;
+    if (g_staging.rtp_audio_enabled) merged.rtp_audio_enabled = *g_staging.rtp_audio_enabled;
     if (g_staging.jtts_config)     merged.jtts_config_json = *g_staging.jtts_config;
     if (g_staging.gemini_api_key)  merged.gemini_api_key = *g_staging.gemini_api_key;
     if (g_staging.provider)        merged.provider = *g_staging.provider;
@@ -373,6 +387,7 @@ void register_handlers(httpd_handle_t server, const config::DeviceConfig& curren
     add(server, "/api/api-key",         HTTP_POST, handle_api_key_post);
     add(server, "/api/gemini-api-key",  HTTP_POST, handle_gemini_api_key_post);
     add(server, "/api/openai-enabled",  HTTP_POST, handle_openai_enabled_post);
+    add(server, "/api/rtp-enabled",     HTTP_POST, handle_rtp_enabled_post);
     add(server, "/api/provider",        HTTP_POST, handle_provider_post);
     add(server, "/api/jtts-config",     HTTP_POST, handle_jtts_config_post);
     add(server, "/api/apply",           HTTP_POST, handle_apply_post);

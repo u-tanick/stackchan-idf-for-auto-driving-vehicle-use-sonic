@@ -13,13 +13,16 @@ namespace stackchan::app::wifi_audio {
 // `state.mouth_open` from the chunk RMS — the same speaker / mouth / I2S
 // handoff the BLE audio sink uses.
 //
+// `rtp_enabled` reflects cfg.rtp_audio_enabled — the master on/off switch the
+// user sets from either settings page. When false the receiver is not started.
+//
 // `conversation_enabled` reflects cfg.openai_enabled. Like the BLE sink,
 // Wi-Fi audio and the realtime conversation backend are mutually exclusive
-// (they contend for the I2S bus + CPU), so the receiver is not started at all
+// (they contend for the I2S bus + CPU), so the receiver is also not started
 // when conversation mode is on.
 //
 // Must be called after Board::begin() (M5.Speaker ready) and after wifi_start();
 // the receiver task waits for the Wi-Fi link before binding its socket.
-void start(SharedState& state, bool conversation_enabled);
+void start(SharedState& state, bool conversation_enabled, bool rtp_enabled);
 
 } // namespace stackchan::app::wifi_audio

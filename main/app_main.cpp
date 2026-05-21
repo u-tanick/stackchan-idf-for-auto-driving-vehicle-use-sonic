@@ -452,7 +452,7 @@ extern "C" void app_main()
 
     // Wi-Fi live audio (RTP/L16 today). Like the BLE sink, mutually exclusive
     // with the conversation backend, so it self-disables when voice chat is on.
-    stackchan::app::wifi_audio::start(*g_state, cfg.openai_enabled);
+    stackchan::app::wifi_audio::start(*g_state, cfg.openai_enabled, cfg.rtp_audio_enabled);
 
     // Mic / loopback sanity check at startup.
     record_and_playback(2, "mic test");

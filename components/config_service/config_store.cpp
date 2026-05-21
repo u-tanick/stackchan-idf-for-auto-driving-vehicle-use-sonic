@@ -20,6 +20,7 @@ constexpr const char* kKeySsid = "wifi_ssid";
 constexpr const char* kKeyPass = "wifi_pass";
 constexpr const char* kKeyApiKey = "openai_key";
 constexpr const char* kKeyOpenAiEnabled = "openai_en";
+constexpr const char* kKeyRtpAudioEnabled = "rtp_en";
 constexpr const char* kKeyJttsConfig = "jtts_cfg";
 constexpr const char* kKeyGeminiApiKey = "gemini_key";
 constexpr const char* kKeyProvider = "provider";
@@ -69,6 +70,13 @@ DeviceConfig load()
     } else if (en_err != ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGW(kTag, "nvs_get_u8(%s): %s", kKeyOpenAiEnabled, esp_err_to_name(en_err));
     }
+    std::uint8_t rtp_enabled = 1;
+    esp_err_t rtp_err = nvs_get_u8(h, kKeyRtpAudioEnabled, &rtp_enabled);
+    if (rtp_err == ESP_OK) {
+        cfg.rtp_audio_enabled = (rtp_enabled != 0);
+    } else if (rtp_err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(kTag, "nvs_get_u8(%s): %s", kKeyRtpAudioEnabled, esp_err_to_name(rtp_err));
+    }
     std::uint8_t provider = static_cast<std::uint8_t>(Provider::OpenAi);
     esp_err_t prov_err = nvs_get_u8(h, kKeyProvider, &provider);
     if (prov_err == ESP_OK) {
@@ -109,6 +117,13 @@ tl::expected<void, Error> save(const DeviceConfig& cfg)
     err = nvs_set_u8(h, kKeyOpenAiEnabled, cfg.openai_enabled ? 1 : 0);
     if (err != ESP_OK) {
         ESP_LOGE(kTag, "nvs_set_u8(%s): %s", kKeyOpenAiEnabled, esp_err_to_name(err));
+        nvs_close(h);
+        return tl::unexpected(Error::NvsWrite);
+    }
+
+    err = nvs_set_u8(h, kKeyRtpAudioEnabled, cfg.rtp_audio_enabled ? 1 : 0);
+    if (err != ESP_OK) {
+        ESP_LOGE(kTag, "nvs_set_u8(%s): %s", kKeyRtpAudioEnabled, esp_err_to_name(err));
         nvs_close(h);
         return tl::unexpected(Error::NvsWrite);
     }

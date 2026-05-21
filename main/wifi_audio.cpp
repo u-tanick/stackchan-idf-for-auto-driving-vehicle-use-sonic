@@ -403,11 +403,15 @@ std::unique_ptr<IDepacketizer> make_depacketizer(Codec codec, const StreamFormat
     return nullptr;
 }
 
-void start(SharedState& state, bool conversation_enabled)
+void start(SharedState& state, bool conversation_enabled, bool rtp_enabled)
 {
     g_state = &state;
     g_conversation_enabled = conversation_enabled;
 
+    if (!rtp_enabled) {
+        ESP_LOGI(kTag, "Wi-Fi RTP audio disabled by config");
+        return;
+    }
     if (conversation_enabled) {
         ESP_LOGI(kTag, "Wi-Fi audio disabled — conversation mode is on (mutually exclusive)");
         return;
