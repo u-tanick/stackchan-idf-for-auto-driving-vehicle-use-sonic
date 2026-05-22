@@ -28,10 +28,14 @@ public:
     virtual void push_silence(std::size_t n) = 0;
 };
 
-// Identifies the RTP payload format. L16 (raw PCM) ships first; Aac
-// (RFC 3640 mpeg4-generic) plugs into the same interface later.
+// Identifies the RTP payload format. L16 (raw PCM) and MuLaw (G.711 PCMU,
+// e.g. OBS) ship now; Aac (RFC 3640 mpeg4-generic) plugs into the same
+// interface later. For MuLaw the StreamFormat.sample_rate is the *input*
+// rate (8 kHz for standard PCMU); the depacketizer resamples to the device
+// playback rate so the player stays codec-agnostic.
 enum class Codec : std::uint8_t {
     L16,
+    MuLaw,
     Aac,
 };
 

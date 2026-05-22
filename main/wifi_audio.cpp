@@ -268,6 +268,77 @@ private:
     std::array<std::int16_t, 1024> buf_{}; // ≥ one datagram of mono samples
 };
 
+// --- μ-law (G.711 PCMU) depacketizer --------------------------------------
+
+// Standard G.711 μ-law → 14-bit linear (stored as int16). Used by OBS, which
+// emits PCMU on RTP payload type 0. PCMU is 8 kHz narrowband, so we upsample
+// to the device rate (×6 for 8 kHz → 48 kHz) with linear interpolation inside
+// the depacketizer — the player / ring stay at the fixed device rate.
+class MuLawDepacketizer : public IDepacketizer {
+public:
+    explicit MuLawDepacketizer(std::uint32_t input_rate)
+        : input_rate_(input_rate ? input_rate : 8000)
+    {
+        ratio_ = kSampleRate / input_rate_;
+        if (ratio_ == 0) ratio_ = 1; // input already ≥ device rate → no upsample
+        for (int b = 0; b < 256; ++b) table_[b] = decode_one(static_cast<std::uint8_t>(b));
+    }
+
+    void on_packet(const std::uint8_t* payload, std::size_t len, std::uint32_t rtp_ts,
+                   bool /*marker*/, std::uint32_t /*lost*/, PcmSink& out) override
+    {
+        // Gap is measured at the INPUT clock (PCMU ts counts 8 kHz samples);
+        // emit silence at the OUTPUT rate (× ratio).
+        if (have_ts_) {
+            const std::int32_t gap = static_cast<std::int32_t>(rtp_ts - expected_ts_);
+            if (gap > 0 && static_cast<std::size_t>(gap) <= kMaxGapSamples) {
+                out.push_silence(static_cast<std::size_t>(gap) * ratio_);
+                last_ = 0; // discontinuity — ramp the next sample up from silence
+            }
+        }
+        std::array<std::int16_t, 1024> obuf;
+        std::size_t oi = 0;
+        auto flush = [&] {
+            if (oi) { out.push(obuf.data(), oi); oi = 0; }
+        };
+        for (std::size_t i = 0; i < len; ++i) {
+            const std::int32_t s = table_[payload[i]];
+            // Linear interpolation last_ → s over `ratio_` output samples.
+            for (std::uint32_t k = 1; k <= ratio_; ++k) {
+                obuf[oi++] = static_cast<std::int16_t>(
+                    last_ + (s - last_) * static_cast<std::int32_t>(k) / static_cast<std::int32_t>(ratio_));
+                if (oi == obuf.size()) flush();
+            }
+            last_ = s;
+        }
+        flush();
+        expected_ts_ = rtp_ts + static_cast<std::uint32_t>(len); // 1 byte = 1 input sample
+        have_ts_ = true;
+    }
+
+    void reset() override
+    {
+        have_ts_ = false;
+        last_ = 0;
+    }
+
+private:
+    static std::int16_t decode_one(std::uint8_t u)
+    {
+        u = ~u;
+        std::int32_t t = ((u & 0x0F) << 3) + 0x84;
+        t <<= (static_cast<unsigned>(u) & 0x70) >> 4;
+        return static_cast<std::int16_t>((u & 0x80) ? (0x84 - t) : (t - 0x84));
+    }
+
+    std::uint32_t input_rate_;
+    std::uint32_t ratio_;
+    std::array<std::int16_t, 256> table_{};
+    bool have_ts_ = false;
+    std::uint32_t expected_ts_ = 0;
+    std::int32_t last_ = 0; // previous decoded sample, for interpolation continuity
+};
+
 // --- RTP parse ------------------------------------------------------------
 
 struct RtpView {
@@ -302,6 +373,21 @@ RtpView parse_rtp(const std::uint8_t* buf, std::size_t len)
     v.payload_len = len - hdr;
     v.valid = true;
     return v;
+}
+
+// Map an RTP payload type to a codec + input sample rate. PT 0 is the static
+// assignment for G.711 PCMU (μ-law, 8 kHz) — what OBS sends. Any other PT is
+// treated as our L16/48000 (ffmpeg/gst dynamic PT). This is the standard
+// PT→codec role, so senders pick the codec just by their command.
+struct CodecSel {
+    Codec codec;
+    std::uint32_t rate;
+    const char* name;
+};
+CodecSel codec_for_pt(std::uint8_t pt)
+{
+    if (pt == 0) return {Codec::MuLaw, 8000, "PCMU/8000 (G.711 mu-law)"};
+    return {Codec::L16, kSampleRate, "L16/48000"};
 }
 
 // --- Receiver task --------------------------------------------------------
@@ -339,11 +425,13 @@ void receiver_task(void* /*arg*/)
         vTaskDelete(nullptr);
         return;
     }
-    // L16 today; AAC selection (config / port) is added when the AAC
-    // depacketizer lands — make_depacketizer() is the only thing to extend.
-    auto depack = make_depacketizer(Codec::L16, StreamFormat{kSampleRate, 1});
+    // Codec is selected per stream from the RTP payload type (see
+    // codec_for_pt). Built lazily on the first packet (and rebuilt if the PT
+    // changes); AAC plugs in via make_depacketizer() later.
+    std::unique_ptr<IDepacketizer> depack;
+    int current_pt = -1;
 
-    ESP_LOGI(kTag, "RTP/L16 listening on udp/%u (48 kHz mono)", kPort);
+    ESP_LOGI(kTag, "RTP listening on udp/%u (L16/48k or PCMU/8k by payload type)", kPort);
 
     auto* recv_buf = static_cast<std::uint8_t*>(heap_caps_malloc(kRecvBufBytes, MALLOC_CAP_8BIT));
     bool session = false;
@@ -370,11 +458,21 @@ void receiver_task(void* /*arg*/)
                     have_seq = true;
                     if (!session) {
                         session = true;
-                        depack->reset();
+                        current_pt = -1; // force codec (re)selection for this stream
                         player->begin_session();
                     }
+                    // (Re)build the depacketizer when the payload type changes.
+                    if (static_cast<int>(rtp.pt) != current_pt) {
+                        current_pt = rtp.pt;
+                        const CodecSel sel = codec_for_pt(rtp.pt);
+                        depack = make_depacketizer(sel.codec, StreamFormat{sel.rate, 1});
+                        ESP_LOGI(kTag, "codec: %s (PT %u)", sel.name,
+                                 static_cast<unsigned>(rtp.pt));
+                    }
                     last_packet_ms = t;
-                    depack->on_packet(rtp.payload, rtp.payload_len, rtp.ts, rtp.marker, lost, *player);
+                    if (depack) {
+                        depack->on_packet(rtp.payload, rtp.payload_len, rtp.ts, rtp.marker, lost, *player);
+                    }
                 }
             }
         }
@@ -385,6 +483,7 @@ void receiver_task(void* /*arg*/)
                 player->end_session();
                 session = false;
                 have_seq = false;
+                current_pt = -1;
             }
         }
     }
@@ -392,11 +491,13 @@ void receiver_task(void* /*arg*/)
 
 } // namespace
 
-std::unique_ptr<IDepacketizer> make_depacketizer(Codec codec, const StreamFormat& /*fmt*/)
+std::unique_ptr<IDepacketizer> make_depacketizer(Codec codec, const StreamFormat& fmt)
 {
     switch (codec) {
     case Codec::L16:
         return std::make_unique<L16Depacketizer>();
+    case Codec::MuLaw:
+        return std::make_unique<MuLawDepacketizer>(fmt.sample_rate);
     case Codec::Aac:
         return nullptr; // wifi_audio_aac.cpp (future)
     }

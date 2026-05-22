@@ -61,10 +61,11 @@ tl::expected<void, Error> start_mdns()
     // the port + the wire format so a sender can discover where/how to push.
     // Keep the port in sync with kPort in main/wifi_audio.cpp.
     mdns_service_add(nullptr, "_stackchan-audio", "_udp", 6970, nullptr, 0);
+    // Codec is auto-selected from the RTP payload type: PT 0 → PCMU/8000
+    // (G.711 μ-law, e.g. OBS), anything else → L16/48000 (ffmpeg/gst).
     mdns_txt_item_t audio_txt[] = {
         {"proto", "rtp"},
-        {"codec", "L16"},
-        {"rate", "48000"},
+        {"codec", "L16,PCMU"},
         {"ch", "1"},
     };
     mdns_service_txt_set("_stackchan-audio", "_udp", audio_txt,
