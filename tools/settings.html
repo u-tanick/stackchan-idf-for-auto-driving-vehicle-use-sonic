@@ -261,6 +261,10 @@
     <div class="row"><span class="key">Model</span><span class="val" id="dis-model">—</span></div>
     <div class="row"><span class="key">Manufacturer</span><span class="val" id="dis-mfr">—</span></div>
     <div class="row"><span class="key">Software</span><span class="val" id="dis-sw">—</span></div>
+    <div class="row" id="dis-wifi-mac-row" hidden>
+      <span class="key">Wi-Fi MAC (STA)</span>
+      <span class="val" id="dis-wifi-mac">—</span>
+    </div>
     <div class="row" id="dis-wifi-row" hidden>
       <span class="key">Wi-Fi 設定 (mDNS)</span>
       <span class="val"><a id="dis-wifi-url" href="#" target="_blank" rel="noopener">—</a></span>
@@ -430,6 +434,7 @@ const CHR_OTA_DATA = 'e3f0a00a-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_PROVIDER = 'e3f0a00b-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_GEMINI_KEY = 'e3f0a00c-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_WIFI_IP = 'e3f0a00d-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+const CHR_WIFI_MAC = 'e3f0a012-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_AUDIO_CTRL = 'e3f0a00e-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_AUDIO_DATA = 'e3f0a00f-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // AudioCredit — READ uint32 LE, the device's current audio-buffer free space
@@ -461,7 +466,7 @@ const DIS_CHRS = {
 
 // --- State ---
 let bleDevice = null, bleServer = null, svc = null;
-let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrWifiIp = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null;
+let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null;
 let jttsInitialJson = '';  // last read JSON, used to detect Apply-time changes
 let otaInFlight = false;
 let aesKey = null;  // CryptoKey for AES-256-GCM, derived per connection
@@ -606,20 +611,36 @@ async function fetchDeviceInfo() {
   const fw = entries.find(([id]) => id === 'fw');
   if (fw && fw[1]) log(`Firmware: ${fw[1]}`);
 
-  // Derive the mDNS hostname from the BLE advertising name. The device side
-  // publishes its mDNS host as `stackchan-<mac3>.local` using the same lower
-  // 3 bytes of the MAC that go into the BLE name `Stackchan-XXXXXX`. So a
-  // lowercase pass over the BLE name produces the correct .local hostname.
-  // Requires the device to have Wi-Fi configured + an IP — if it doesn't,
-  // the link is still shown but the browser will fail to resolve.
+  // Build the mDNS hostname from the device-reported Wi-Fi STA MAC (WifiMac
+  // chr): the device publishes `stackchan-<lower 3 MAC bytes>.local`. Reading
+  // the actual MAC avoids guessing — older firmware composed the BLE name from
+  // a different MAC (BT = STA+2) than the mDNS hostname, so a name-derived
+  // guess could be wrong. Falls back to the BLE name if WifiMac is absent.
   const name = bleDevice && bleDevice.name;
   const row = document.getElementById('dis-wifi-row');
   const link = document.getElementById('dis-wifi-url');
-  if (name && /^stackchan-[0-9a-f]{6}$/i.test(name)) {
+  const macRow = document.getElementById('dis-wifi-mac-row');
+  const macVal = document.getElementById('dis-wifi-mac');
+  let host = null;
+  if (chrWifiMac && aesKey) {
+    try {
+      const mac = dec.decode(await readEncrypted(chrWifiMac)).trim(); // "aa:bb:cc:dd:ee:ff"
+      const oct = mac.split(':');
+      if (oct.length === 6) {
+        macVal.textContent = mac;
+        macRow.hidden = false;
+        host = 'stackchan-' + (oct[3] + oct[4] + oct[5]).toLowerCase();
+      }
+    } catch (e) { /* fall through to BLE-name derivation */ }
+  }
+  if (!host && name && /^stackchan-[0-9a-f]{6}$/i.test(name)) {
+    host = name.toLowerCase();
+  }
+  if (host) {
     // Plain HTTP — the Wi-Fi settings page doesn't use Web Crypto, so
     // a Secure Context isn't required and self-signed TLS would only
     // add the cert-warning click-through.
-    const url = `http://${name.toLowerCase()}.local/`;
+    const url = `http://${host}.local/`;
     link.href = url;
     link.textContent = url;
     row.hidden = false;
@@ -682,6 +703,8 @@ function clearDeviceInfo() {
     const el = document.getElementById('dis-' + id);
     if (el) el.textContent = '—';
   }
+  document.getElementById('dis-wifi-mac-row').hidden = true;
+  document.getElementById('dis-wifi-mac').textContent = '—';
   document.getElementById('dis-wifi-row').hidden = true;
   const link = document.getElementById('dis-wifi-url');
   link.href = '#';
@@ -1388,6 +1411,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
       ['provider',   CHR_PROVIDER],
       ['geminiKey',  CHR_GEMINI_KEY],
       ['wifiIp',     CHR_WIFI_IP],
+      ['wifiMac',    CHR_WIFI_MAC],
       ['audioCtrl',  CHR_AUDIO_CTRL],
       ['audioData',  CHR_AUDIO_DATA],
       ['audioCredit',CHR_AUDIO_CREDIT],
@@ -1415,6 +1439,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
     chrProvider = found.provider ?? null;
     chrGeminiKey= found.geminiKey?? null;
     chrWifiIp   = found.wifiIp   ?? null;
+    chrWifiMac  = found.wifiMac  ?? null;
     chrAudioCtrl= found.audioCtrl?? null;
     chrAudioData= found.audioData?? null;
     chrAudioCredit = found.audioCredit ?? null;
@@ -1549,7 +1574,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
 function onDisconnected() {
   log('切断されました', 'err');
   setBleUi(false);
-  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrWifiIp = chrAudioCtrl = chrAudioData = chrAudioCredit = null;
+  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = null;
   aesKey = null;
   clearDeviceInfo();
   delete document.getElementById('openai-enabled').dataset.initial;

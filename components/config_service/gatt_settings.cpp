@@ -18,6 +18,7 @@
 #include <esp_timer.h>
 #include <esp_system.h>
 #include <esp_netif.h>
+#include <esp_mac.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
@@ -113,6 +114,13 @@ static const ble_uuid128_t kGeminiApiKeyUuid = BLE_UUID128_INIT(
 static const ble_uuid128_t kWifiIpUuid = BLE_UUID128_INIT(
     0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
     0x2a, 0x4d, 0x1c, 0x7b, 0x0d, 0xa0, 0xf0, 0xe3);
+// WifiMac — encrypted READ-only string with the Wi-Fi STA MAC
+// ("aa:bb:cc:dd:ee:ff"). The mDNS hostname is stackchan-<lower 3 bytes>, so the
+// browser builds the .local URL from this directly instead of guessing it from
+// the BLE name. Also surfaced in the UI as a device identifier.
+static const ble_uuid128_t kWifiMacUuid = BLE_UUID128_INIT(
+    0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
+    0x2a, 0x4d, 0x1c, 0x7b, 0x12, 0xa0, 0xf0, 0xe3);
 // AudioControl — encrypted JSON command channel for the BLE audio streamer.
 // WRITE accepts {"op":"begin","codec":"aac","sample_rate":24000,"channels":1}
 // / {"op":"end"} / {"op":"abort"}. READ is unused (returns empty).
@@ -167,6 +175,7 @@ static uint16_t g_ota_data_handle = 0;
 static uint16_t g_provider_handle = 0;
 static uint16_t g_gemini_key_handle = 0;
 static uint16_t g_wifi_ip_handle = 0;
+static uint16_t g_wifi_mac_handle = 0;
 static uint16_t g_audio_ctrl_handle = 0;
 static uint16_t g_audio_data_handle = 0;
 static uint16_t g_audio_credit_handle = 0;
@@ -230,6 +239,16 @@ std::string current_wifi_ip()
     if (info.ip.addr == 0) return {};
     char buf[16];
     std::snprintf(buf, sizeof(buf), IPSTR, IP2STR(&info.ip));
+    return std::string(buf);
+}
+
+std::string wifi_sta_mac()
+{
+    std::uint8_t mac[6] = {};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char buf[18];
+    std::snprintf(buf, sizeof(buf), "%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2],
+                  mac[3], mac[4], mac[5]);
     return std::string(buf);
 }
 
@@ -376,6 +395,19 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             const bool ok = append_encrypted(
                 ctxt->om,
                 {reinterpret_cast<const std::uint8_t*>(ip.data()), ip.size()});
+            xSemaphoreGive(g_mutex);
+            return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
+        }
+        if (attr_handle == g_wifi_mac_handle) {
+            const std::string mac = wifi_sta_mac();
+            xSemaphoreTake(g_mutex, portMAX_DELAY);
+            if (!g_session.is_established()) {
+                xSemaphoreGive(g_mutex);
+                return BLE_ATT_ERR_UNLIKELY;
+            }
+            const bool ok = append_encrypted(
+                ctxt->om,
+                {reinterpret_cast<const std::uint8_t*>(mac.data()), mac.size()});
             xSemaphoreGive(g_mutex);
             return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
         }
@@ -700,6 +732,12 @@ static ble_gatt_chr_def kChrs[] = {
         .access_cb = gatt_access_cb,
         .flags = BLE_GATT_CHR_F_READ,
         .val_handle = &g_wifi_ip_handle,
+    },
+    {
+        .uuid = &kWifiMacUuid.u,
+        .access_cb = gatt_access_cb,
+        .flags = BLE_GATT_CHR_F_READ,
+        .val_handle = &g_wifi_mac_handle,
     },
     {
         .uuid = &kAudioCtrlUuid.u,
