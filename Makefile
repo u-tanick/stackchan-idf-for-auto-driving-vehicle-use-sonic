@@ -108,7 +108,10 @@ docker-clean:
 # transcript.
 
 AUDIO_CLI_BIN  ?= tools/audio-cli/target/release/audio-cli
-AUDIO_DEVICE   ?= Stackchan-E2604E
+# BLE local-name prefix to connect to. "Stackchan-" matches any unit (the CLI
+# connects to the first match); pin the full name (Stackchan-XXXXXX) to target
+# a specific device. Name suffix = Wi-Fi STA MAC lower 3 bytes.
+AUDIO_DEVICE   ?= Stackchan-
 AUDIO_FILE     ?= tools/audio-cli/out.aac
 # Throughput ceiling in KiB/s, applied on top of the device's credit-based
 # flow control. 0 = no artificial cap: the CLI polls the AudioCredit

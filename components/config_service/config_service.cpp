@@ -251,9 +251,12 @@ static void on_sync()
         return;
     }
 
-    // Build device name from BT MAC address lower 3 bytes.
+    // Build the device name from the *Wi-Fi STA* MAC lower 3 bytes — the same
+    // bytes the mDNS hostname uses (wifi_config_service::compose_hostname), so
+    // a central can derive the .local hostname from the BLE name. STA is the
+    // ESP32 base MAC (BT = base + 2), so it also matches what the router shows.
     uint8_t mac[6] = {};
-    esp_read_mac(mac, ESP_MAC_BT);
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
     std::snprintf(g_device_name, sizeof(g_device_name),
                   "Stackchan-%02X%02X%02X", mac[3], mac[4], mac[5]);
     ble_svc_gap_device_name_set(g_device_name);

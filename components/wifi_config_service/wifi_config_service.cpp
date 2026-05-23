@@ -27,9 +27,13 @@ bool g_started = false;
 httpd_handle_t g_server = nullptr;
 char g_hostname[32] = "stackchan";
 
-// Build the mDNS hostname from the lower 3 bytes of the Wi-Fi MAC so it
-// matches the BLE advertising name format. Centrals that see the device on
-// BLE can guess the .local hostname without needing extra info.
+// Build the mDNS hostname from the Wi-Fi STA MAC lower 3 bytes. The BLE
+// advertising name (config_service) is composed from the SAME MAC, so a
+// central can derive the .local hostname from the BLE name (tools/settings.html
+// does exactly that). STA is the ESP32 base MAC and is what the router shows,
+// so the hostname suffix matches the device's visible Wi-Fi MAC. (Both sides
+// MUST stay on ESP_MAC_WIFI_STA — they previously diverged, BLE on ESP_MAC_BT
+// = base + 2, which made the settings-page link unresolvable.)
 void compose_hostname()
 {
     std::uint8_t mac[6] = {};
