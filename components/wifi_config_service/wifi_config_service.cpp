@@ -61,12 +61,14 @@ tl::expected<void, Error> start_mdns()
     // the port + the wire format so a sender can discover where/how to push.
     // Keep the port in sync with kPort in main/wifi_audio.cpp.
     mdns_service_add(nullptr, "_stackchan-audio", "_udp", 6970, nullptr, 0);
-    // Codec is auto-selected from the RTP payload type: PT 0 → PCMU/8000
-    // (G.711 μ-law, e.g. OBS), anything else → L16/48000 (ffmpeg/gst).
+    // udp/6970 carries L16 or μ-law (codec from RTP PT: 0 → PCMU/8000 G.711
+    // μ-law e.g. OBS, else → L16/48000 ffmpeg/gst). AAC (MPEG4-GENERIC) shares
+    // the dynamic PT with L16, so it has its own port (6972), surfaced here.
     mdns_txt_item_t audio_txt[] = {
         {"proto", "rtp"},
         {"codec", "L16,PCMU"},
         {"ch", "1"},
+        {"aac_port", "6972"},
     };
     mdns_service_txt_set("_stackchan-audio", "_udp", audio_txt,
                          sizeof(audio_txt) / sizeof(audio_txt[0]));

@@ -14,10 +14,13 @@
 #include <vector>
 
 #include <M5Unified.h>
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+
+#include <esp_aac_dec.h>
 
 #include <lwip/sockets.h>
 
@@ -30,6 +33,13 @@ constexpr const char* kTag = "wifi-audio";
 // UDP port the RTP listener binds. Distinct from VBAN's 6980 to avoid
 // confusing a VBAN sender into thinking we speak VBAN.
 constexpr std::uint16_t kPort = 6970;
+
+// AAC (RFC 3640 mpeg4-generic) listens on a separate port. ffmpeg gives both
+// L16 and AAC the same dynamic RTP payload type (97), so the payload type
+// alone can't tell them apart — the destination port selects the codec
+// instead (6970 = L16/μ-law, 6972 = AAC). Keeps the "sender picks the codec,
+// no device config" model. 6971 is left for 6970's RTCP.
+constexpr std::uint16_t kAacPort = 6972;
 
 // Fixed playback format. ffmpeg/gst send `-ar 48000 -ac 1` (downmix). The
 // speaker is mono; stereo would also stress the trimmed Wi-Fi RX buffers.
@@ -339,6 +349,130 @@ private:
     std::int32_t last_ = 0; // previous decoded sample, for interpolation continuity
 };
 
+// --- AAC (RFC 3640 mpeg4-generic, AAC-hbr) depacketizer -------------------
+
+// ffmpeg's `-c:a aac -f rtp` payload: a 2-byte AU-headers-length (in bits)
+// then 16-bit AU headers (sizelength=13, indexlength=3) then the raw AAC AUs.
+// We wrap each AU in a 7-byte ADTS header (AAC-LC / 48 kHz / mono) and feed
+// the existing esp_aac_dec — same decoder the BLE sink uses. Source must be
+// 48 kHz mono (the AU carries no sample rate; it comes from the SDP config we
+// don't parse, so we assume 48 kHz mono — document `-ar 48000 -ac 1`).
+class AacRtpDepacketizer : public IDepacketizer {
+public:
+    AacRtpDepacketizer()
+    {
+        esp_aac_dec_cfg_t cfg = ESP_AAC_DEC_CONFIG_DEFAULT();
+        cfg.no_adts_header = false;  // we hand it ADTS-framed AUs
+        cfg.aac_plus_enable = false; // plain AAC-LC
+        if (esp_aac_dec_open(&cfg, sizeof(cfg), &dec_) != ESP_AUDIO_ERR_OK) {
+            dec_ = nullptr;
+            ESP_LOGE(kTag, "esp_aac_dec_open failed");
+        }
+        pcm_cap_ = 1024 * 2 * sizeof(std::int16_t) * 2; // 1024-sample stereo headroom
+        pcm_ = static_cast<std::uint8_t*>(
+            heap_caps_malloc(pcm_cap_, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    }
+    ~AacRtpDepacketizer() override
+    {
+        if (dec_ != nullptr) esp_aac_dec_close(dec_);
+        if (pcm_ != nullptr) heap_caps_free(pcm_);
+    }
+
+    void on_packet(const std::uint8_t* payload, std::size_t len, std::uint32_t rtp_ts,
+                   bool /*marker*/, std::uint32_t /*lost*/, PcmSink& out) override
+    {
+        if (dec_ == nullptr || pcm_ == nullptr || len < 2) return;
+        if (have_ts_) {
+            const std::int32_t gap = static_cast<std::int32_t>(rtp_ts - expected_ts_);
+            if (gap > 0 && static_cast<std::size_t>(gap) <= kMaxGapSamples) {
+                out.push_silence(static_cast<std::size_t>(gap));
+            }
+        }
+        const std::size_t au_headers_bits = (payload[0] << 8) | payload[1];
+        const std::size_t au_headers_bytes = (au_headers_bits + 7) / 8;
+        const std::size_t num_au = au_headers_bits / 16; // 16-bit headers (13+3)
+        const std::size_t data_off = 2 + au_headers_bytes;
+        if (num_au == 0 || data_off > len) return;
+
+        std::size_t p = data_off;
+        for (std::size_t i = 0; i < num_au; ++i) {
+            const std::uint16_t hdr = (payload[2 + i * 2] << 8) | payload[2 + i * 2 + 1];
+            const std::size_t au_size = hdr >> 3; // top 13 bits = AU size in bytes
+            if (au_size == 0 || p + au_size > len) break;
+            decode_au(payload + p, au_size, out);
+            p += au_size;
+        }
+        expected_ts_ = rtp_ts + static_cast<std::uint32_t>(num_au * 1024); // 1024 samples/AU
+        have_ts_ = true;
+    }
+
+    void reset() override { have_ts_ = false; }
+
+private:
+    void decode_au(const std::uint8_t* au, std::size_t au_size, PcmSink& out)
+    {
+        const std::size_t framelen = 7 + au_size;
+        if (framelen > adts_.size()) return; // implausibly large AU
+        // 7-byte ADTS: AAC-LC (profile 1), 48 kHz (freq idx 3), mono (chan 1).
+        std::uint8_t* a = adts_.data();
+        constexpr int profile = 1, freq_idx = 3, chan = 1;
+        a[0] = 0xFF;
+        a[1] = 0xF1; // MPEG-4, layer 0, no CRC
+        a[2] = static_cast<std::uint8_t>((profile << 6) | (freq_idx << 2) | (chan >> 2));
+        a[3] = static_cast<std::uint8_t>(((chan & 3) << 6) | ((framelen >> 11) & 0x03));
+        a[4] = static_cast<std::uint8_t>((framelen >> 3) & 0xFF);
+        a[5] = static_cast<std::uint8_t>(((framelen & 7) << 5) | 0x1F);
+        a[6] = 0xFC;
+        std::memcpy(a + 7, au, au_size);
+
+        esp_audio_dec_in_raw_t in{};
+        in.buffer = a;
+        in.len = static_cast<std::uint32_t>(framelen);
+        esp_audio_dec_out_frame_t of{};
+        of.buffer = pcm_;
+        of.len = static_cast<std::uint32_t>(pcm_cap_);
+        esp_audio_dec_info_t info{};
+        const auto rc = esp_aac_dec_decode(dec_, &in, &of, &info);
+        if (rc == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH) {
+            auto* bigger = static_cast<std::uint8_t*>(
+                heap_caps_realloc(pcm_, of.needed_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+            if (bigger != nullptr) { pcm_ = bigger; pcm_cap_ = of.needed_size; }
+            return; // skip this AU; the next one fits
+        }
+        if (rc != ESP_AUDIO_ERR_OK || of.decoded_size == 0) {
+            if ((decode_errs_++ % 64) == 0) ESP_LOGW(kTag, "aac decode rc=%d", static_cast<int>(rc));
+            return;
+        }
+        if (info.sample_rate != 0 && info.sample_rate != kSampleRate && !rate_warned_) {
+            rate_warned_ = true;
+            ESP_LOGW(kTag, "AAC decoded %u Hz != device %u Hz — use -ar 48000 (pitch will be off)",
+                     static_cast<unsigned>(info.sample_rate), static_cast<unsigned>(kSampleRate));
+        }
+        const auto* s = reinterpret_cast<const std::int16_t*>(pcm_);
+        const std::uint8_t ch = info.channel ? info.channel : 1;
+        const std::size_t frames = of.decoded_size / sizeof(std::int16_t) / ch;
+        if (ch == 1) {
+            out.push(s, frames);
+        } else {
+            std::int16_t mono[1024];
+            for (std::size_t off = 0; off < frames; off += 1024) {
+                const std::size_t n = std::min<std::size_t>(1024, frames - off);
+                for (std::size_t i = 0; i < n; ++i) mono[i] = s[(off + i) * ch];
+                out.push(mono, n);
+            }
+        }
+    }
+
+    void* dec_ = nullptr;
+    std::uint8_t* pcm_ = nullptr;
+    std::size_t pcm_cap_ = 0;
+    std::array<std::uint8_t, 7 + 4096> adts_{}; // ADTS header + one AU
+    bool have_ts_ = false;
+    std::uint32_t expected_ts_ = 0;
+    unsigned decode_errs_ = 0;
+    bool rate_warned_ = false;
+};
+
 // --- RTP parse ------------------------------------------------------------
 
 struct RtpView {
@@ -390,6 +524,25 @@ CodecSel codec_for_pt(std::uint8_t pt)
     return {Codec::L16, kSampleRate, "L16/48000"};
 }
 
+int open_udp(std::uint16_t port)
+{
+    int s = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (s < 0) {
+        ESP_LOGE(kTag, "socket() failed: errno=%d", errno);
+        return -1;
+    }
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (::bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+        ESP_LOGE(kTag, "bind(%u) failed: errno=%d", port, errno);
+        ::close(s);
+        return -1;
+    }
+    return s;
+}
+
 // --- Receiver task --------------------------------------------------------
 
 void receiver_task(void* /*arg*/)
@@ -397,41 +550,32 @@ void receiver_task(void* /*arg*/)
     // Wait for the Wi-Fi link before binding.
     while (!wifi_is_connected()) vTaskDelay(pdMS_TO_TICKS(200));
 
-    int sock = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock < 0) {
-        ESP_LOGE(kTag, "socket() failed: errno=%d", errno);
+    // Two sockets: udp/kPort carries L16 or μ-law (codec from RTP PT),
+    // udp/kAacPort carries AAC. The source socket disambiguates L16 vs AAC,
+    // which share the same dynamic PT.
+    const int sock_pcm = open_udp(kPort);
+    const int sock_aac = open_udp(kAacPort);
+    if (sock_pcm < 0 || sock_aac < 0) {
+        if (sock_pcm >= 0) ::close(sock_pcm);
+        if (sock_aac >= 0) ::close(sock_aac);
         vTaskDelete(nullptr);
         return;
     }
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(kPort);
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    if (::bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-        ESP_LOGE(kTag, "bind(%u) failed: errno=%d", kPort, errno);
-        ::close(sock);
-        vTaskDelete(nullptr);
-        return;
-    }
-    timeval tv{};
-    tv.tv_sec = 0;
-    tv.tv_usec = kRecvTimeoutMs * 1000;
-    ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     auto player = std::make_unique<LivePlayer>();
     if (!player->init()) {
         ESP_LOGE(kTag, "player alloc failed");
-        ::close(sock);
+        ::close(sock_pcm);
+        ::close(sock_aac);
         vTaskDelete(nullptr);
         return;
     }
-    // Codec is selected per stream from the RTP payload type (see
-    // codec_for_pt). Built lazily on the first packet (and rebuilt if the PT
-    // changes); AAC plugs in via make_depacketizer() later.
-    std::unique_ptr<IDepacketizer> depack;
-    int current_pt = -1;
 
-    ESP_LOGI(kTag, "RTP listening on udp/%u (L16/48k or PCMU/8k by payload type)", kPort);
+    std::unique_ptr<IDepacketizer> depack;
+    constexpr int kAacKey = 1000;   // codec identity for the AAC socket
+    int current_key = -1;           // PT (0..127) on the PCM socket, or kAacKey
+
+    ESP_LOGI(kTag, "RTP listening: udp/%u (L16/PCMU by PT), udp/%u (AAC)", kPort, kAacPort);
 
     auto* recv_buf = static_cast<std::uint8_t*>(heap_caps_malloc(kRecvBufBytes, MALLOC_CAP_8BIT));
     bool session = false;
@@ -439,41 +583,58 @@ void receiver_task(void* /*arg*/)
     std::uint16_t last_seq = 0;
     bool have_seq = false;
 
+    auto handle = [&](int n, bool is_aac, std::uint32_t t) {
+        if (n <= 0) return;
+        const RtpView rtp = parse_rtp(recv_buf, static_cast<std::size_t>(n));
+        if (!rtp.valid) return;
+
+        const int key = is_aac ? kAacKey : static_cast<int>(rtp.pt);
+        std::uint32_t lost = 0;
+        if (have_seq && key == current_key) {
+            const std::int16_t d = static_cast<std::int16_t>(rtp.seq - last_seq);
+            if (d <= 0) return;                       // late / duplicate
+            lost = static_cast<std::uint32_t>(d - 1);
+        }
+        last_seq = rtp.seq;
+        have_seq = true;
+
+        if (!session) {
+            session = true;
+            current_key = -1; // force codec (re)selection for this stream
+            player->begin_session();
+        }
+        if (key != current_key) {
+            current_key = key;
+            const CodecSel sel = is_aac
+                                     ? CodecSel{Codec::Aac, kSampleRate, "AAC (MPEG4-GENERIC, udp/aac)"}
+                                     : codec_for_pt(rtp.pt);
+            depack = make_depacketizer(sel.codec, StreamFormat{sel.rate, 1});
+            ESP_LOGI(kTag, "codec: %s", sel.name);
+        }
+        last_packet_ms = t;
+        if (depack) {
+            depack->on_packet(rtp.payload, rtp.payload_len, rtp.ts, rtp.marker, lost, *player);
+        }
+    };
+
+    const int maxfd = std::max(sock_pcm, sock_aac);
     for (;;) {
-        const int n = ::recvfrom(sock, recv_buf, kRecvBufBytes, 0, nullptr, nullptr);
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(sock_pcm, &rfds);
+        FD_SET(sock_aac, &rfds);
+        timeval tv{};
+        tv.tv_sec = 0;
+        tv.tv_usec = kRecvTimeoutMs * 1000;
+        const int r = ::select(maxfd + 1, &rfds, nullptr, nullptr, &tv);
         const std::uint32_t t = now_ms();
 
-        if (n > 0) {
-            const RtpView rtp = parse_rtp(recv_buf, static_cast<std::size_t>(n));
-            if (rtp.valid) {
-                std::uint32_t lost = 0;
-                bool stale = false;
-                if (have_seq) {
-                    const std::int16_t d = static_cast<std::int16_t>(rtp.seq - last_seq);
-                    if (d <= 0) stale = true;            // late / duplicate (no reorder buffer yet)
-                    else lost = static_cast<std::uint32_t>(d - 1);
-                }
-                if (!stale) {
-                    last_seq = rtp.seq;
-                    have_seq = true;
-                    if (!session) {
-                        session = true;
-                        current_pt = -1; // force codec (re)selection for this stream
-                        player->begin_session();
-                    }
-                    // (Re)build the depacketizer when the payload type changes.
-                    if (static_cast<int>(rtp.pt) != current_pt) {
-                        current_pt = rtp.pt;
-                        const CodecSel sel = codec_for_pt(rtp.pt);
-                        depack = make_depacketizer(sel.codec, StreamFormat{sel.rate, 1});
-                        ESP_LOGI(kTag, "codec: %s (PT %u)", sel.name,
-                                 static_cast<unsigned>(rtp.pt));
-                    }
-                    last_packet_ms = t;
-                    if (depack) {
-                        depack->on_packet(rtp.payload, rtp.payload_len, rtp.ts, rtp.marker, lost, *player);
-                    }
-                }
+        if (r > 0) {
+            if (FD_ISSET(sock_pcm, &rfds)) {
+                handle(::recvfrom(sock_pcm, recv_buf, kRecvBufBytes, 0, nullptr, nullptr), false, t);
+            }
+            if (FD_ISSET(sock_aac, &rfds)) {
+                handle(::recvfrom(sock_aac, recv_buf, kRecvBufBytes, 0, nullptr, nullptr), true, t);
             }
         }
 
@@ -483,7 +644,7 @@ void receiver_task(void* /*arg*/)
                 player->end_session();
                 session = false;
                 have_seq = false;
-                current_pt = -1;
+                current_key = -1;
             }
         }
     }
@@ -499,7 +660,7 @@ std::unique_ptr<IDepacketizer> make_depacketizer(Codec codec, const StreamFormat
     case Codec::MuLaw:
         return std::make_unique<MuLawDepacketizer>(fmt.sample_rate);
     case Codec::Aac:
-        return nullptr; // wifi_audio_aac.cpp (future)
+        return std::make_unique<AacRtpDepacketizer>();
     }
     return nullptr;
 }
@@ -518,9 +679,9 @@ void start(SharedState& state, bool conversation_enabled, bool rtp_enabled)
         return;
     }
 
-    // Internal-RAM stack: lwip + M5.Speaker, no flash ops, so PSRAM would be
-    // fine too, but internal keeps it simple. Core 1 away from NimBLE.
-    if (xTaskCreatePinnedToCore(receiver_task, "wifi-audio", 6144, nullptr,
+    // Internal-RAM stack: lwip + M5.Speaker + AAC decode, no flash ops. Core 1
+    // away from NimBLE. 8 KiB matches the BLE AAC worker's headroom.
+    if (xTaskCreatePinnedToCore(receiver_task, "wifi-audio", 8192, nullptr,
                                 tskIDLE_PRIORITY + 6, nullptr, 1) != pdPASS) {
         ESP_LOGE(kTag, "xTaskCreate(wifi-audio) failed");
     }
