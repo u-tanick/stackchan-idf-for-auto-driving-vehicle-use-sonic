@@ -270,7 +270,7 @@
       <span class="val"><a id="dis-wifi-ip-url" href="#" target="_blank" rel="noopener">—</a></span>
     </div>
     <div class="row" id="dis-wifi-audio-row" hidden style="flex-direction:column; align-items:stretch; gap:0.25rem">
-      <span class="key">Wi-Fi 音声 (RTP/L16, 会話機能オフ時)</span>
+      <span class="key">Wi-Fi 音声 RTP (L16/AAC/μ-law, 会話機能オフ時)</span>
       <code id="dis-wifi-audio-cmd" style="font-size:0.72rem; word-break:break-all; white-space:pre-wrap; user-select:all"></code>
     </div>
   </div>
@@ -305,7 +305,7 @@
     <input type="checkbox" id="rtp-enabled" checked>
     <span>RTP 音声受信を有効にする</span>
   </label>
-  <p class="hint">Wi-Fi 経由の RTP/L16 音声(udp/6970)の受信。会話機能オン時は自動的に無効です</p>
+  <p class="hint">Wi-Fi 経由の RTP 音声受信(L16/μ-law=udp/6970, AAC=udp/6972)。会話機能オン時は自動的に無効です</p>
 
   <details class="jtts-section" id="jtts-section">
     <summary>アイドル時の声 (jtts) を調整する</summary>
@@ -653,9 +653,10 @@ async function fetchDeviceInfo() {
     ipRow.hidden = true;
   }
 
-  // Ready-to-copy ffmpeg command for Wi-Fi live audio (RTP/L16). The device
-  // listens on udp/6970, mono 48 kHz. Prefer the live IP; fall back to the
-  // .local hostname. The browser can't send UDP, so this is copy-only.
+  // Ready-to-copy ffmpeg commands for Wi-Fi live audio. udp/6970 carries L16
+  // or μ-law (codec by RTP payload type), udp/6972 carries AAC. Prefer the
+  // live IP; fall back to the .local hostname. The browser can't send UDP, so
+  // this is copy-only.
   const audioRow = document.getElementById('dis-wifi-audio-row');
   const audioCmd = document.getElementById('dis-wifi-audio-cmd');
   if (!audioHost && name && /^stackchan-[0-9a-f]{6}$/i.test(name)) {
@@ -663,8 +664,12 @@ async function fetchDeviceInfo() {
   }
   if (audioHost) {
     audioCmd.textContent =
-      `ffmpeg -re -i INPUT.wav -ac 1 -ar 48000 -c:a pcm_s16be \\\n` +
-      `  -f rtp rtp://${audioHost}:6970`;
+      `# L16 (非圧縮)  udp/6970\n` +
+      `ffmpeg -re -i IN -ac 1 -ar 48000 -c:a pcm_s16be -f rtp rtp://${audioHost}:6970\n` +
+      `# AAC (圧縮)    udp/6972\n` +
+      `ffmpeg -re -i IN -ac 1 -ar 48000 -c:a aac -f rtp rtp://${audioHost}:6972\n` +
+      `# mu-law (OBS)  udp/6970\n` +
+      `ffmpeg -re -i IN -ac 1 -ar 8000 -c:a pcm_mulaw -f rtp rtp://${audioHost}:6970`;
     audioRow.hidden = false;
   } else {
     audioRow.hidden = true;
