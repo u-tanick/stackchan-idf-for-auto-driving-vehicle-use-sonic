@@ -268,14 +268,27 @@
   <select id="provider">
     <option value="0">OpenAI Realtime</option>
     <option value="1">Google Gemini Live</option>
+    <option value="2">XiaoZhi サーバー</option>
   </select>
-  <p class="hint">どちらの API を使うかを切り替えます。キーは下記の両方に保存できます。</p>
+  <p class="hint">どの会話バックエンドを使うかを切り替えます。キー / 設定は下記すべてに保存できます。</p>
 
   <label for="apikey">OpenAI API キー</label>
   <input type="password" id="apikey" maxlength="256" placeholder="sk-… （変更しない場合は空欄）">
 
   <label for="gemini-apikey">Gemini API キー</label>
   <input type="password" id="gemini-apikey" maxlength="256" placeholder="AIza… （変更しない場合は空欄）">
+
+  <label for="xiaozhi-url">XiaoZhi サーバー URL</label>
+  <input type="text" id="xiaozhi-url" maxlength="256" placeholder="ws://192.168.1.10:8000/xiaozhi/v1/">
+
+  <label for="xiaozhi-token">XiaoZhi トークン</label>
+  <input type="password" id="xiaozhi-token" maxlength="256" placeholder="（任意 / 変更しない場合は空欄）">
+
+  <label for="system-prompt">システムプロンプト (会話の人格)</label>
+  <textarea id="system-prompt" rows="6" maxlength="2048"
+            style="width:100%;box-sizing:border-box;font-size:0.8rem;padding:0.4rem;border:1px solid #ccc;border-radius:4px;white-space:pre-wrap"
+            placeholder="空欄にすると組み込みの既定プロンプトを使用します"></textarea>
+  <p class="hint">OpenAI / Gemini の会話に使う指示文。XiaoZhi はサーバー側の人格を使うため無視されます。保存後の再起動で反映されます。</p>
 
   <label class="toggle-label" for="openai-enabled" style="margin-top:1rem">
     <input type="checkbox" id="openai-enabled" checked>
@@ -487,6 +500,9 @@ async function refresh() {
       `# mu-law (OBS)  udp/6970\n` +
       `ffmpeg -re -i IN -ac 1 -ar 8000 -c:a pcm_mulaw -f rtp rtp://${h}:6970`;
     applyJttsToForm(s.jtts_config || '');
+    $('xiaozhi-url').value = s.xiaozhi_url || '';
+    $('system-prompt').value = s.system_prompt || '';
+    $('system-prompt').dataset.initial = s.system_prompt || '';
 
     setFlag('flag-ssid', !!s.ssid);
     setFlag('flag-pass', !!s.has_password);
@@ -531,10 +547,20 @@ async function apply() {
     if (pass)      { await postText('/api/password', pass);                   log('パスワード送信', 'ok'); }
     if (apiKey)    { await postText('/api/api-key', apiKey);                  log('OpenAI キー送信', 'ok'); }
     if (geminiKey) { await postText('/api/gemini-api-key', geminiKey);        log('Gemini キー送信', 'ok'); }
+    const xzUrl = $('xiaozhi-url').value.trim();
+    const xzToken = $('xiaozhi-token').value;
+    if (xzUrl)     { await postText('/api/xiaozhi-url', xzUrl);               log('XiaoZhi URL 送信', 'ok'); }
+    if (xzToken)   { await postText('/api/xiaozhi-token', xzToken);           log('XiaoZhi トークン送信', 'ok'); }
     await postText('/api/provider', provider);
     await postText('/api/openai-enabled', enabled ? '1' : '0');
     await postText('/api/rtp-enabled', rtpEnabled ? '1' : '0');
     if (jtts)      { await postText('/api/jtts-config', jtts);                log('jtts 設定送信', 'ok'); }
+    // System prompt: send only when changed (empty after a change = reset to
+    // the firmware default; unchanged = leave the stored prompt untouched).
+    const sysPrompt = $('system-prompt').value;
+    if (sysPrompt !== ($('system-prompt').dataset.initial ?? '')) {
+      await postText('/api/system-prompt', sysPrompt);                        log('システムプロンプト送信', 'ok');
+    }
 
     await postText('/api/apply', '');
     log('Apply 完了 — デバイスは ~200ms 後に再起動します', 'ok');

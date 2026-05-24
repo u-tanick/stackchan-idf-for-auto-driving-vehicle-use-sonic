@@ -18,6 +18,9 @@ struct ConversationTaskArgs {
     // empty url (not api_key) disables the task.
     const char* xiaozhi_url = "";
     const char* xiaozhi_token = "";
+    // Conversation system prompt / persona (OpenAI / Gemini). Empty → built-in
+    // default. Ignored by XiaoZhi (its server owns the persona).
+    const char* system_prompt = "";
 };
 
 // Pinned to core 0. Owns the chosen ConversationService backend and drives

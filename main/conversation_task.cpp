@@ -181,11 +181,13 @@ std::uint32_t now_ms()
 class Coordinator {
 public:
     Coordinator(SharedState& state, const char* api_key, config::Provider provider,
-                board::Si12tTouch* touch, const char* xiaozhi_url, const char* xiaozhi_token)
+                board::Si12tTouch* touch, const char* xiaozhi_url, const char* xiaozhi_token,
+                const char* system_prompt)
         : state_{state}, api_key_{api_key != nullptr ? api_key : ""},
           provider_{provider}, touch_{touch},
           xiaozhi_url_{xiaozhi_url != nullptr ? xiaozhi_url : ""},
-          xiaozhi_token_{xiaozhi_token != nullptr ? xiaozhi_token : ""}
+          xiaozhi_token_{xiaozhi_token != nullptr ? xiaozhi_token : ""},
+          system_prompt_{system_prompt != nullptr ? system_prompt : ""}
     {
         // Per-provider audio rates. The OpenAI client further compands its
         // 8 kHz PCM16 into µ-law on the wire; Gemini sends raw PCM16; XiaoZhi
@@ -341,7 +343,9 @@ private:
     bool connect()
     {
         conv::ConversationConfig cfg{};
-        cfg.instructions = kInstructions;
+        // User-set system prompt (over Wi-Fi) wins; empty falls back to the
+        // firmware's built-in persona.
+        cfg.instructions = system_prompt_.empty() ? kInstructions : system_prompt_;
         if (provider_ == config::Provider::Gemini) {
             // Gemini Live model + voice. The model is namespaced as
             // "models/..."; the client prepends that for us when missing.
@@ -930,6 +934,7 @@ private:
     board::Si12tTouch* touch_; // top touch sensor for barge-in (may be null)
     std::string xiaozhi_url_;
     std::string xiaozhi_token_;
+    std::string system_prompt_;
     conv::ConversationConfig config_{};
     std::unique_ptr<conv::ConversationService> client_;
     QueueHandle_t event_queue_{nullptr};
@@ -960,7 +965,7 @@ void conversation_task_entry(void* arg)
 {
     auto& args = *static_cast<ConversationTaskArgs*>(arg);
     auto* coordinator = new Coordinator(*args.state, args.api_key, args.provider, args.touch,
-                                        args.xiaozhi_url, args.xiaozhi_token);
+                                        args.xiaozhi_url, args.xiaozhi_token, args.system_prompt);
     coordinator->run();
     // run() only returns by deleting the task; keep the object alive regardless.
     vTaskDelete(nullptr);

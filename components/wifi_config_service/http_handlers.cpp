@@ -43,7 +43,7 @@ SemaphoreHandle_t g_mutex = nullptr;
 
 struct StagingBuffer {
     std::optional<std::string> ssid, password, api_key, jtts_config, gemini_api_key;
-    std::optional<std::string> xiaozhi_url, xiaozhi_token;
+    std::optional<std::string> xiaozhi_url, xiaozhi_token, system_prompt;
     std::optional<bool> openai_enabled;
     std::optional<bool> rtp_audio_enabled;
     std::optional<config::Provider> provider;
@@ -60,6 +60,7 @@ constexpr std::size_t kMaxSsid = 32;
 constexpr std::size_t kMaxPassword = 64;
 constexpr std::size_t kMaxApiKey = 256;
 constexpr std::size_t kMaxJttsConfig = 768;
+constexpr std::size_t kMaxSystemPrompt = 2048;
 constexpr std::size_t kMaxOtaChunk = 16384; // HTTP can chunk much bigger than BLE
 constexpr std::size_t kMaxBodyBytes = 32768;
 
@@ -207,7 +208,8 @@ esp_err_t handle_status_get(httpd_req_t* req)
     body += "\"openai_enabled\":" + std::string(cfg.openai_enabled ? "true" : "false") + ",";
     body += "\"rtp_audio_enabled\":" + std::string(cfg.rtp_audio_enabled ? "true" : "false") + ",";
     body += "\"provider\":" + std::to_string(static_cast<int>(cfg.provider)) + ",";
-    body += "\"jtts_config\":\"" + escape_json(cfg.jtts_config_json) + "\"";
+    body += "\"jtts_config\":\"" + escape_json(cfg.jtts_config_json) + "\",";
+    body += "\"system_prompt\":\"" + escape_json(cfg.system_prompt) + "\"";
     body += "}";
     return send_json(req, body);
 }
@@ -322,6 +324,16 @@ esp_err_t handle_jtts_config_post(httpd_req_t* req)
     return send_empty(req);
 }
 
+esp_err_t handle_system_prompt_post(httpd_req_t* req)
+{
+    std::string body;
+    if (read_body_str(req, body, kMaxSystemPrompt) != ESP_OK) return ESP_OK;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_staging.system_prompt = std::move(body);
+    xSemaphoreGive(g_mutex);
+    return send_empty(req);
+}
+
 esp_err_t handle_apply_post(httpd_req_t* req)
 {
     xSemaphoreTake(g_mutex, portMAX_DELAY);
@@ -335,6 +347,7 @@ esp_err_t handle_apply_post(httpd_req_t* req)
     if (g_staging.gemini_api_key)  merged.gemini_api_key = *g_staging.gemini_api_key;
     if (g_staging.xiaozhi_url)     merged.xiaozhi_url = *g_staging.xiaozhi_url;
     if (g_staging.xiaozhi_token)   merged.xiaozhi_token = *g_staging.xiaozhi_token;
+    if (g_staging.system_prompt)   merged.system_prompt = *g_staging.system_prompt;
     if (g_staging.provider)        merged.provider = *g_staging.provider;
     xSemaphoreGive(g_mutex);
 
@@ -418,6 +431,7 @@ void register_handlers(httpd_handle_t server, const config::DeviceConfig& curren
     add(server, "/api/rtp-enabled",     HTTP_POST, handle_rtp_enabled_post);
     add(server, "/api/provider",        HTTP_POST, handle_provider_post);
     add(server, "/api/jtts-config",     HTTP_POST, handle_jtts_config_post);
+    add(server, "/api/system-prompt",   HTTP_POST, handle_system_prompt_post);
     add(server, "/api/apply",           HTTP_POST, handle_apply_post);
     add(server, "/api/ota/status",      HTTP_GET,  handle_ota_status_get);
     add(server, "/api/ota/control",     HTTP_POST, handle_ota_control_post);

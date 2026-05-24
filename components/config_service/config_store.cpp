@@ -26,6 +26,7 @@ constexpr const char* kKeyGeminiApiKey = "gemini_key";
 constexpr const char* kKeyProvider = "provider";
 constexpr const char* kKeyXiaozhiUrl = "xz_url";
 constexpr const char* kKeyXiaozhiToken = "xz_token";
+constexpr const char* kKeySystemPrompt = "sys_prompt";
 
 std::string nvs_read_str(nvs_handle_t h, const char* key)
 {
@@ -66,6 +67,7 @@ DeviceConfig load()
     cfg.xiaozhi_url = nvs_read_str(h, kKeyXiaozhiUrl);
     cfg.xiaozhi_token = nvs_read_str(h, kKeyXiaozhiToken);
     cfg.jtts_config_json = nvs_read_str(h, kKeyJttsConfig);
+    cfg.system_prompt = nvs_read_str(h, kKeySystemPrompt);
     // Default to enabled when the key is missing (pre-flag NVS contents).
     std::uint8_t enabled = 1;
     esp_err_t en_err = nvs_get_u8(h, kKeyOpenAiEnabled, &enabled);
@@ -113,6 +115,7 @@ tl::expected<void, Error> save(const DeviceConfig& cfg)
         {kKeyXiaozhiUrl, cfg.xiaozhi_url},
         {kKeyXiaozhiToken, cfg.xiaozhi_token},
         {kKeyJttsConfig, cfg.jtts_config_json},
+        {kKeySystemPrompt, cfg.system_prompt},
     };
     for (const auto& [key, value] : entries) {
         err = nvs_set_str(h, key, value.c_str());
