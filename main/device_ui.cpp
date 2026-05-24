@@ -50,7 +50,7 @@ std::atomic<bool> g_active{false};
 std::atomic<int> g_page{kInfo};
 std::atomic<int> g_tab_page{0}; // which group of tabs is visible (paging)
 std::atomic<bool> g_dirty{true};
-int g_provider = 0; // 0 = OpenAI, 1 = Gemini (cached at init)
+int g_provider = 0; // 0 = OpenAI, 1 = Gemini, 2 = XiaoZhi (cached at init)
 
 // Staged settings (loaded from NVS on open; applied on 適用).
 std::atomic<bool> g_stage_conv{true};
@@ -295,7 +295,10 @@ void draw_conversation()
 
     int y = kContentY;
     const int dy = 26;
-    draw_kv(y, "サービス", g_provider == 1 ? "Gemini Live" : "OpenAI Realtime", fg); y += dy;
+    const char* provider_name = g_provider == 1   ? "Gemini Live"
+                                : g_provider == 2 ? "XiaoZhi"
+                                                  : "OpenAI Realtime";
+    draw_kv(y, "サービス", provider_name, fg); y += dy;
     draw_kv(y, "状態", status_text, status_color); y += dy;
     draw_kv(y, "再接続", rc, reconnects > 0 ? warn : fg); y += dy;
 }

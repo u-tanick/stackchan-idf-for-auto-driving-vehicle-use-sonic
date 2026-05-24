@@ -14,6 +14,7 @@ namespace stackchan::config {
 enum class Provider : std::uint8_t {
     OpenAi = 0,   // OpenAI Realtime API (wss://api.openai.com/v1/realtime)
     Gemini = 1,   // Google Gemini Live API (wss://generativelanguage.googleapis.com/...)
+    XiaoZhi = 2,  // XiaoZhi AI server (ws://<host>:8000/xiaozhi/v1/)
 };
 
 struct DeviceConfig {
@@ -21,6 +22,11 @@ struct DeviceConfig {
     std::string wifi_password;
     std::string openai_api_key;
     std::string gemini_api_key;
+    // XiaoZhi AI server: full WebSocket endpoint (ws://<host>:8000/xiaozhi/v1/)
+    // and optional bearer token. Used only when provider == XiaoZhi; an empty
+    // URL disables the conversation task for that provider.
+    std::string xiaozhi_url;
+    std::string xiaozhi_token;
     Provider provider = Provider::OpenAi;
     // Master switch for the OpenAI Realtime conversation task. Independent
     // of openai_api_key so the key can stay persisted while the feature is

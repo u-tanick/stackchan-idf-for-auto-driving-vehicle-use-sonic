@@ -44,6 +44,9 @@ constexpr const char* kTag = "cfg-gatt";
 // OpenAiEnabled: e3f0a007-...  JttsConfig: e3f0a008-...
 // OtaControl: e3f0a009-...  OtaData: e3f0a00a-...
 // Provider: e3f0a00b-...  GeminiApiKey: e3f0a00c-...  WifiIp: e3f0a00d-...
+// AudioCtrl: e3f0a00e-...  AudioData: e3f0a00f-...  AudioCredit: e3f0a010-...
+// RtpEnabled: e3f0a011-...  WifiMac: e3f0a012-...
+// XiaoZhiUrl: e3f0a013-...  XiaoZhiToken: e3f0a014-...
 
 static const ble_uuid128_t kSvcUuid = BLE_UUID128_INIT(
     0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
@@ -143,12 +146,23 @@ static const ble_uuid128_t kAudioDataUuid = BLE_UUID128_INIT(
 static const ble_uuid128_t kAudioCreditUuid = BLE_UUID128_INIT(
     0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
     0x2a, 0x4d, 0x1c, 0x7b, 0x10, 0xa0, 0xf0, 0xe3);
+// XiaoZhiUrl — encrypted string, the full WebSocket endpoint of a XiaoZhi AI
+// server ("ws://<host>:8000/xiaozhi/v1/"). Used only when provider == XiaoZhi.
+static const ble_uuid128_t kXiaozhiUrlUuid = BLE_UUID128_INIT(
+    0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
+    0x2a, 0x4d, 0x1c, 0x7b, 0x13, 0xa0, 0xf0, 0xe3);
+// XiaoZhiToken — encrypted string bearer token for the XiaoZhi server (sent as
+// "Authorization: Bearer <token>" on the WS upgrade). May be empty.
+static const ble_uuid128_t kXiaozhiTokenUuid = BLE_UUID128_INIT(
+    0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
+    0x2a, 0x4d, 0x1c, 0x7b, 0x14, 0xa0, 0xf0, 0xe3);
 
 // --- Mutable state guarded by g_mutex ---
 static SemaphoreHandle_t g_mutex = nullptr;
 
 struct StagingBuffer {
     std::optional<std::string> ssid, password, api_key, jtts_config, gemini_api_key;
+    std::optional<std::string> xiaozhi_url, xiaozhi_token;
     std::optional<bool> openai_enabled;
     std::optional<bool> rtp_audio_enabled;
     std::optional<Provider> provider;
@@ -174,6 +188,8 @@ static uint16_t g_ota_ctrl_handle = 0;
 static uint16_t g_ota_data_handle = 0;
 static uint16_t g_provider_handle = 0;
 static uint16_t g_gemini_key_handle = 0;
+static uint16_t g_xiaozhi_url_handle = 0;
+static uint16_t g_xiaozhi_token_handle = 0;
 static uint16_t g_wifi_ip_handle = 0;
 static uint16_t g_wifi_mac_handle = 0;
 static uint16_t g_audio_ctrl_handle = 0;
@@ -578,8 +594,9 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
         }
         if (attr_handle == g_provider_handle) {
             if (pt.size() != 1) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
-            const Provider p = (pt[0] == static_cast<std::uint8_t>(Provider::Gemini))
-                                   ? Provider::Gemini : Provider::OpenAi;
+            Provider p = Provider::OpenAi;
+            if (pt[0] == static_cast<std::uint8_t>(Provider::Gemini)) p = Provider::Gemini;
+            else if (pt[0] == static_cast<std::uint8_t>(Provider::XiaoZhi)) p = Provider::XiaoZhi;
             xSemaphoreTake(g_mutex, portMAX_DELAY);
             g_staging.provider = p;
             xSemaphoreGive(g_mutex);
@@ -590,6 +607,22 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             std::string val(reinterpret_cast<const char*>(pt.data()), pt.size());
             xSemaphoreTake(g_mutex, portMAX_DELAY);
             g_staging.gemini_api_key = std::move(val);
+            xSemaphoreGive(g_mutex);
+            return 0;
+        }
+        if (attr_handle == g_xiaozhi_url_handle) {
+            if (pt.size() > 256) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            std::string val(reinterpret_cast<const char*>(pt.data()), pt.size());
+            xSemaphoreTake(g_mutex, portMAX_DELAY);
+            g_staging.xiaozhi_url = std::move(val);
+            xSemaphoreGive(g_mutex);
+            return 0;
+        }
+        if (attr_handle == g_xiaozhi_token_handle) {
+            if (pt.size() > 256) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            std::string val(reinterpret_cast<const char*>(pt.data()), pt.size());
+            xSemaphoreTake(g_mutex, portMAX_DELAY);
+            g_staging.xiaozhi_token = std::move(val);
             xSemaphoreGive(g_mutex);
             return 0;
         }
@@ -605,6 +638,8 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             if (g_staging.rtp_audio_enabled) merged.rtp_audio_enabled = *g_staging.rtp_audio_enabled;
             if (g_staging.jtts_config) merged.jtts_config_json = *g_staging.jtts_config;
             if (g_staging.gemini_api_key) merged.gemini_api_key = *g_staging.gemini_api_key;
+            if (g_staging.xiaozhi_url) merged.xiaozhi_url = *g_staging.xiaozhi_url;
+            if (g_staging.xiaozhi_token) merged.xiaozhi_token = *g_staging.xiaozhi_token;
             if (g_staging.provider) merged.provider = *g_staging.provider;
             xSemaphoreGive(g_mutex);
 
@@ -726,6 +761,18 @@ static ble_gatt_chr_def kChrs[] = {
         .access_cb = gatt_access_cb,
         .flags = BLE_GATT_CHR_F_WRITE,
         .val_handle = &g_gemini_key_handle,
+    },
+    {
+        .uuid = &kXiaozhiUrlUuid.u,
+        .access_cb = gatt_access_cb,
+        .flags = BLE_GATT_CHR_F_WRITE,
+        .val_handle = &g_xiaozhi_url_handle,
+    },
+    {
+        .uuid = &kXiaozhiTokenUuid.u,
+        .access_cb = gatt_access_cb,
+        .flags = BLE_GATT_CHR_F_WRITE,
+        .val_handle = &g_xiaozhi_token_handle,
     },
     {
         .uuid = &kWifiIpUuid.u,

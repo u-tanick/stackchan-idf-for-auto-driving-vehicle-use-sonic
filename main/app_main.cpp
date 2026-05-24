@@ -485,6 +485,8 @@ extern "C" void app_main()
     // openai_enabled flag still acts as a master "conversation off" switch
     // regardless of provider; turning it off keeps both keys in NVS.
     const char* api_key = "";
+    const char* xiaozhi_url = "";
+    const char* xiaozhi_token = "";
     if (!cfg.openai_enabled) {
         ESP_LOGI(kTag, "Conversation disabled by configuration");
     } else if (cfg.provider == stackchan::config::Provider::Gemini) {
@@ -493,6 +495,12 @@ extern "C" void app_main()
         }
         ESP_LOGI(kTag, "provider=Gemini Live, key=%s",
                  api_key[0] ? "set" : "empty");
+    } else if (cfg.provider == stackchan::config::Provider::XiaoZhi) {
+        // XiaoZhi is keyed by its server URL; the token is optional.
+        xiaozhi_url = cfg.xiaozhi_url.c_str();
+        xiaozhi_token = cfg.xiaozhi_token.c_str();
+        ESP_LOGI(kTag, "provider=XiaoZhi, url=%s token=%s",
+                 xiaozhi_url[0] ? "set" : "empty", xiaozhi_token[0] ? "set" : "empty");
     } else {
         if (!cfg.openai_api_key.empty()) {
             api_key = cfg.openai_api_key.c_str();
@@ -504,7 +512,8 @@ extern "C" void app_main()
     }
 
     g_conversation_args = new stackchan::app::ConversationTaskArgs{
-        .state = g_state, .api_key = api_key, .provider = cfg.provider, .touch = g_touch};
+        .state = g_state, .api_key = api_key, .provider = cfg.provider, .touch = g_touch,
+        .xiaozhi_url = xiaozhi_url, .xiaozhi_token = xiaozhi_token};
 
     stackchan::app::ui::init(*g_state);
     stackchan::app::start_render_task(*g_render_args);

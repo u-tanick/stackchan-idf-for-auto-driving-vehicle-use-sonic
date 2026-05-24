@@ -24,6 +24,8 @@ constexpr const char* kKeyRtpAudioEnabled = "rtp_en";
 constexpr const char* kKeyJttsConfig = "jtts_cfg";
 constexpr const char* kKeyGeminiApiKey = "gemini_key";
 constexpr const char* kKeyProvider = "provider";
+constexpr const char* kKeyXiaozhiUrl = "xz_url";
+constexpr const char* kKeyXiaozhiToken = "xz_token";
 
 std::string nvs_read_str(nvs_handle_t h, const char* key)
 {
@@ -61,6 +63,8 @@ DeviceConfig load()
     cfg.wifi_password = nvs_read_str(h, kKeyPass);
     cfg.openai_api_key = nvs_read_str(h, kKeyApiKey);
     cfg.gemini_api_key = nvs_read_str(h, kKeyGeminiApiKey);
+    cfg.xiaozhi_url = nvs_read_str(h, kKeyXiaozhiUrl);
+    cfg.xiaozhi_token = nvs_read_str(h, kKeyXiaozhiToken);
     cfg.jtts_config_json = nvs_read_str(h, kKeyJttsConfig);
     // Default to enabled when the key is missing (pre-flag NVS contents).
     std::uint8_t enabled = 1;
@@ -80,8 +84,11 @@ DeviceConfig load()
     std::uint8_t provider = static_cast<std::uint8_t>(Provider::OpenAi);
     esp_err_t prov_err = nvs_get_u8(h, kKeyProvider, &provider);
     if (prov_err == ESP_OK) {
-        cfg.provider = (provider == static_cast<std::uint8_t>(Provider::Gemini))
-                           ? Provider::Gemini : Provider::OpenAi;
+        switch (provider) {
+        case static_cast<std::uint8_t>(Provider::Gemini): cfg.provider = Provider::Gemini; break;
+        case static_cast<std::uint8_t>(Provider::XiaoZhi): cfg.provider = Provider::XiaoZhi; break;
+        default: cfg.provider = Provider::OpenAi; break;
+        }
     } else if (prov_err != ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGW(kTag, "nvs_get_u8(%s): %s", kKeyProvider, esp_err_to_name(prov_err));
     }
@@ -103,6 +110,8 @@ tl::expected<void, Error> save(const DeviceConfig& cfg)
         {kKeyPass, cfg.wifi_password},
         {kKeyApiKey, cfg.openai_api_key},
         {kKeyGeminiApiKey, cfg.gemini_api_key},
+        {kKeyXiaozhiUrl, cfg.xiaozhi_url},
+        {kKeyXiaozhiToken, cfg.xiaozhi_token},
         {kKeyJttsConfig, cfg.jtts_config_json},
     };
     for (const auto& [key, value] : entries) {

@@ -66,6 +66,12 @@ enum class ConversationEventType : std::uint8_t {
     AssistantTextDone,
     AssistantAudioChunk,
     AssistantAudioDone,
+    // The backend reported an affective state for the current reply (e.g.
+    // XiaoZhi's `llm` emotion message). `text` carries the emotion name; the
+    // application maps it to an avatar expression. Backends that don't model
+    // emotion separately (OpenAI / Gemini drive expression via a tool call)
+    // simply never emit this.
+    AssistantEmotion,
     ToolCallRequested,
     ResponseDone,
     Error,

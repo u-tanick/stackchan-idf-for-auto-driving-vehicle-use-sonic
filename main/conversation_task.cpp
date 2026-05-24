@@ -24,6 +24,7 @@
 #include "board/si12t_touch.hpp"
 #include "conversation/gemini_live_client.hpp"
 #include "conversation/openai_realtime_client.hpp"
+#include "conversation/xiaozhi_client.hpp"
 #include "utf8.hpp"
 #include "wifi_sta.hpp"
 
@@ -135,6 +136,42 @@ std::optional<avatar::Expression> parse_expression(const char* name)
     return std::nullopt;
 }
 
+// Map XiaoZhi's affective `llm.emotion` vocabulary onto our 6 avatar
+// expressions. XiaoZhi emits a richer set (happy/laughing/funny/loving/…),
+// so several names collapse onto each face. Unknown names yield nullopt and
+// are ignored by the caller, leaving the current expression untouched.
+std::optional<avatar::Expression> parse_emotion(const char* name)
+{
+    if (name == nullptr) {
+        return std::nullopt;
+    }
+    // Direct hits on our own vocabulary first.
+    if (auto e = parse_expression(name)) {
+        return e;
+    }
+    if (std::strcmp(name, "laughing") == 0 || std::strcmp(name, "funny") == 0 ||
+        std::strcmp(name, "loving") == 0 || std::strcmp(name, "delicious") == 0 ||
+        std::strcmp(name, "kissy") == 0 || std::strcmp(name, "winking") == 0 ||
+        std::strcmp(name, "silly") == 0) {
+        return avatar::Expression::Happy;
+    }
+    if (std::strcmp(name, "crying") == 0) {
+        return avatar::Expression::Sad;
+    }
+    if (std::strcmp(name, "shocked") == 0) {
+        return avatar::Expression::Angry;
+    }
+    if (std::strcmp(name, "surprised") == 0 || std::strcmp(name, "thinking") == 0 ||
+        std::strcmp(name, "confused") == 0 || std::strcmp(name, "embarrassed") == 0) {
+        return avatar::Expression::Doubt;
+    }
+    if (std::strcmp(name, "relaxed") == 0 || std::strcmp(name, "cool") == 0 ||
+        std::strcmp(name, "confident") == 0) {
+        return avatar::Expression::Neutral;
+    }
+    return std::nullopt;
+}
+
 std::uint32_t now_ms()
 {
     return static_cast<std::uint32_t>(esp_timer_get_time() / 1000);
@@ -144,13 +181,16 @@ std::uint32_t now_ms()
 class Coordinator {
 public:
     Coordinator(SharedState& state, const char* api_key, config::Provider provider,
-                board::Si12tTouch* touch)
+                board::Si12tTouch* touch, const char* xiaozhi_url, const char* xiaozhi_token)
         : state_{state}, api_key_{api_key != nullptr ? api_key : ""},
-          provider_{provider}, touch_{touch}
+          provider_{provider}, touch_{touch},
+          xiaozhi_url_{xiaozhi_url != nullptr ? xiaozhi_url : ""},
+          xiaozhi_token_{xiaozhi_token != nullptr ? xiaozhi_token : ""}
     {
         // Per-provider audio rates. The OpenAI client further compands its
-        // 8 kHz PCM16 into µ-law on the wire; Gemini sends raw PCM16.
-        if (provider_ == config::Provider::Gemini) {
+        // 8 kHz PCM16 into µ-law on the wire; Gemini sends raw PCM16; XiaoZhi
+        // streams Opus (16 kHz mono up, server-rate down, resampled to 24 kHz).
+        if (provider_ == config::Provider::Gemini || provider_ == config::Provider::XiaoZhi) {
             mic_sample_rate_ = 16000;
             speaker_sample_rate_ = 24000;
         } else {
@@ -163,8 +203,12 @@ public:
 
     void run()
     {
-        if (api_key_.empty()) {
-            ESP_LOGW(kTag, "API key empty for selected provider — conversation disabled");
+        // XiaoZhi is keyed by its server URL rather than an API key; the other
+        // providers need a non-empty api_key.
+        const bool disabled = provider_ == config::Provider::XiaoZhi ? xiaozhi_url_.empty()
+                                                                     : api_key_.empty();
+        if (disabled) {
+            ESP_LOGW(kTag, "credentials empty for selected provider — conversation disabled");
             vTaskDelete(nullptr);
             return;
         }
@@ -174,8 +218,7 @@ public:
         while (!wifi_is_connected()) {
             vTaskDelay(pdMS_TO_TICKS(500));
         }
-        ESP_LOGI(kTag, "Wi-Fi up, starting %s conversation",
-                 provider_ == config::Provider::Gemini ? "Gemini" : "OpenAI");
+        ESP_LOGI(kTag, "Wi-Fi up, starting %s conversation", provider_name());
 
         event_queue_ = xQueueCreate(32, sizeof(conv::ConversationEvent*));
         mic_buf_[0].resize(mic_chunk_samples_);
@@ -196,6 +239,8 @@ public:
 
         if (provider_ == config::Provider::Gemini) {
             client_ = std::make_unique<conv::GeminiLiveClient>(api_key_);
+        } else if (provider_ == config::Provider::XiaoZhi) {
+            client_ = std::make_unique<conv::XiaoZhiClient>(xiaozhi_url_, xiaozhi_token_);
         } else {
             client_ = std::make_unique<conv::OpenAiRealtimeClient>(api_key_);
         }
@@ -310,9 +355,14 @@ private:
         }
         cfg.input_sample_rate_hz = mic_sample_rate_;
         cfg.output_sample_rate_hz = speaker_sample_rate_;
-        cfg.tools.push_back(make_set_expression_tool());
-        cfg.tools.push_back(make_set_head_pose_tool());
-        cfg.tools.push_back(make_speak_katakoto_tool());
+        // XiaoZhi v1 has no client-side tools — the server owns the persona and
+        // drives the avatar's expression via its `llm` emotion messages, which
+        // the client maps to AssistantEmotion events.
+        if (provider_ != config::Provider::XiaoZhi) {
+            cfg.tools.push_back(make_set_expression_tool());
+            cfg.tools.push_back(make_set_head_pose_tool());
+            cfg.tools.push_back(make_speak_katakoto_tool());
+        }
         config_ = cfg;
 
         set_local(Local::Init);
@@ -634,6 +684,16 @@ private:
             }
             break;
 
+        case conv::ConversationEventType::AssistantEmotion:
+            // Backend-reported affect (XiaoZhi `llm.emotion`). Maps straight to
+            // an avatar expression — no tool round-trip, so it never touches
+            // tool_pending_ / the turn state machine.
+            if (const auto expr = parse_emotion(ev.text.c_str())) {
+                ESP_LOGI(kTag, "emotion: %s", ev.text.c_str());
+                state_.expression.store(static_cast<int>(*expr), std::memory_order_relaxed);
+            }
+            break;
+
         case conv::ConversationEventType::ToolCallRequested:
             if (ev.tool_call) {
                 dispatch_tool(*ev.tool_call);
@@ -844,10 +904,21 @@ private:
 
     // ---- members -----------------------------------------------------------
 
+    const char* provider_name() const
+    {
+        switch (provider_) {
+        case config::Provider::Gemini: return "Gemini";
+        case config::Provider::XiaoZhi: return "XiaoZhi";
+        default: return "OpenAI";
+        }
+    }
+
     SharedState& state_;
     std::string api_key_;
     config::Provider provider_;
     board::Si12tTouch* touch_; // top touch sensor for barge-in (may be null)
+    std::string xiaozhi_url_;
+    std::string xiaozhi_token_;
     conv::ConversationConfig config_{};
     std::unique_ptr<conv::ConversationService> client_;
     QueueHandle_t event_queue_{nullptr};
@@ -877,7 +948,8 @@ private:
 void conversation_task_entry(void* arg)
 {
     auto& args = *static_cast<ConversationTaskArgs*>(arg);
-    auto* coordinator = new Coordinator(*args.state, args.api_key, args.provider, args.touch);
+    auto* coordinator = new Coordinator(*args.state, args.api_key, args.provider, args.touch,
+                                        args.xiaozhi_url, args.xiaozhi_token);
     coordinator->run();
     // run() only returns by deleting the task; keep the object alive regardless.
     vTaskDelete(nullptr);

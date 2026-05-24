@@ -12,8 +12,12 @@ namespace stackchan::app {
 struct ConversationTaskArgs {
     SharedState* state;
     const char* api_key;          // API key for the chosen provider; empty disables the task
-    config::Provider provider;    // selects OpenAI Realtime vs. Gemini Live
+    config::Provider provider;    // selects OpenAI Realtime / Gemini Live / XiaoZhi
     board::Si12tTouch* touch;     // top touch sensor for barge-in; may be null
+    // XiaoZhi only: WebSocket endpoint + optional bearer token. For XiaoZhi an
+    // empty url (not api_key) disables the task.
+    const char* xiaozhi_url = "";
+    const char* xiaozhi_token = "";
 };
 
 // Pinned to core 0. Owns the chosen ConversationService backend and drives

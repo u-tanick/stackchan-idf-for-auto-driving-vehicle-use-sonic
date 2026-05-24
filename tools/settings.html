@@ -290,14 +290,21 @@
   <select id="provider">
     <option value="0">OpenAI Realtime</option>
     <option value="1">Google Gemini Live</option>
+    <option value="2">XiaoZhi サーバー</option>
   </select>
-  <p class="hint">どちらの API を使うかを切り替えます。キーは下記の両方に保存できます。</p>
+  <p class="hint">どの会話バックエンドを使うかを切り替えます。キー / 設定は下記すべてに保存できます。</p>
 
   <label for="apikey">OpenAI API キー</label>
   <input type="password" id="apikey" maxlength="256" placeholder="sk-… （変更しない場合は空欄）">
 
   <label for="gemini-apikey">Gemini API キー</label>
   <input type="password" id="gemini-apikey" maxlength="256" placeholder="AIza… （変更しない場合は空欄）">
+
+  <label for="xiaozhi-url">XiaoZhi サーバー URL</label>
+  <input type="text" id="xiaozhi-url" maxlength="256" placeholder="ws://192.168.1.10:8000/xiaozhi/v1/ （変更しない場合は空欄）">
+
+  <label for="xiaozhi-token">XiaoZhi トークン</label>
+  <input type="password" id="xiaozhi-token" maxlength="256" placeholder="（任意 / 変更しない場合は空欄）">
 
   <label class="toggle-label" for="openai-enabled" style="margin-top:1rem">
     <input type="checkbox" id="openai-enabled" checked>
@@ -433,6 +440,8 @@ const CHR_OTA_CTRL = 'e3f0a009-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_OTA_DATA = 'e3f0a00a-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_PROVIDER = 'e3f0a00b-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_GEMINI_KEY = 'e3f0a00c-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+const CHR_XIAOZHI_URL = 'e3f0a013-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+const CHR_XIAOZHI_TOKEN = 'e3f0a014-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_WIFI_IP = 'e3f0a00d-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_WIFI_MAC = 'e3f0a012-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_AUDIO_CTRL = 'e3f0a00e-7b1c-4d2a-9e6f-2c5a8d4b1f00';
@@ -466,7 +475,7 @@ const DIS_CHRS = {
 
 // --- State ---
 let bleDevice = null, bleServer = null, svc = null;
-let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null;
+let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null;
 let jttsInitialJson = '';  // last read JSON, used to detect Apply-time changes
 let otaInFlight = false;
 let aesKey = null;  // CryptoKey for AES-256-GCM, derived per connection
@@ -810,6 +819,7 @@ function applyCapabilityGating() {
   const hasSettings = !!(chrSsid && chrPass && chrApply && chrStatus);
   const hasOpenAiKey = !!chrKey;
   const hasGemini = !!(chrProvider && chrGeminiKey);
+  const hasXiaozhi = !!(chrProvider && chrXiaozhiUrl && chrXiaozhiToken);
   const hasEnable = !!chrEn;
   const hasRtpEnable = !!chrRtpEn;
   const hasJtts = !!chrJtts;
@@ -824,6 +834,11 @@ function applyCapabilityGating() {
   setVisible('label[for="provider"], #provider', hasGemini);
   setVisible('#provider + p.hint', hasGemini);
   setVisible('label[for="gemini-apikey"], #gemini-apikey', hasGemini);
+  setVisible('label[for="xiaozhi-url"], #xiaozhi-url', hasXiaozhi);
+  setVisible('label[for="xiaozhi-token"], #xiaozhi-token', hasXiaozhi);
+  // Hide the XiaoZhi provider choice entirely on firmware that lacks its chrs.
+  const xzOption = document.querySelector('#provider option[value="2"]');
+  if (xzOption) xzOption.hidden = !hasXiaozhi;
   setVisible('label[for="apikey"], #apikey', hasOpenAiKey);
   setVisible('label.toggle-label[for="openai-enabled"]', hasEnable);
   setVisible('#openai-enabled + span', hasEnable);
@@ -1410,6 +1425,8 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
       ['otaData',    CHR_OTA_DATA],
       ['provider',   CHR_PROVIDER],
       ['geminiKey',  CHR_GEMINI_KEY],
+      ['xiaozhiUrl', CHR_XIAOZHI_URL],
+      ['xiaozhiToken', CHR_XIAOZHI_TOKEN],
       ['wifiIp',     CHR_WIFI_IP],
       ['wifiMac',    CHR_WIFI_MAC],
       ['audioCtrl',  CHR_AUDIO_CTRL],
@@ -1438,6 +1455,8 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
     chrOtaData  = found.otaData  ?? null;
     chrProvider = found.provider ?? null;
     chrGeminiKey= found.geminiKey?? null;
+    chrXiaozhiUrl = found.xiaozhiUrl ?? null;
+    chrXiaozhiToken = found.xiaozhiToken ?? null;
     chrWifiIp   = found.wifiIp   ?? null;
     chrWifiMac  = found.wifiMac  ?? null;
     chrAudioCtrl= found.audioCtrl?? null;
@@ -1574,7 +1593,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
 function onDisconnected() {
   log('切断されました', 'err');
   setBleUi(false);
-  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = null;
+  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrXiaozhiUrl = chrXiaozhiToken = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = null;
   aesKey = null;
   clearDeviceInfo();
   delete document.getElementById('openai-enabled').dataset.initial;
@@ -1609,6 +1628,8 @@ document.getElementById('btn-apply').addEventListener('click', async () => {
   const pass = document.getElementById('password').value;
   const key  = document.getElementById('apikey').value.trim();
   const gkey = document.getElementById('gemini-apikey').value.trim();
+  const xzUrl = document.getElementById('xiaozhi-url').value.trim();
+  const xzToken = document.getElementById('xiaozhi-token').value.trim();
 
   const btn = document.getElementById('btn-apply');
   btn.disabled = true;
@@ -1632,6 +1653,14 @@ document.getElementById('btn-apply').addEventListener('click', async () => {
     if (gkey && chrGeminiKey) {
       await writeEncrypted(chrGeminiKey, strToBytes(gkey));
       log('Gemini キー 書き込み完了', 'ok');
+    }
+    if (xzUrl && chrXiaozhiUrl) {
+      await writeEncrypted(chrXiaozhiUrl, strToBytes(xzUrl));
+      log('XiaoZhi URL 書き込み完了', 'ok');
+    }
+    if (xzToken && chrXiaozhiToken) {
+      await writeEncrypted(chrXiaozhiToken, strToBytes(xzToken));
+      log('XiaoZhi トークン 書き込み完了', 'ok');
     }
 
     // Provider: only write if changed from initial AND chr is present.
