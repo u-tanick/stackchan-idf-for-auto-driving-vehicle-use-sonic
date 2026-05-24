@@ -15,6 +15,20 @@
 
 namespace stackchan::app {
 
+// Coarse conversation-backend (OpenAI / Gemini Live) connection status for the
+// on-device 会話 screen. Disabled is the default when the conversation task
+// isn't running (feature off / no API key).
+enum class ConvStatus : int {
+    Disabled = 0,
+    WaitingWifi,  // task up, waiting for Wi-Fi
+    Connecting,   // opening the realtime session
+    Listening,    // connected, idle listening
+    Talking,      // in a turn (thinking / speaking)
+    Yielded,      // handed off to BLE / Wi-Fi audio streaming
+    Reconnecting, // recovering after a transport error
+    Error,        // connect attempt failed
+};
+
 // State shared between the demo / servo / render tasks. Most fields are
 // lock-free atomics; the balloon text + completion callback need a mutex
 // because std::string and std::function aren't trivially copyable.
@@ -36,6 +50,12 @@ public:
     // demo_loop runs its idle behaviours (random head poses, nadenade) when
     // this is set, but keeps babble / expression-cycle / mouth-sync to itself.
     std::atomic<bool> conversation_idle{false};
+
+    // Conversation backend connection status + a count of transport-error
+    // reconnects (recover_after_error). The 会話 screen shows both so a
+    // reconnect storm (repeated API connection failures) is visible.
+    std::atomic<ConvStatus> conversation_status{ConvStatus::Disabled};
+    std::atomic<std::uint32_t> conversation_reconnects{0};
 
     // Cooperative I2S handoff for BLE audio streaming. CoreS3 shares the
     // I2S_NUM_1 bus between mic + speaker, so audio_stream_sink can't just

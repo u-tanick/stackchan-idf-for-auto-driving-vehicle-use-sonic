@@ -170,6 +170,7 @@ public:
         }
 
         ESP_LOGI(kTag, "waiting for Wi-Fi...");
+        state_.conversation_status.store(ConvStatus::WaitingWifi, std::memory_order_relaxed);
         while (!wifi_is_connected()) {
             vTaskDelay(pdMS_TO_TICKS(500));
         }
@@ -202,6 +203,7 @@ public:
 
         if (!connect()) {
             ESP_LOGE(kTag, "initial connect failed; conversation disabled");
+            state_.conversation_status.store(ConvStatus::Error, std::memory_order_relaxed);
             vTaskDelete(nullptr);
             return;
         }
@@ -325,6 +327,8 @@ private:
     void recover_after_error()
     {
         ESP_LOGW(kTag, "recovering conversation session");
+        state_.conversation_status.store(ConvStatus::Reconnecting, std::memory_order_relaxed);
+        state_.conversation_reconnects.fetch_add(1, std::memory_order_relaxed);
         if (local_ == Local::Speaking) {
             M5.Speaker.end();
             vTaskDelay(kI2sSettle);
@@ -382,6 +386,7 @@ private:
         if (state_.audio_stream_active.load(std::memory_order_acquire)) return;
         if (!connect()) {
             ESP_LOGE(kTag, "reconnect failed; retrying in 5 s");
+            state_.conversation_status.store(ConvStatus::Error, std::memory_order_relaxed);
             vTaskDelay(pdMS_TO_TICKS(5000));
             flush_events();
             connect();
@@ -397,6 +402,15 @@ private:
     {
         local_ = s;
         state_.conversation_idle.store(s == Local::Listening, std::memory_order_relaxed);
+        ConvStatus cs = ConvStatus::Connecting;
+        switch (s) {
+        case Local::Init: cs = ConvStatus::Connecting; break;
+        case Local::Listening: cs = ConvStatus::Listening; break;
+        case Local::Thinking:
+        case Local::Speaking: cs = ConvStatus::Talking; break;
+        case Local::Yielded: cs = ConvStatus::Yielded; break;
+        }
+        state_.conversation_status.store(cs, std::memory_order_relaxed);
     }
 
     void service_state()

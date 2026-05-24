@@ -26,18 +26,20 @@ namespace {
 constexpr int kW = 320;
 constexpr int kH = 240;
 
-// Top bar: three tabs + a close button on the right.
+// Top bar: tabs + a close button on the right. When there are more tabs than
+// fit (kTabsPerPage), the bar paginates with ‹ › arrows.
 constexpr int kBarH = 38;
 constexpr int kCloseW = 38;
-constexpr int kTabsW = kW - kCloseW;     // 282
-constexpr int kNumTabs = 3;
-constexpr int kTabW = kTabsW / kNumTabs; // 94
+constexpr int kArrowW = 26;
+constexpr int kTabsPerPage = 3;
 
 // Content rows.
 constexpr int kContentY = kBarH + 8;     // 46
 constexpr int kRowH = 42;
 
-enum Page : int { kInfo = 0, kSettings = 1, kControl = 2 };
+enum Page : int { kInfo = 0, kSettings = 1, kControl = 2, kConversation = 3, kTabCount };
+const char* const kTabLabels[kTabCount] = {"情報", "設定", "操作", "会話"};
+int num_tab_pages() { return (kTabCount + kTabsPerPage - 1) / kTabsPerPage; }
 
 const auto* const kFontTitle = &fonts::lgfxJapanGothic_24;
 const auto* const kFontBody = &fonts::lgfxJapanGothic_16;
@@ -46,7 +48,9 @@ SharedState* g_state = nullptr;
 
 std::atomic<bool> g_active{false};
 std::atomic<int> g_page{kInfo};
+std::atomic<int> g_tab_page{0}; // which group of tabs is visible (paging)
 std::atomic<bool> g_dirty{true};
+int g_provider = 0; // 0 = OpenAI, 1 = Gemini (cached at init)
 
 // Staged settings (loaded from NVS on open; applied on 適用).
 std::atomic<bool> g_stage_conv{true};
@@ -91,6 +95,49 @@ std::string current_ip()
     return "-";
 }
 
+// --- Tab bar layout (shared by draw + hit-test) --------------------------
+
+struct TabSlot {
+    int index; // tab index (Page)
+    int x;
+    int w;
+};
+struct TabBar {
+    int close_x;
+    bool paging = false;
+    int prev_x = 0, next_x = 0; // arrow x (width kArrowW) when paging
+    TabSlot slots[kTabsPerPage];
+    int slot_count = 0;
+};
+
+TabBar layout_tabbar()
+{
+    TabBar b;
+    b.close_x = kW - kCloseW;
+    if (kTabCount <= kTabsPerPage) {
+        const int avail = kW - kCloseW;
+        const int tw = avail / kTabCount;
+        for (int i = 0; i < kTabCount; ++i) {
+            const int x = i * tw;
+            const int w = (i == kTabCount - 1) ? (avail - tw * (kTabCount - 1)) : tw;
+            b.slots[b.slot_count++] = {i, x, w};
+        }
+    } else {
+        b.paging = true;
+        b.prev_x = 0;
+        b.next_x = kW - kCloseW - kArrowW;
+        const int sx = kArrowW;
+        const int sw = b.next_x - sx;
+        const int tw = sw / kTabsPerPage;
+        const int np = num_tab_pages();
+        const int start = (g_tab_page.load(std::memory_order_relaxed) % np) * kTabsPerPage;
+        for (int s = 0; s < kTabsPerPage && (start + s) < kTabCount; ++s) {
+            b.slots[b.slot_count++] = {start + s, sx + s * tw, tw};
+        }
+    }
+    return b;
+}
+
 // --- Drawing -------------------------------------------------------------
 
 void draw_topbar(int page)
@@ -98,20 +145,33 @@ void draw_topbar(int page)
     const std::uint16_t bar = g_canvas.color565(40, 44, 54);
     const std::uint16_t sel = g_canvas.color565(60, 120, 200);
     const std::uint16_t fg = g_canvas.color565(235, 235, 235);
+    const std::uint16_t arrow = g_canvas.color565(70, 74, 84);
     g_canvas.fillRect(0, 0, kW, kBarH, bar);
 
-    static const char* kLabels[kNumTabs] = {"情報", "設定", "操作"};
+    const TabBar b = layout_tabbar();
     g_canvas.setFont(kFontBody);
     g_canvas.setTextDatum(lgfx::textdatum_t::middle_center);
-    for (int i = 0; i < kNumTabs; ++i) {
-        if (i == page) g_canvas.fillRect(i * kTabW, 0, kTabW, kBarH, sel);
+
+    if (b.paging) {
+        g_canvas.fillRect(b.prev_x, 0, kArrowW, kBarH, arrow);
+        g_canvas.fillRect(b.next_x, 0, kArrowW, kBarH, arrow);
+        // Draw the paging arrows as triangles (font has no ‹ › glyphs).
+        const int cy = kBarH / 2;
+        const int pcx = b.prev_x + kArrowW / 2;
+        g_canvas.fillTriangle(pcx - 5, cy, pcx + 4, cy - 7, pcx + 4, cy + 7, fg); // ◀
+        const int ncx = b.next_x + kArrowW / 2;
+        g_canvas.fillTriangle(ncx + 5, cy, ncx - 4, cy - 7, ncx - 4, cy + 7, fg); // ▶
+    }
+    for (int i = 0; i < b.slot_count; ++i) {
+        const TabSlot& s = b.slots[i];
+        if (s.index == page) g_canvas.fillRect(s.x, 0, s.w, kBarH, sel);
         g_canvas.setTextColor(fg);
-        g_canvas.drawString(kLabels[i], i * kTabW + kTabW / 2, kBarH / 2);
+        g_canvas.drawString(kTabLabels[s.index], s.x + s.w / 2, kBarH / 2);
     }
     // Close button.
-    g_canvas.fillRect(kTabsW, 0, kCloseW, kBarH, g_canvas.color565(120, 60, 60));
+    g_canvas.fillRect(b.close_x, 0, kCloseW, kBarH, g_canvas.color565(120, 60, 60));
     g_canvas.setTextColor(fg);
-    g_canvas.drawString("×", kTabsW + kCloseW / 2, kBarH / 2);
+    g_canvas.drawString("×", b.close_x + kCloseW / 2, kBarH / 2);
 }
 
 void draw_kv(int y, const char* key, const char* value, std::uint16_t vcolor)
@@ -208,6 +268,38 @@ void draw_control()
     draw_button(1, "姿勢をリセット", g_canvas.color565(60, 120, 200));
 }
 
+void draw_conversation()
+{
+    const std::uint16_t fg = g_canvas.color565(235, 235, 235);
+    const std::uint16_t ok = g_canvas.color565(80, 220, 120);
+    const std::uint16_t warn = g_canvas.color565(235, 200, 90);
+    const std::uint16_t err = g_canvas.color565(235, 100, 100);
+    const std::uint16_t dim = g_canvas.color565(150, 150, 150);
+
+    const ConvStatus st = g_state->conversation_status.load(std::memory_order_relaxed);
+    const char* status_text = "?";
+    std::uint16_t status_color = dim;
+    switch (st) {
+    case ConvStatus::Disabled: status_text = "無効"; status_color = dim; break;
+    case ConvStatus::WaitingWifi: status_text = "Wi-Fi 待ち"; status_color = warn; break;
+    case ConvStatus::Connecting: status_text = "接続中…"; status_color = warn; break;
+    case ConvStatus::Listening: status_text = "接続（待受）"; status_color = ok; break;
+    case ConvStatus::Talking: status_text = "通話中"; status_color = ok; break;
+    case ConvStatus::Yielded: status_text = "音声再生中"; status_color = dim; break;
+    case ConvStatus::Reconnecting: status_text = "再接続中…"; status_color = warn; break;
+    case ConvStatus::Error: status_text = "接続エラー"; status_color = err; break;
+    }
+    const std::uint32_t reconnects = g_state->conversation_reconnects.load(std::memory_order_relaxed);
+    char rc[16];
+    std::snprintf(rc, sizeof(rc), "%u 回", static_cast<unsigned>(reconnects));
+
+    int y = kContentY;
+    const int dy = 26;
+    draw_kv(y, "サービス", g_provider == 1 ? "Gemini Live" : "OpenAI Realtime", fg); y += dy;
+    draw_kv(y, "状態", status_text, status_color); y += dy;
+    draw_kv(y, "再接続", rc, reconnects > 0 ? warn : fg); y += dy;
+}
+
 void render_page(M5GFX& display)
 {
     const int page = g_page.load(std::memory_order_relaxed);
@@ -217,8 +309,10 @@ void render_page(M5GFX& display)
         draw_info();
     } else if (page == kSettings) {
         draw_settings();
-    } else {
+    } else if (page == kControl) {
         draw_control();
+    } else {
+        draw_conversation();
     }
     g_canvas.pushSprite(&display, 0, 0);
 }
@@ -248,6 +342,7 @@ void init(SharedState& state)
     g_state = &state;
     const config::DeviceConfig cfg = config::load();
     g_ssid = cfg.wifi_ssid;
+    g_provider = static_cast<int>(cfg.provider);
     g_stage_conv.store(cfg.openai_enabled, std::memory_order_relaxed);
     g_stage_rtp.store(cfg.rtp_audio_enabled, std::memory_order_relaxed);
     std::uint8_t mac[6] = {};
@@ -269,6 +364,7 @@ void handle_tap(int x, int y)
         if (x >= kW - 64 && y < 64) {
             load_staged();
             g_page.store(kInfo, std::memory_order_relaxed);
+            g_tab_page.store(0, std::memory_order_relaxed); // 情報 is on page 0
             g_active.store(true, std::memory_order_relaxed);
             g_dirty.store(true, std::memory_order_relaxed);
         }
@@ -277,13 +373,30 @@ void handle_tap(int x, int y)
 
     // Top bar.
     if (y < kBarH) {
-        if (x >= kTabsW) { // close
+        const TabBar b = layout_tabbar();
+        if (x >= b.close_x) { // close
             g_active.store(false, std::memory_order_relaxed);
-        } else {
-            int tab = x / kTabW;
-            if (tab >= kNumTabs) tab = kNumTabs - 1;
-            g_page.store(tab, std::memory_order_relaxed);
+            return;
+        }
+        const int np = num_tab_pages();
+        if (b.paging && x >= b.prev_x && x < b.prev_x + kArrowW) {
+            g_tab_page.store((g_tab_page.load(std::memory_order_relaxed) + np - 1) % np,
+                             std::memory_order_relaxed);
             g_dirty.store(true, std::memory_order_relaxed);
+            return;
+        }
+        if (b.paging && x >= b.next_x && x < b.next_x + kArrowW) {
+            g_tab_page.store((g_tab_page.load(std::memory_order_relaxed) + 1) % np,
+                             std::memory_order_relaxed);
+            g_dirty.store(true, std::memory_order_relaxed);
+            return;
+        }
+        for (int i = 0; i < b.slot_count; ++i) {
+            if (x >= b.slots[i].x && x < b.slots[i].x + b.slots[i].w) {
+                g_page.store(b.slots[i].index, std::memory_order_relaxed);
+                g_dirty.store(true, std::memory_order_relaxed);
+                break;
+            }
         }
         return;
     }
@@ -327,8 +440,10 @@ void draw(M5GFX& display)
     }
 
     bool need = g_dirty.exchange(false, std::memory_order_relaxed);
-    // The info page has live fields (IP/BLE/uptime/heap) — refresh ~2 Hz.
-    if (g_page.load(std::memory_order_relaxed) == kInfo) {
+    // The info and 会話 pages have live fields (IP/uptime/heap, conn status /
+    // reconnect count) — refresh ~2 Hz so they stay current.
+    const int page = g_page.load(std::memory_order_relaxed);
+    if (page == kInfo || page == kConversation) {
         const std::uint32_t t = now_ms();
         if (t - g_last_info_ms > 500) {
             g_last_info_ms = t;
