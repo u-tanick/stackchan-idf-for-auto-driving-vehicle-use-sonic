@@ -452,6 +452,11 @@ private:
     {
         local_ = s;
         state_.conversation_idle.store(s == Local::Listening, std::memory_order_relaxed);
+        // Mask servo motion for the entire reply playback (Speaking). Deriving
+        // it from the state — rather than the speaker's isPlaying() — keeps the
+        // head still across the brief silences between streamed reply segments,
+        // which is exactly where the servo was twitching and cutting the audio.
+        state_.servo_masked.store(s == Local::Speaking, std::memory_order_relaxed);
         ConvStatus cs = ConvStatus::Connecting;
         switch (s) {
         case Local::Init: cs = ConvStatus::Connecting; break;
@@ -498,12 +503,15 @@ private:
     // read. Non-blocking so mouth-sync and barge-in polling keep ticking.
     void service_playback()
     {
-        // Barge-in: a touch on the head stops the reply and returns to
-        // listening. (The mic is physically off while speaking, so this is
-        // the only way to interrupt on the half-duplex CoreS3 hardware.)
-        // Use firmly_touched() so we don't barge in on a stray Level-1
-        // RFI blip — those happen often enough to clobber every reply.
-        if (touch_ != nullptr && touch_->read().firmly_touched()) {
+        // Barge-in. Two triggers, both stop the reply and return to listening
+        // (the mic is physically off while speaking, so these are the only ways
+        // to interrupt on the half-duplex CoreS3 hardware):
+        //  - an LCD screen tap (set by demo_loop) — the intended interrupt now
+        //    that voice input is paused for the whole assistant turn;
+        //  - a firm touch on the head sensor (legacy). firmly_touched() guards
+        //    against stray Level-1 RFI blips that would clobber every reply.
+        if (state_.barge_in_request.exchange(false, std::memory_order_relaxed) ||
+            (touch_ != nullptr && touch_->read().firmly_touched())) {
             barge_in();
             return;
         }
@@ -564,6 +572,9 @@ private:
         assistant_pcm_.reserve(speaker_sample_rate_ * 20); // ~20 s headroom
         assistant_text_.clear();
         audio_complete_ = false;
+        // Drop any barge-in tap that arrived during the just-finished turn so it
+        // can't immediately re-trigger now that we're listening again.
+        state_.barge_in_request.store(false, std::memory_order_relaxed);
         // Prime the 2-deep mic queue.
         M5.Mic.record(mic_buf_[0].data(), mic_buf_[0].size(), mic_sample_rate_, /*stereo=*/false);
         M5.Mic.record(mic_buf_[1].data(), mic_buf_[1].size(), mic_sample_rate_, /*stereo=*/false);

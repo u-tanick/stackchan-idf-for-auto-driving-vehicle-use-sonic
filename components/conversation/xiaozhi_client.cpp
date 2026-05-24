@@ -527,6 +527,10 @@ private:
         ESP_LOGI(kTag, "hello sent");
     }
 
+    // Open the server's mode=auto (server-VAD) listening window. Sent once
+    // after the hello handshake; the server then handles turn boundaries
+    // itself. NOTE: we never send `listen stop` — in mode=auto the server
+    // treats a mid-session stop as a barge-in and aborts its own TTS.
     void send_listen_start()
     {
         cJSON* root = cJSON_CreateObject();
@@ -615,12 +619,22 @@ private:
 
         if (std::strcmp(state, "start") == 0) {
             // The user's turn has ended and the assistant is about to speak.
-            // Synthesise SpeechStopped so the conversation task leaves
-            // Listening (where it would drop the incoming audio chunks).
+            // Synthesise SpeechStopped so the conversation task leaves Listening
+            // (where it would drop the incoming audio chunks). The device is
+            // half-duplex, so the mic is off for the whole reply — no uplink
+            // reaches the server while we speak.
             emit_text(ConversationEventType::SpeechStopped, nullptr);
             set_state(ConversationState::Speaking);
         } else if (std::strcmp(state, "sentence_start") == 0) {
-            emit_text(ConversationEventType::AssistantTextDelta, json_str(root, "text"));
+            // Each sentence arrives as the server's TTS generates it. Append it
+            // to the running transcript (Delta) and immediately commit (Done) so
+            // the balloon shows the reply progressively as it's spoken — the
+            // conversation task only refreshes the balloon on AssistantTextDone.
+            const char* text = json_str(root, "text");
+            if (text != nullptr && text[0] != '\0') {
+                emit_text(ConversationEventType::AssistantTextDelta, text);
+                emit_text(ConversationEventType::AssistantTextDone, nullptr);
+            }
         } else if (std::strcmp(state, "stop") == 0) {
             emit_text(ConversationEventType::AssistantAudioDone, nullptr);
             emit_text(ConversationEventType::ResponseDone, nullptr);

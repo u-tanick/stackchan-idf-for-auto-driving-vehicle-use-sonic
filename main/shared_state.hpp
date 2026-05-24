@@ -73,6 +73,24 @@ public:
     // the servo task enables/disables torque to match (false = head goes limp).
     std::atomic<bool> servo_enabled{true};
 
+    // Servo motion mask: true while audible speech output is in progress, so
+    // the servo task holds the head perfectly still (no goal writes, no torque
+    // toggles). The servos and the speaker amp/codec share a power rail, and a
+    // move's current draw sags it enough to glitch / cut the audio. Set at
+    // speech START and cleared at speech END by the application (the
+    // conversation task for replies, demo_loop for idle babble) — NOT by
+    // polling the speaker, whose isPlaying() briefly reads false in the gaps
+    // between streamed reply segments and would let the head twitch mid-reply.
+    // (BLE / Wi-Fi streaming is masked separately via audio_stream_active.)
+    std::atomic<bool> servo_masked{false};
+
+    // Set by the LCD touch handler (demo_loop) when the screen is tapped while
+    // the assistant is responding and the tap wasn't consumed by the on-device
+    // UI. The conversation task consumes it during playback to barge in (stop
+    // the reply, return to listening) — the intended way to interrupt now that
+    // voice input is paused for the whole assistant turn.
+    std::atomic<bool> barge_in_request{false};
+
     // Show `text` in the balloon.
     //  - hold_ms: minimum on-screen time (0 = use avatar defaults — short
     //    text holds a few seconds, long text plays one marquee pass).

@@ -106,6 +106,22 @@ void servo_task_entry(void* arg)
             last_enabled = true;
         }
 
+        // Audio guard: the servos and the speaker amp/codec share a power rail,
+        // and the current draw of a move (or the transient of toggling torque)
+        // sags it enough to glitch / cut the audio. While speech output is in
+        // progress, hold the head perfectly still — no goal writes, no torque
+        // changes. The mask is set/cleared by the application at speech
+        // start/end (conversation reply, idle babble); BLE / Wi-Fi streaming
+        // uses audio_stream_active. We never poll the speaker directly: its
+        // isPlaying() flickers false between streamed reply segments and would
+        // let the head twitch mid-reply.
+        const bool audio_active = args.state->servo_masked.load(std::memory_order_relaxed) ||
+                                  args.state->audio_stream_active.load(std::memory_order_relaxed);
+        if (audio_active) {
+            vTaskDelayUntil(&last_wake, kPeriodTicks);
+            continue;
+        }
+
         const float yaw_deg = args.state->target_yaw_deg.load(std::memory_order_relaxed);
         const float pitch_deg = args.state->target_pitch_deg.load(std::memory_order_relaxed);
         const std::uint16_t yaw_target = scs_servo::deg_to_raw(yaw_deg, scs_servo::kYawZero);

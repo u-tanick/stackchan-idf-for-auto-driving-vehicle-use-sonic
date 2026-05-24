@@ -10,6 +10,7 @@
 #include <M5Unified.h>
 #include <esp_log.h>
 #include <esp_random.h>
+#include <esp_system.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -160,7 +161,18 @@ void demo_loop(const std::string& jtts_config_json)
         {
             const auto td = M5.Touch.getDetail();
             if (td.wasPressed()) {
+                const bool ui_before = app::ui::active();
                 app::ui::handle_tap(td.x, td.y);
+                // A tap that didn't open/use the on-device UI, while the
+                // assistant is mid-reply, is a barge-in request: voice input is
+                // paused for the whole turn, so the screen tap is how the user
+                // interrupts. The conversation task consumes this during
+                // playback.
+                if (!ui_before && !app::ui::active() &&
+                    g_state->conversation_active.load(std::memory_order_relaxed) &&
+                    !g_state->conversation_idle.load(std::memory_order_relaxed)) {
+                    g_state->barge_in_request.store(true, std::memory_order_relaxed);
+                }
             }
         }
 
@@ -372,6 +384,14 @@ void demo_loop(const std::string& jtts_config_json)
 
 extern "C" void app_main()
 {
+    // Surface why we (re)booted. After an unexpected reboot this pins the cause
+    // — ESP_RST_BROWNOUT (power sag, e.g. sustained speaker/servo current),
+    // ESP_RST_PANIC (crash/abort/assert), ESP_RST_INT_WDT / ESP_RST_TASK_WDT
+    // (a task hogged the CPU). Note: opening the serial port with the repo's
+    // monitor_log.py pulses DTR/RTS and shows up here as a USB/external reset,
+    // so use `make monitor` (stays attached) to catch a *natural* crash reason.
+    ESP_LOGW(kTag, "reset reason: %d", static_cast<int>(esp_reset_reason()));
+
     // Confirm the running image so the bootloader doesn't roll back on the
     // next reboot. CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y leaves freshly-OTA'd
     // images in PENDING_VERIFY until this call promotes them to VALID. We do
