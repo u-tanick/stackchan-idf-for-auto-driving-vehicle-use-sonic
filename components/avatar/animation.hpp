@@ -38,11 +38,31 @@ private:
     std::uint32_t state_;
 };
 
+// Tunable parameters for the idle animators. Defaults reproduce the original
+// hard-coded behaviour, so a default-constructed FaceAnimator is unchanged.
+// Exposed so callers (e.g. the WASM browser demo) can drive them from a UI.
+struct AnimatorParams {
+    bool breath_enabled{true};
+
+    bool saccade_enabled{true};
+    std::uint32_t saccade_min_ms{500};  // gaze dwell-time range
+    std::uint32_t saccade_max_ms{2500};
+    float gaze_amplitude{1.0f};         // peak gaze offset (0..1)
+
+    bool blink_enabled{true};
+    std::uint32_t blink_open_min_ms{2500};
+    std::uint32_t blink_open_max_ms{4500};
+    std::uint32_t blink_closed_min_ms{300};
+    std::uint32_t blink_closed_max_ms{500};
+};
+
 // Combines breath / saccade / blink. Each animator schedules its next firing
 // in absolute milliseconds; tick() applies whichever are due.
 class FaceAnimator {
 public:
     FaceAnimator() = default;
+
+    AnimatorParams params{};
 
     void tick(std::uint32_t now_ms, DrawContext& ctx);
 

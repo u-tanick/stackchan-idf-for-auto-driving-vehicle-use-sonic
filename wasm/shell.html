@@ -1,0 +1,201 @@
+<!doctype html>
+<!-- SPDX-FileCopyrightText: 2026 Kenta IDA <fuga@fugafuga.org> -->
+<!-- SPDX-License-Identifier: BSL-1.0 -->
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stack-chan Avatar (WASM)</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; background: #1b1f24; color: #e6e6e6; }
+  h1 { font-size: 1.1rem; margin: 0 0 .6rem; }
+  .wrap { display: flex; flex-wrap: wrap; gap: 1.2rem; padding: 1rem; }
+  .stage { flex: 0 0 auto; }
+  canvas { width: 640px; height: 480px; max-width: 90vw; image-rendering: pixelated;
+           background: #000; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,.5); }
+  .panel { flex: 1 1 320px; min-width: 300px; max-width: 480px; background: #262b31;
+           border-radius: 8px; padding: 1rem; }
+  fieldset { border: 1px solid #3a4048; border-radius: 6px; margin: 0 0 .8rem; padding: .5rem .7rem; }
+  legend { padding: 0 .4rem; color: #9fd3ff; font-size: .85rem; }
+  .row { display: flex; align-items: center; gap: .5rem; margin: .35rem 0; font-size: .85rem; }
+  .row label { flex: 0 0 8.5rem; }
+  .row input[type=range] { flex: 1 1 auto; }
+  .row .val { flex: 0 0 3.2rem; text-align: right; color: #9fd3ff; font-variant-numeric: tabular-nums; }
+  select, input[type=number] { background: #1b1f24; color: #e6e6e6; border: 1px solid #3a4048;
+           border-radius: 4px; padding: .2rem .4rem; }
+  #status { font-size: .8rem; color: #8a929b; padding: 0 1rem 1rem; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="stage">
+      <h1>Stack-chan Avatar — ブラウザ描画 (Emscripten/WASM)</h1>
+      <canvas id="screen" width="320" height="240"></canvas>
+    </div>
+    <div class="panel">
+      <fieldset>
+        <legend>表情 / 口</legend>
+        <div class="row">
+          <label for="expr">表情 (expression)</label>
+          <select id="expr">
+            <option value="0">Neutral</option>
+            <option value="1">Happy</option>
+            <option value="2">Sad</option>
+            <option value="3">Angry</option>
+            <option value="4">Doubt</option>
+            <option value="5">Sleepy</option>
+          </select>
+        </div>
+        <div class="row">
+          <label for="mouth">口の開き</label>
+          <input type="range" id="mouth" min="0" max="1" step="0.01" value="0">
+          <span class="val" id="mouth-v">0.00</span>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>サッカード (saccade)</legend>
+        <div class="row"><label for="sac-en">有効</label><input type="checkbox" id="sac-en" checked></div>
+        <div class="row">
+          <label for="sac-min">最小間隔 (ms)</label>
+          <input type="range" id="sac-min" min="100" max="3000" step="50" value="500">
+          <span class="val" id="sac-min-v">500</span>
+        </div>
+        <div class="row">
+          <label for="sac-max">最大間隔 (ms)</label>
+          <input type="range" id="sac-max" min="100" max="6000" step="50" value="2500">
+          <span class="val" id="sac-max-v">2500</span>
+        </div>
+        <div class="row">
+          <label for="sac-amp">視線振幅 (0–1)</label>
+          <input type="range" id="sac-amp" min="0" max="1" step="0.01" value="1">
+          <span class="val" id="sac-amp-v">1.00</span>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>手動視線 (manual gaze)</legend>
+        <div class="row"><label for="mg-en">手動で固定</label><input type="checkbox" id="mg-en"></div>
+        <div class="row">
+          <label for="mg-h">水平 H (−1–1)</label>
+          <input type="range" id="mg-h" min="-1" max="1" step="0.01" value="0">
+          <span class="val" id="mg-h-v">0.00</span>
+        </div>
+        <div class="row">
+          <label for="mg-v">垂直 V (−1–1)</label>
+          <input type="range" id="mg-v" min="-1" max="1" step="0.01" value="0">
+          <span class="val" id="mg-v-v">0.00</span>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>まばたき (blink)</legend>
+        <div class="row"><label for="blink-en">有効</label><input type="checkbox" id="blink-en" checked></div>
+        <div class="row">
+          <label for="blink-omin">開 最小 (ms)</label>
+          <input type="range" id="blink-omin" min="200" max="6000" step="100" value="2500">
+          <span class="val" id="blink-omin-v">2500</span>
+        </div>
+        <div class="row">
+          <label for="blink-omax">開 最大 (ms)</label>
+          <input type="range" id="blink-omax" min="200" max="8000" step="100" value="4500">
+          <span class="val" id="blink-omax-v">4500</span>
+        </div>
+        <div class="row">
+          <label for="blink-cmin">閉 最小 (ms)</label>
+          <input type="range" id="blink-cmin" min="50" max="1000" step="10" value="300">
+          <span class="val" id="blink-cmin-v">300</span>
+        </div>
+        <div class="row">
+          <label for="blink-cmax">閉 最大 (ms)</label>
+          <input type="range" id="blink-cmax" min="50" max="1500" step="10" value="500">
+          <span class="val" id="blink-cmax-v">500</span>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>呼吸 / 色</legend>
+        <div class="row"><label for="breath-en">呼吸 (breath)</label><input type="checkbox" id="breath-en" checked></div>
+        <div class="row"><label for="col-face">顔の色</label><input type="color" id="col-face" value="#ffffff"></div>
+        <div class="row"><label for="col-bg">背景色</label><input type="color" id="col-bg" value="#000000"></div>
+      </fieldset>
+    </div>
+  </div>
+  <div id="status">WASM 読み込み中…</div>
+
+<script>
+  var Module = {
+    onRuntimeInitialized: function () { startAvatar(); }
+  };
+
+  function startAvatar() {
+    var $ = function (id) { return document.getElementById(id); };
+    var status = $('status');
+    if (!Module._avatar_init()) { status.textContent = 'avatar_init 失敗'; return; }
+
+    var W = Module._avatar_width(), H = Module._avatar_height();
+    var cnv = $('screen'); cnv.width = W; cnv.height = H;
+    var ctx2d = cnv.getContext('2d');
+    var img = ctx2d.createImageData(W, H);
+
+    function hexToRgbInt(hex) { return parseInt(hex.replace('#', ''), 16) | 0; }
+
+    function applyParams() {
+      Module._avatar_set_expression(parseInt($('expr').value, 10));
+      Module._avatar_set_mouth(parseFloat($('mouth').value));
+      Module._avatar_set_saccade($('sac-en').checked ? 1 : 0,
+        parseInt($('sac-min').value, 10), parseInt($('sac-max').value, 10),
+        parseFloat($('sac-amp').value));
+      Module._avatar_set_manual_gaze($('mg-en').checked ? 1 : 0,
+        parseFloat($('mg-h').value), parseFloat($('mg-v').value));
+      Module._avatar_set_blink($('blink-en').checked ? 1 : 0,
+        parseInt($('blink-omin').value, 10), parseInt($('blink-omax').value, 10),
+        parseInt($('blink-cmin').value, 10), parseInt($('blink-cmax').value, 10));
+      Module._avatar_set_breath($('breath-en').checked ? 1 : 0);
+      Module._avatar_set_colors(hexToRgbInt($('col-face').value), hexToRgbInt($('col-bg').value));
+      // mirror slider values into their readouts
+      [['mouth', 2], ['sac-min', 0], ['sac-max', 0], ['sac-amp', 2],
+       ['mg-h', 2], ['mg-v', 2], ['blink-omin', 0], ['blink-omax', 0],
+       ['blink-cmin', 0], ['blink-cmax', 0]].forEach(function (e) {
+        var el = $(e[0] + '-v'); if (el) el.textContent = parseFloat($(e[0]).value).toFixed(e[1]);
+      });
+    }
+
+    // Wire every control to re-push params.
+    Array.prototype.forEach.call(
+      document.querySelectorAll('select, input'),
+      function (el) { el.addEventListener('input', applyParams); });
+
+    // Optional URL params seed the controls by element id, e.g.
+    //   avatar.html?expr=1&mg-en=1&mg-h=0.7&sac-en=0
+    new URLSearchParams(location.search).forEach(function (v, k) {
+      var el = $(k);
+      if (!el) return;
+      if (el.type === 'checkbox') el.checked = (v === '1' || v === 'true');
+      else el.value = v;
+    });
+
+    applyParams();
+
+    function frame() {
+      Module._avatar_tick(performance.now());
+      var ptr = Module._avatar_framebuffer();
+      var fb = new Uint16Array(Module.HEAPU16.buffer, ptr, W * H);
+      var d = img.data;
+      for (var i = 0, o = 0; i < W * H; i++, o += 4) {
+        var p = fb[i];
+        d[o]     = ((p >> 11) & 0x1f) * 255 / 31 | 0;
+        d[o + 1] = ((p >> 5) & 0x3f) * 255 / 63 | 0;
+        d[o + 2] = (p & 0x1f) * 255 / 31 | 0;
+        d[o + 3] = 255;
+      }
+      ctx2d.putImageData(img, 0, 0);
+      requestAnimationFrame(frame);
+    }
+    status.textContent = '描画中 — ' + W + '×' + H + ' (Stack-chan avatar, 現行 C++ コードを WASM 実行)';
+    requestAnimationFrame(frame);
+  }
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>
