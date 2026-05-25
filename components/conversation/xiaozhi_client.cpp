@@ -27,6 +27,7 @@
 #include "esp_opus_dec.h"
 #include "esp_opus_enc.h"
 #include "psram_allocator.hpp"
+#include "ws_extra_headers.hpp"
 
 namespace stackchan::conversation {
 
@@ -150,6 +151,7 @@ public:
             teardown();
             return tl::unexpected{ConversationError::TransportInit};
         }
+        apply_extra_ws_headers(client_, config_.extra_headers);
         esp_websocket_register_events(client_, WEBSOCKET_EVENT_ANY,
                                       &Impl::websocket_event_trampoline, this);
 

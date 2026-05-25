@@ -21,6 +21,9 @@ struct ConversationTaskArgs {
     // Conversation system prompt / persona (OpenAI / Gemini). Empty → built-in
     // default. Ignored by XiaoZhi (its server owns the persona).
     const char* system_prompt = "";
+    // Extra HTTP headers for the conversation WebSocket upgrade (e.g. a
+    // Cloudflare Access service token). Newline-separated "Name: value" lines.
+    const char* extra_headers = "";
 };
 
 // Pinned to core 0. Owns the chosen ConversationService backend and drives

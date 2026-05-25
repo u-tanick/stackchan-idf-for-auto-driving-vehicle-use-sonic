@@ -49,6 +49,10 @@ struct DeviceConfig {
     // (XiaoZhi's server owns its own persona, so it's ignored there). Empty →
     // the firmware's built-in default instructions. Settable over Wi-Fi.
     std::string system_prompt;
+    // Extra HTTP headers attached to the conversation API's WebSocket upgrade
+    // (all providers), e.g. a Cloudflare Access service token in front of a
+    // proxied endpoint. Newline-separated "Name: value" lines. Settable over Wi-Fi.
+    std::string conv_extra_headers;
 };
 
 enum class Error {

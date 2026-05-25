@@ -534,7 +534,8 @@ extern "C" void app_main()
     g_conversation_args = new stackchan::app::ConversationTaskArgs{
         .state = g_state, .api_key = api_key, .provider = cfg.provider, .touch = g_touch,
         .xiaozhi_url = xiaozhi_url, .xiaozhi_token = xiaozhi_token,
-        .system_prompt = cfg.system_prompt.c_str()};
+        .system_prompt = cfg.system_prompt.c_str(),
+        .extra_headers = cfg.conv_extra_headers.c_str()};
 
     stackchan::app::ui::init(*g_state);
     stackchan::app::start_render_task(*g_render_args);

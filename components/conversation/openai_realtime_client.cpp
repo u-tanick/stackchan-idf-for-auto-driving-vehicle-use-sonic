@@ -23,6 +23,7 @@
 
 #include "base64.hpp"
 #include "psram_allocator.hpp"
+#include "ws_extra_headers.hpp"
 
 namespace stackchan::conversation {
 
@@ -165,6 +166,7 @@ public:
 
         const std::string auth = std::string{"Bearer "} + api_key_;
         esp_websocket_client_append_header(client_, "Authorization", auth.c_str());
+        apply_extra_ws_headers(client_, config_.extra_headers);
         // OpenAI Realtime is GA — the OpenAI-Beta: realtime=v1 header is no
         // longer accepted (the server returns "Realtime Beta API is no longer
         // supported").

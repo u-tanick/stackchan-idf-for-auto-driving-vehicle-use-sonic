@@ -51,6 +51,10 @@ struct ConversationConfig {
     std::uint32_t input_sample_rate_hz{24000};
     std::uint32_t output_sample_rate_hz{24000};
     std::vector<ToolDefinition> tools;
+    // Extra HTTP headers to attach to the WebSocket upgrade request, as a
+    // newline-separated list of "Name: value" lines. Used for e.g. a
+    // Cloudflare Access service token in front of a proxied API. Empty = none.
+    std::string extra_headers;
     bool enable_input_transcription{true};
     std::uint32_t vad_silence_ms{500};
     std::uint32_t vad_prefix_padding_ms{300};
