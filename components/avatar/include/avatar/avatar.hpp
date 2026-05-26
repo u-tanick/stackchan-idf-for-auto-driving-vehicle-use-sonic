@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string_view>
 
@@ -45,6 +46,13 @@ public:
     // or one marquee pass completed). Stays true until the next
     // set_balloon_text / clear_balloon.
     bool is_balloon_done() const noexcept;
+
+    // Optional overlay drawn onto the off-screen canvas each frame, after the
+    // face/effect/balloon and just before the sprite is pushed — so it is
+    // composited into the single pushSprite (no flicker, unlike drawing onto
+    // the panel after the push). Pass {} to clear. The callback must only draw;
+    // it runs on the render task.
+    void set_overlay(std::function<void(M5Canvas&)> overlay) noexcept;
 
     // Drives animators with the current time in milliseconds and renders one frame.
     void tick(std::uint32_t now_ms);

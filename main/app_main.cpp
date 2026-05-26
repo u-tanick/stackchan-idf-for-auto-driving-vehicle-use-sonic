@@ -511,6 +511,7 @@ extern "C" void app_main()
     // register the live BLE update sink, both before config::start brings the
     // GATT service online so an early client write is applied immediately.
     g_state->set_face_config(cfg.face_config_json);
+    g_state->battery_gauge_enabled.store(cfg.battery_gauge_enabled, std::memory_order_relaxed);
     stackchan::config::set_face_config_sink(&on_face_config);
     // BLE audio streaming and the realtime voice conversation are mutually
     // exclusive — both saturate the radio/CPU and running them together

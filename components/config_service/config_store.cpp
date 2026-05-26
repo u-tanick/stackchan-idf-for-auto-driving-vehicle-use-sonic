@@ -29,6 +29,7 @@ constexpr const char* kKeyXiaozhiToken = "xz_token";
 constexpr const char* kKeySystemPrompt = "sys_prompt";
 constexpr const char* kKeyConvHeaders = "conv_hdrs";
 constexpr const char* kKeyFaceConfig = "face_cfg";
+constexpr const char* kKeyBatteryGauge = "bat_gauge";
 
 std::string nvs_read_str(nvs_handle_t h, const char* key)
 {
@@ -87,6 +88,13 @@ DeviceConfig load()
     } else if (rtp_err != ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGW(kTag, "nvs_get_u8(%s): %s", kKeyRtpAudioEnabled, esp_err_to_name(rtp_err));
     }
+    std::uint8_t bat_gauge = 1;
+    esp_err_t bg_err = nvs_get_u8(h, kKeyBatteryGauge, &bat_gauge);
+    if (bg_err == ESP_OK) {
+        cfg.battery_gauge_enabled = (bat_gauge != 0);
+    } else if (bg_err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(kTag, "nvs_get_u8(%s): %s", kKeyBatteryGauge, esp_err_to_name(bg_err));
+    }
     std::uint8_t provider = static_cast<std::uint8_t>(Provider::OpenAi);
     esp_err_t prov_err = nvs_get_u8(h, kKeyProvider, &provider);
     if (prov_err == ESP_OK) {
@@ -142,6 +150,13 @@ tl::expected<void, Error> save(const DeviceConfig& cfg)
     err = nvs_set_u8(h, kKeyRtpAudioEnabled, cfg.rtp_audio_enabled ? 1 : 0);
     if (err != ESP_OK) {
         ESP_LOGE(kTag, "nvs_set_u8(%s): %s", kKeyRtpAudioEnabled, esp_err_to_name(err));
+        nvs_close(h);
+        return tl::unexpected(Error::NvsWrite);
+    }
+
+    err = nvs_set_u8(h, kKeyBatteryGauge, cfg.battery_gauge_enabled ? 1 : 0);
+    if (err != ESP_OK) {
+        ESP_LOGE(kTag, "nvs_set_u8(%s): %s", kKeyBatteryGauge, esp_err_to_name(err));
         nvs_close(h);
         return tl::unexpected(Error::NvsWrite);
     }

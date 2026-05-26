@@ -47,10 +47,14 @@ public:
         internal::draw_face(canvas_, face_, context_);
         internal::draw_effect(canvas_, context_);
         internal::draw_balloon(canvas_, context_);
+        if (overlay_) {
+            overlay_(canvas_);
+        }
         canvas_.pushSprite(&display_, 0, 0);
     }
 
     DrawContext& context() noexcept { return context_; }
+    void set_overlay(std::function<void(M5Canvas&)> overlay) { overlay_ = std::move(overlay); }
 
     void set_face_tuning(const FaceTuning& tuning)
     {
@@ -65,6 +69,7 @@ private:
     DrawContext context_{};
     internal::Face face_{};
     internal::FaceAnimator animator_{};
+    std::function<void(M5Canvas&)> overlay_{};
 };
 
 Avatar::Avatar(M5GFX& display) : impl_{std::make_unique<Impl>(display)} {}
@@ -106,6 +111,11 @@ void Avatar::set_palette(const Palette& palette) noexcept
 void Avatar::set_face_tuning(const FaceTuning& tuning) noexcept
 {
     impl_->set_face_tuning(tuning);
+}
+
+void Avatar::set_overlay(std::function<void(M5Canvas&)> overlay) noexcept
+{
+    impl_->set_overlay(std::move(overlay));
 }
 
 void Avatar::set_balloon_text(std::string_view text, std::uint32_t hold_ms)

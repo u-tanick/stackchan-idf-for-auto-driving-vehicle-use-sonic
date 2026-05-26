@@ -3,6 +3,7 @@
 
 #include "render_task.hpp"
 
+#include <cstdio>
 #include <string>
 
 #include <esp_log.h>
@@ -21,6 +22,43 @@ namespace {
 constexpr const char* kTag = "render";
 constexpr TickType_t kPeriodTicks = pdMS_TO_TICKS(33);
 
+// Battery gauge overlay, composited into the avatar's off-screen canvas (via
+// Avatar::set_overlay) just before pushSprite, so it ships in the same frame as
+// the face (drawing onto the panel after the push flickers). `pct` is 0..100;
+// values < 0 are filtered out by the caller.
+void draw_battery_gauge(M5Canvas& canvas, int pct)
+{
+    constexpr int x = 6, y = 6, w = 34, h = 16; // battery body
+    constexpr int nub_w = 3, nub_h = 6;          // positive terminal nub
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+
+    const std::uint16_t white = canvas.color565(235, 235, 235);
+    const std::uint16_t black = canvas.color565(0, 0, 0);
+    const std::uint16_t fill = pct >= 50 ? canvas.color565(80, 220, 120)
+                              : (pct >= 20 ? canvas.color565(235, 200, 90)
+                                           : canvas.color565(230, 110, 110));
+
+    // Backing panel behind the icon + text so it stays legible over the face.
+    canvas.fillRect(x - 1, y - 1, w + nub_w + 44, h + 2, black);
+    // Body outline + terminal.
+    canvas.drawRoundRect(x, y, w, h, 2, white);
+    canvas.fillRect(x + w, y + (h - nub_h) / 2, nub_w, nub_h, white);
+    // Charge fill proportional to percent.
+    const int inner_w = w - 4;
+    const int filled = (inner_w * pct + 50) / 100;
+    if (filled > 0) {
+        canvas.fillRect(x + 2, y + 2, filled, h - 4, fill);
+    }
+    // Percent text to the right of the icon.
+    char label[8];
+    std::snprintf(label, sizeof(label), "%d%%", pct);
+    canvas.setTextDatum(lgfx::textdatum_t::middle_left);
+    canvas.setTextColor(white, black);
+    canvas.setTextSize(1);
+    canvas.drawString(label, x + w + nub_w + 4, y + h / 2);
+}
+
 void render_task_entry(void* arg)
 {
     auto& args = *static_cast<RenderTaskArgs*>(arg);
@@ -38,6 +76,18 @@ void render_task_entry(void* arg)
     std::string balloon_scratch;
     bool balloon_pending = false;
     bool ui_was_active = false;
+
+    // Battery gauge overlay: composited into the avatar canvas each frame (no
+    // flicker). Reads SharedState live, so toggling / level changes apply at
+    // once. Drawn only when enabled and a valid reading exists.
+    SharedState* state = args.state;
+    avatar.set_overlay([state](M5Canvas& canvas) {
+        if (!state->battery_gauge_enabled.load(std::memory_order_relaxed)) return;
+        const int pct = state->battery_pct.load(std::memory_order_relaxed);
+        if (pct >= 0) {
+            draw_battery_gauge(canvas, pct);
+        }
+    });
 
     for (;;) {
         const std::uint32_t now_ms = static_cast<std::uint32_t>(esp_timer_get_time() / 1000);
@@ -85,7 +135,7 @@ void render_task_entry(void* arg)
             last_balloon_version = balloon_version;
         }
 
-        avatar.tick(now_ms);
+        avatar.tick(now_ms); // composites the avatar + battery overlay, then pushes
 
         if (balloon_pending && avatar.is_balloon_done()) {
             balloon_pending = false;

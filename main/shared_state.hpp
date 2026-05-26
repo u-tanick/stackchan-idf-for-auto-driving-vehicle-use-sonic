@@ -65,6 +65,9 @@ public:
     std::atomic<std::int16_t> battery_mv{-1};   // bus voltage [mV]
     std::atomic<std::int16_t> battery_ma{0};    // shunt current [mA] (discharge sign per wiring)
     std::atomic<std::int8_t> battery_pct{-1};   // 0..100, or -1 = unknown
+    // Whether the render task draws the top-left battery gauge over the avatar.
+    // Seeded from NVS at boot (DeviceConfig::battery_gauge_enabled).
+    std::atomic<bool> battery_gauge_enabled{true};
 
     // Cooperative I2S handoff for BLE audio streaming. CoreS3 shares the
     // I2S_NUM_1 bus between mic + speaker, so audio_stream_sink can't just

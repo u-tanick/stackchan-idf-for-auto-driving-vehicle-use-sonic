@@ -311,6 +311,12 @@
   <p class="hint" style="margin-top:0.3rem">送信例 (ffmpeg)。ブラウザは UDP を送れないのでコピー用:</p>
   <code id="rtp-audio-cmd" style="display:block;font-size:0.72rem;word-break:break-all;white-space:pre-wrap;user-select:all;background:#f4f4f4;padding:0.4rem;border-radius:4px"></code>
 
+  <label class="toggle-label" for="bat-gauge-enabled" style="margin-top:1rem">
+    <input type="checkbox" id="bat-gauge-enabled" checked>
+    <span>バッテリー残量ゲージを表示する</span>
+  </label>
+  <p class="hint">アバター画面の左上に残量ゲージを表示します（保存後の再起動で反映）</p>
+
   <details class="jtts-section" id="jtts-section">
     <summary>アイドル時の声 (jtts) を調整する</summary>
     <p class="hint" style="margin-bottom:0.5rem">空欄や変更なしで「保存」を押すと現在の設定は維持されます。</p>
@@ -500,6 +506,7 @@ async function refresh() {
     $('provider').value = String(s.provider ?? 0);
     $('openai-enabled').checked = !!s.openai_enabled;
     $('rtp-enabled').checked = (s.rtp_audio_enabled !== false); // default on if absent
+    $('bat-gauge-enabled').checked = (s.battery_gauge_enabled !== false); // default on if absent
     // ffmpeg send examples. This page is served by the device, so its own
     // hostname is the RTP destination.
     const h = location.hostname || (s.ip || '');
@@ -554,6 +561,7 @@ async function apply() {
     const provider = $('provider').value;
     const enabled = $('openai-enabled').checked;
     const rtpEnabled = $('rtp-enabled').checked;
+    const batGauge = $('bat-gauge-enabled').checked;
     const jtts = readJttsForm();
 
     if (ssid)      { await postText('/api/ssid', ssid);                       log('SSID 送信', 'ok'); }
@@ -567,6 +575,7 @@ async function apply() {
     await postText('/api/provider', provider);
     await postText('/api/openai-enabled', enabled ? '1' : '0');
     await postText('/api/rtp-enabled', rtpEnabled ? '1' : '0');
+    await postText('/api/battery-gauge', batGauge ? '1' : '0');
     if (jtts)      { await postText('/api/jtts-config', jtts);                log('jtts 設定送信', 'ok'); }
     // System prompt: send only when changed (empty after a change = reset to
     // the firmware default; unchanged = leave the stored prompt untouched).
