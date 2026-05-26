@@ -268,6 +268,7 @@
     <div class="row"><span class="key">Model</span><span class="val" id="dis-model">—</span></div>
     <div class="row"><span class="key">Manufacturer</span><span class="val" id="dis-mfr">—</span></div>
     <div class="row"><span class="key">Software</span><span class="val" id="dis-sw">—</span></div>
+    <div class="row"><span class="key">バッテリー</span><span class="val" id="dis-battery">—</span></div>
     <div class="row" id="dis-wifi-mac-row" hidden>
       <span class="key">Wi-Fi MAC (STA)</span>
       <span class="val" id="dis-wifi-mac">—</span>
@@ -513,6 +514,8 @@ const CHR_XIAOZHI_TOKEN = 'e3f0a014-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // FaceConfig — encrypted compact JSON of the avatar face tuning. WRITE applies
 // live (no reboot) and stages for Apply; READ returns the active value.
 const CHR_FACE_CONFIG = 'e3f0a015-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+// Battery — encrypted READ, 5 bytes [mV u16 LE][mA i16 LE][pct i8]. Polled.
+const CHR_BATTERY = 'e3f0a016-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_WIFI_IP = 'e3f0a00d-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_WIFI_MAC = 'e3f0a012-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_AUDIO_CTRL = 'e3f0a00e-7b1c-4d2a-9e6f-2c5a8d4b1f00';
@@ -546,7 +549,8 @@ const DIS_CHRS = {
 
 // --- State ---
 let bleDevice = null, bleServer = null, svc = null;
-let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null;
+let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null;
+let batteryPollTimer = null;  // setInterval handle while connected
 let jttsInitialJson = '';  // last read JSON, used to detect Apply-time changes
 let otaInFlight = false;
 let aesKey = null;  // CryptoKey for AES-256-GCM, derived per connection
@@ -783,6 +787,7 @@ function clearDeviceInfo() {
     const el = document.getElementById('dis-' + id);
     if (el) el.textContent = '—';
   }
+  document.getElementById('dis-battery').textContent = '—';
   document.getElementById('dis-wifi-mac-row').hidden = true;
   document.getElementById('dis-wifi-mac').textContent = '—';
   document.getElementById('dis-wifi-row').hidden = true;
@@ -1499,6 +1504,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
       ['xiaozhiUrl', CHR_XIAOZHI_URL],
       ['xiaozhiToken', CHR_XIAOZHI_TOKEN],
       ['faceConfig', CHR_FACE_CONFIG],
+      ['battery',    CHR_BATTERY],
       ['wifiIp',     CHR_WIFI_IP],
       ['wifiMac',    CHR_WIFI_MAC],
       ['audioCtrl',  CHR_AUDIO_CTRL],
@@ -1530,6 +1536,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
     chrXiaozhiUrl = found.xiaozhiUrl ?? null;
     chrXiaozhiToken = found.xiaozhiToken ?? null;
     chrFaceConfig = found.faceConfig ?? null;
+    chrBattery  = found.battery  ?? null;
     chrWifiIp   = found.wifiIp   ?? null;
     chrWifiMac  = found.wifiMac  ?? null;
     chrAudioCtrl= found.audioCtrl?? null;
@@ -1662,6 +1669,13 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
       log('Status 通知を登録しました', 'ok');
     }
 
+    // Battery: read once now, then poll (it changes slowly — no NOTIFY).
+    if (chrBattery) {
+      await refreshBattery();
+      clearInterval(batteryPollTimer);
+      batteryPollTimer = setInterval(refreshBattery, 15000);
+    }
+
     applyCapabilityGating();
     setBleUi(true);
   } catch (e) {
@@ -1677,7 +1691,8 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
 function onDisconnected() {
   log('切断されました', 'err');
   setBleUi(false);
-  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrXiaozhiUrl = chrXiaozhiToken = chrFaceConfig = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = null;
+  clearInterval(batteryPollTimer); batteryPollTimer = null;
+  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrXiaozhiUrl = chrXiaozhiToken = chrFaceConfig = chrBattery = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = null;
   aesKey = null;
   clearDeviceInfo();
   delete document.getElementById('openai-enabled').dataset.initial;
@@ -2015,6 +2030,29 @@ function setupAvatarPreview() {
   }).catch((e) => { note.textContent = 'プレビュー初期化エラー: ' + e.message; });
 }
 setupAvatarPreview();
+
+// ===== Battery (READ + poll) ================================================
+// Decode the 5-byte Battery payload [mV u16 LE][mA i16 LE][pct i8] into a label.
+function formatBattery(mv, ma, pct) {
+  if (mv === 0xFFFF || mv < 0) return '—';
+  const v = (mv / 1000).toFixed(2) + 'V';
+  const c = ma + 'mA';
+  return (pct >= 0 ? pct + '% ' : '') + v + ' ' + c;
+}
+async function refreshBattery() {
+  if (!chrBattery || !aesKey) return;
+  try {
+    const b = await readEncrypted(chrBattery);
+    if (b.length < 5) return;
+    const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+    const mv = dv.getUint16(0, true);
+    const ma = dv.getInt16(2, true);
+    const pct = dv.getInt8(4);
+    document.getElementById('dis-battery').textContent = formatBattery(mv, ma, pct);
+  } catch (e) {
+    // Transient read error (e.g. mid-disconnect) — leave the last value.
+  }
+}
 </script>
 </body>
 </html>

@@ -57,6 +57,15 @@ public:
     std::atomic<ConvStatus> conversation_status{ConvStatus::Disabled};
     std::atomic<std::uint32_t> conversation_reconnects{0};
 
+    // Base-board battery monitor (INA226) snapshot, refreshed periodically by
+    // demo_loop (the only task that touches the internal I2C bus). The device
+    // UI reads these directly; the BLE / Wi-Fi services receive their own
+    // pushed copies. battery_mv / battery_pct stay at -1 until the first valid
+    // read (and if the INA226 is absent), so all surfaces show "—".
+    std::atomic<std::int16_t> battery_mv{-1};   // bus voltage [mV]
+    std::atomic<std::int16_t> battery_ma{0};    // shunt current [mA] (discharge sign per wiring)
+    std::atomic<std::int8_t> battery_pct{-1};   // 0..100, or -1 = unknown
+
     // Cooperative I2S handoff for BLE audio streaming. CoreS3 shares the
     // I2S_NUM_1 bus between mic + speaker, so audio_stream_sink can't just
     // grab the speaker while the conv-task is mid-listening (mic_task would

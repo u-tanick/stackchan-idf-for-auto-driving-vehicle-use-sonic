@@ -348,4 +348,9 @@ void set_face_config_sink(FaceConfigSink sink)
     gatt::set_face_config_sink(sink);
 }
 
+void notify_battery(int millivolts, int milliamps, int percent)
+{
+    gatt::set_battery(millivolts, milliamps, percent);
+}
+
 } // namespace stackchan::config

@@ -175,4 +175,10 @@ void notify_wifi_connected(bool connected)
     http::set_wifi_connected(connected);
 }
 
+void set_battery(int millivolts, int milliamps, int percent)
+{
+    if (!g_started) return;
+    http::set_battery(millivolts, milliamps, percent);
+}
+
 } // namespace stackchan::wifi_config

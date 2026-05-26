@@ -84,6 +84,10 @@ tl::expected<void, Error> start(const DeviceConfig& current);
 // Thread-safe — may be called from any task.
 void notify_wifi_connected(bool connected);
 
+// Update the cached battery snapshot served by the Battery READ characteristic.
+// millivolts / percent < 0 mean "unknown" (no INA226 / not yet read). Thread-safe.
+void notify_battery(int millivolts, int milliamps, int percent);
+
 // True while a BLE central is connected. Thread-safe; for status display.
 bool ble_connected();
 

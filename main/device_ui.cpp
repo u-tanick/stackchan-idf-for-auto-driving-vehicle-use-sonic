@@ -190,6 +190,8 @@ void draw_info()
     const std::uint16_t fg = g_canvas.color565(235, 235, 235);
     const std::uint16_t ok = g_canvas.color565(80, 220, 120);
     const std::uint16_t off = g_canvas.color565(230, 110, 110);
+    const std::uint16_t warn = g_canvas.color565(235, 200, 90);
+    const std::uint16_t dim = g_canvas.color565(150, 150, 150);
 
     const esp_app_desc_t* app = esp_app_get_description();
     const bool wifi = wifi_is_connected();
@@ -207,8 +209,21 @@ void draw_info()
     char heap[16];
     std::snprintf(heap, sizeof(heap), "%u KB", static_cast<unsigned>(esp_get_free_heap_size() / 1024));
 
+    // Battery (INA226, refreshed by demo_loop). pct < 0 → not yet read / absent.
+    const int bat_mv = g_state->battery_mv.load(std::memory_order_relaxed);
+    const int bat_ma = g_state->battery_ma.load(std::memory_order_relaxed);
+    const int bat_pct = g_state->battery_pct.load(std::memory_order_relaxed);
+    char battery[32];
+    std::uint16_t bat_color = dim;
+    if (bat_pct < 0 || bat_mv < 0) {
+        std::snprintf(battery, sizeof(battery), "—");
+    } else {
+        std::snprintf(battery, sizeof(battery), "%d%% %.2fV %dmA", bat_pct, bat_mv / 1000.0f, bat_ma);
+        bat_color = bat_pct >= 50 ? ok : (bat_pct >= 20 ? warn : off);
+    }
+
     int y = kContentY;
-    const int dy = 23;
+    const int dy = 22; // 9 rows must fit kContentY(46)..kH(240)
     draw_kv(y, "FW", app ? app->version : "?", fg); y += dy;
     draw_kv(y, "SSID", g_ssid.empty() ? "(未設定)" : g_ssid.c_str(), fg); y += dy;
     draw_kv(y, "mDNS", g_host.c_str(), fg); y += dy;
@@ -217,6 +232,7 @@ void draw_info()
     draw_kv(y, "BLE", ble ? "接続中" : "待受中", ble ? ok : fg); y += dy;
     draw_kv(y, "稼働", uptime, fg); y += dy;
     draw_kv(y, "空きRAM", heap, fg); y += dy;
+    draw_kv(y, "電池", battery, bat_color); y += dy;
 }
 
 void draw_toggle_row(int i, const char* label, bool on)

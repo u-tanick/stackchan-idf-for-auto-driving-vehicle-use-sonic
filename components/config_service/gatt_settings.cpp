@@ -163,6 +163,13 @@ static const ble_uuid128_t kXiaozhiTokenUuid = BLE_UUID128_INIT(
 static const ble_uuid128_t kFaceConfigUuid = BLE_UUID128_INIT(
     0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
     0x2a, 0x4d, 0x1c, 0x7b, 0x15, 0xa0, 0xf0, 0xe3);
+// Battery — encrypted READ-only snapshot of the base-board INA226: 5 bytes
+// [bus voltage mV u16 LE][shunt current mA i16 LE][percent i8]. percent = -1
+// and mV = 0xFFFF mean "unknown" (no INA226 / not yet sampled). The browser
+// polls this (battery changes slowly) — no NOTIFY.
+static const ble_uuid128_t kBatteryUuid = BLE_UUID128_INIT(
+    0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
+    0x2a, 0x4d, 0x1c, 0x7b, 0x16, 0xa0, 0xf0, 0xe3);
 
 // --- Mutable state guarded by g_mutex ---
 static SemaphoreHandle_t g_mutex = nullptr;
@@ -181,6 +188,11 @@ static bool g_wifi_connected = false;
 static uint16_t g_status_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static bool g_status_subscribed = false;
 
+// Cached battery snapshot (guarded by g_mutex). -1 percent / mv mean unknown.
+static int g_battery_mv = -1;
+static int g_battery_ma = 0;
+static int g_battery_pct = -1;
+
 // Val handles written by NimBLE during GATT registration.
 static uint16_t g_ssid_handle = 0;
 static uint16_t g_pass_handle = 0;
@@ -198,6 +210,7 @@ static uint16_t g_gemini_key_handle = 0;
 static uint16_t g_xiaozhi_url_handle = 0;
 static uint16_t g_xiaozhi_token_handle = 0;
 static uint16_t g_face_config_handle = 0;
+static uint16_t g_battery_handle = 0;
 static uint16_t g_wifi_ip_handle = 0;
 static uint16_t g_wifi_mac_handle = 0;
 static uint16_t g_audio_ctrl_handle = 0;
@@ -422,6 +435,27 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             const bool ok = append_encrypted(
                 ctxt->om,
                 {reinterpret_cast<const std::uint8_t*>(json.data()), json.size()});
+            xSemaphoreGive(g_mutex);
+            return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
+        }
+        if (attr_handle == g_battery_handle) {
+            xSemaphoreTake(g_mutex, portMAX_DELAY);
+            if (!g_session.is_established()) {
+                xSemaphoreGive(g_mutex);
+                return BLE_ATT_ERR_UNLIKELY;
+            }
+            // [mV u16 LE][mA i16 LE][pct i8]. Unknown → mV = 0xFFFF, pct = -1.
+            const std::uint16_t mv =
+                g_battery_mv < 0 ? 0xFFFFu : static_cast<std::uint16_t>(g_battery_mv);
+            const std::int16_t ma = static_cast<std::int16_t>(g_battery_ma);
+            const std::int8_t pct = static_cast<std::int8_t>(g_battery_pct);
+            const std::array<std::uint8_t, 5> payload{
+                static_cast<std::uint8_t>(mv & 0xff),
+                static_cast<std::uint8_t>((mv >> 8) & 0xff),
+                static_cast<std::uint8_t>(static_cast<std::uint16_t>(ma) & 0xff),
+                static_cast<std::uint8_t>((static_cast<std::uint16_t>(ma) >> 8) & 0xff),
+                static_cast<std::uint8_t>(pct)};
+            const bool ok = append_encrypted(ctxt->om, {payload.data(), payload.size()});
             xSemaphoreGive(g_mutex);
             return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
         }
@@ -820,6 +854,12 @@ static ble_gatt_chr_def kChrs[] = {
         .val_handle = &g_face_config_handle,
     },
     {
+        .uuid = &kBatteryUuid.u,
+        .access_cb = gatt_access_cb,
+        .flags = BLE_GATT_CHR_F_READ,
+        .val_handle = &g_battery_handle,
+    },
+    {
         .uuid = &kWifiIpUuid.u,
         .access_cb = gatt_access_cb,
         .flags = BLE_GATT_CHR_F_READ,
@@ -960,6 +1000,16 @@ void set_face_config_sink(FaceConfigSink sink)
     // gatt::init() creates the mutex, and it's not on a hot path. The WRITE
     // handler snapshots g_face_config_sink under g_mutex before calling it.
     g_face_config_sink = sink;
+}
+
+void set_battery(int millivolts, int milliamps, int percent)
+{
+    if (g_mutex == nullptr) return; // before gatt::init()
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_battery_mv = millivolts;
+    g_battery_ma = milliamps;
+    g_battery_pct = percent;
+    xSemaphoreGive(g_mutex);
 }
 
 } // namespace stackchan::config::gatt

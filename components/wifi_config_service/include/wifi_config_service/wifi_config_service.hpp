@@ -27,4 +27,8 @@ tl::expected<void, Error> start(const config::DeviceConfig& current);
 // reflect the same flags the BLE Status characteristic does. Thread-safe.
 void notify_wifi_connected(bool connected);
 
+// Update the battery snapshot (mV / mA / percent) surfaced by /api/status.
+// No-op until the HTTP server has started. Thread-safe.
+void set_battery(int millivolts, int milliamps, int percent);
+
 } // namespace stackchan::wifi_config

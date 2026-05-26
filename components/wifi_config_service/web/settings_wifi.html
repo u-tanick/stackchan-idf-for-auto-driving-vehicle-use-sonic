@@ -255,6 +255,7 @@
     <div class="row"><span class="key">Firmware</span><span class="val" id="dis-fw">—</span></div>
     <div class="row"><span class="key">ESP-IDF</span><span class="val" id="dis-idf">—</span></div>
     <div class="row"><span class="key">IP</span><span class="val" id="dis-ip">—</span></div>
+    <div class="row"><span class="key">バッテリー</span><span class="val" id="dis-battery">—</span></div>
   </div>
 
   <label for="ssid">Wi-Fi SSID</label>
@@ -490,6 +491,10 @@ async function refresh() {
     $('dis-fw').textContent = s.firmware || '—';
     $('dis-idf').textContent = s.idf || '—';
     $('dis-ip').textContent = s.ip || '—';
+    $('dis-battery').textContent = (s.battery_mv == null || s.battery_mv < 0)
+      ? '—'
+      : ((s.battery_pct >= 0 ? s.battery_pct + '% ' : '')
+         + (s.battery_mv / 1000).toFixed(2) + 'V ' + (s.battery_ma | 0) + 'mA');
 
     $('ssid').value = s.ssid || '';
     $('provider').value = String(s.provider ?? 0);

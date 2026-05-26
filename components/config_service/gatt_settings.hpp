@@ -22,6 +22,10 @@ void set_subscribe(uint16_t conn_handle, bool subscribed);
 // Thread-safe — may be called from any task.
 void set_wifi_connected(bool connected);
 
+// Update the cached battery snapshot (mV / mA / percent) served by the Battery
+// READ characteristic. Thread-safe — may be called from any task.
+void set_battery(int millivolts, int milliamps, int percent);
+
 // Drop application-layer crypto session state. Call on BLE disconnect so the
 // next connection runs a fresh X25519 handshake.
 void reset_session();

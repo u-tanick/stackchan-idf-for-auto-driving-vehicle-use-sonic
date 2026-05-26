@@ -17,4 +17,7 @@ void register_handlers(httpd_handle_t server, const config::DeviceConfig& curren
 // Update the Wi-Fi-connected flag exposed by /api/status.
 void set_wifi_connected(bool connected);
 
+// Update the cached battery snapshot (mV / mA / percent) exposed by /api/status.
+void set_battery(int millivolts, int milliamps, int percent);
+
 } // namespace stackchan::wifi_config::http

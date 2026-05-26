@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "app_main.cpp"
         "audio_codec.cpp"
+        "battery.cpp"
         "audio_stream_sink.cpp"
         "conversation_task.cpp"
         "device_ui.cpp"

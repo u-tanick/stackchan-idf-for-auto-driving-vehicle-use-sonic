@@ -21,9 +21,11 @@
 
 #include "audio_stream_sink.hpp"
 #include "avatar/expression.hpp"
+#include "battery.hpp"
 #include "board/board.hpp"
 #include "board/si12t_touch.hpp"
 #include "config_service/config_service.hpp"
+#include <wifi_config_service/wifi_config_service.hpp>
 #include "conversation_task.hpp"
 #include "device_ui.hpp"
 #include "render_task.hpp"
@@ -126,6 +128,14 @@ void demo_loop(const std::string& jtts_config_json)
     std::uint32_t next_pose_ms = 0;
     std::uint32_t next_speech_ms = 2000; // first babble shortly after boot
 
+    // Base-board battery monitor (INA226 on the internal I2C bus). Read here —
+    // the only task that touches m5::In_I2C — and published to SharedState +
+    // the BLE / Wi-Fi services. Safe if the chip is absent (read() → nullopt).
+    constexpr std::uint32_t kBatteryPeriodMs = 5000;
+    app::BatteryMonitor battery;
+    battery.begin();
+    std::uint32_t next_battery_ms = 0;
+
     // Nadenade (head-petting) detection on the top-mounted Si12T sensor.
     //
     // A static "is something touching?" test kept false-firing on 2.4 GHz
@@ -163,6 +173,22 @@ void demo_loop(const std::string& jtts_config_json)
         M5.update();
 
         const std::uint32_t now_ms = static_cast<std::uint32_t>(esp_timer_get_time() / 1000);
+
+        // Battery: sample the INA226 every few seconds and fan the result out to
+        // the device UI (SharedState) + the BLE / Wi-Fi settings services.
+        if (now_ms >= next_battery_ms) {
+            next_battery_ms = now_ms + kBatteryPeriodMs;
+            if (auto r = battery.read()) {
+                const int mv = static_cast<int>(r->voltage * 1000.0f + 0.5f);
+                const int ma = static_cast<int>(r->current * 1000.0f + (r->current >= 0 ? 0.5f : -0.5f));
+                const int pct = app::battery_percent_from_voltage(r->voltage);
+                g_state->battery_mv.store(static_cast<std::int16_t>(mv), std::memory_order_relaxed);
+                g_state->battery_ma.store(static_cast<std::int16_t>(ma), std::memory_order_relaxed);
+                g_state->battery_pct.store(static_cast<std::int8_t>(pct), std::memory_order_relaxed);
+                config::notify_battery(mv, ma, pct);
+                wifi_config::set_battery(mv, ma, pct);
+            }
+        }
 
         // LCD touch (M5.Touch — the screen's capacitive touch, distinct from
         // the Si12T head sensor) drives the on-device UI. Forward every press

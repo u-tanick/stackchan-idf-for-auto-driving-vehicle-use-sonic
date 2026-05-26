@@ -52,6 +52,10 @@ struct StagingBuffer {
 config::DeviceConfig g_active;
 StagingBuffer g_staging;
 bool g_wifi_connected = false;
+// Cached battery snapshot served by /api/status. -1 mV / percent → unknown.
+int g_battery_mv = -1;
+int g_battery_ma = 0;
+int g_battery_pct = -1;
 esp_timer_handle_t g_restart_timer = nullptr;
 
 // Plaintext caps mirror the BLE chr limits so the same DeviceConfig.cpp
@@ -188,6 +192,9 @@ esp_err_t handle_status_get(httpd_req_t* req)
     xSemaphoreTake(g_mutex, portMAX_DELAY);
     const auto cfg = g_active;
     const bool wifi_ok = g_wifi_connected;
+    const int bat_mv = g_battery_mv;
+    const int bat_ma = g_battery_ma;
+    const int bat_pct = g_battery_pct;
     xSemaphoreGive(g_mutex);
 
     const esp_app_desc_t* desc = esp_app_get_description();
@@ -211,7 +218,10 @@ esp_err_t handle_status_get(httpd_req_t* req)
     body += "\"provider\":" + std::to_string(static_cast<int>(cfg.provider)) + ",";
     body += "\"jtts_config\":\"" + escape_json(cfg.jtts_config_json) + "\",";
     body += "\"system_prompt\":\"" + escape_json(cfg.system_prompt) + "\",";
-    body += "\"conv_extra_headers\":\"" + escape_json(cfg.conv_extra_headers) + "\"";
+    body += "\"conv_extra_headers\":\"" + escape_json(cfg.conv_extra_headers) + "\",";
+    body += "\"battery_mv\":" + std::to_string(bat_mv) + ",";
+    body += "\"battery_ma\":" + std::to_string(bat_ma) + ",";
+    body += "\"battery_pct\":" + std::to_string(bat_pct);
     body += "}";
     return send_json(req, body);
 }
@@ -457,6 +467,16 @@ void set_wifi_connected(bool connected)
     if (g_mutex == nullptr) return;
     xSemaphoreTake(g_mutex, portMAX_DELAY);
     g_wifi_connected = connected;
+    xSemaphoreGive(g_mutex);
+}
+
+void set_battery(int millivolts, int milliamps, int percent)
+{
+    if (g_mutex == nullptr) return;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_battery_mv = millivolts;
+    g_battery_ma = milliamps;
+    g_battery_pct = percent;
     xSemaphoreGive(g_mutex);
 }
 
