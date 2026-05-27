@@ -16,14 +16,16 @@
 //     toggle, button) based on the current page.
 //   - active(): true while the UI is shown (the render task draws the UI
 //     instead of the avatar).
-//   - draw(): called from the render task each frame; repaints (to an
-//     off-screen sprite, pushed in one shot — no flicker) only when the page
-//     or live status actually changed.
+//   - draw(): called from the render task each frame; renders into the caller's
+//     shared canvas only when the page or live status actually changed, and
+//     returns whether it drew (so the caller pushes only then — no flicker).
 namespace stackchan::app::ui {
 
 void init(SharedState& state);
 void handle_tap(int x, int y);
 bool active();
-void draw(M5GFX& display);
+// Render into the caller-owned canvas (the render task's shared framebuffer).
+// Returns true if it repainted this frame; the caller pushes the canvas then.
+bool draw(M5Canvas& canvas);
 
 } // namespace stackchan::app::ui

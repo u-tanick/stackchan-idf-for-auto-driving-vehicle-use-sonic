@@ -4,7 +4,6 @@
 #pragma once
 
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <string_view>
 
@@ -19,15 +18,13 @@ namespace stackchan::avatar {
 
 class Avatar {
 public:
-    explicit Avatar(M5GFX& display);
+    Avatar();
     ~Avatar();
 
     Avatar(const Avatar&) = delete;
     Avatar& operator=(const Avatar&) = delete;
     Avatar(Avatar&&) noexcept;
     Avatar& operator=(Avatar&&) noexcept;
-
-    bool begin();
 
     void set_expression(Expression expression) noexcept;
     void set_mouth_open(float ratio) noexcept;
@@ -47,15 +44,11 @@ public:
     // set_balloon_text / clear_balloon.
     bool is_balloon_done() const noexcept;
 
-    // Optional overlay drawn onto the off-screen canvas each frame, after the
-    // face/effect/balloon and just before the sprite is pushed — so it is
-    // composited into the single pushSprite (no flicker, unlike drawing onto
-    // the panel after the push). Pass {} to clear. The callback must only draw;
-    // it runs on the render task.
-    void set_overlay(std::function<void(M5Canvas&)> overlay) noexcept;
-
-    // Drives animators with the current time in milliseconds and renders one frame.
-    void tick(std::uint32_t now_ms);
+    // Drives the animators with the current time (ms) and renders one frame into
+    // `canvas` (fills the background then draws face / effect / balloon). The
+    // caller owns the canvas and is responsible for pushing it to the panel —
+    // Avatar never touches the display. The canvas is expected to be 320x240.
+    void tick(std::uint32_t now_ms, M5Canvas& canvas);
 
 private:
     class Impl;

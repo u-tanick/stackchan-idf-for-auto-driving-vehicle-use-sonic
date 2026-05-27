@@ -4,7 +4,6 @@
 #include "avatar/avatar.hpp"
 
 #include <M5GFX.h>
-#include <esp_log.h>
 
 #include "animation.hpp"
 #include "balloon.hpp"
@@ -14,47 +13,29 @@
 namespace stackchan::avatar {
 
 namespace {
-constexpr const char* kTag = "avatar";
 constexpr std::int16_t kCanvasWidth = 320;
 constexpr std::int16_t kCanvasHeight = 240;
 } // namespace
 
+// Avatar is a pure renderer: it owns no display or framebuffer. The caller (the
+// render task in main) owns the canvas and pushes it to the panel; tick() only
+// composes the frame into the borrowed canvas.
 class Avatar::Impl {
 public:
-    // CoreS3 LCD shares MISO with the panel's DC line on GPIO35, which makes
-    // any SPI read from the display hang. Constructing the canvas with the
-    // display as parent triggers a readRect on createSprite, so build the
-    // canvas as a standalone sprite and push it explicitly with a target.
-    explicit Impl(M5GFX& display) noexcept : display_{display}, canvas_{} {}
+    Impl() noexcept = default;
 
-    bool begin()
-    {
-        canvas_.setColorDepth(16);
-        canvas_.setPsram(true);
-        if (canvas_.createSprite(kCanvasWidth, kCanvasHeight) == nullptr) {
-            ESP_LOGE(kTag, "createSprite(%d, %d) failed (need PSRAM)", kCanvasWidth, kCanvasHeight);
-            return false;
-        }
-        return true;
-    }
-
-    void tick(std::uint32_t now_ms)
+    void tick(std::uint32_t now_ms, M5Canvas& canvas)
     {
         animator_.tick(now_ms, context_);
         context_.now_ms = now_ms;
 
-        canvas_.fillScreen(context_.palette.background);
-        internal::draw_face(canvas_, face_, context_);
-        internal::draw_effect(canvas_, context_);
-        internal::draw_balloon(canvas_, context_);
-        if (overlay_) {
-            overlay_(canvas_);
-        }
-        canvas_.pushSprite(&display_, 0, 0);
+        canvas.fillScreen(context_.palette.background);
+        internal::draw_face(canvas, face_, context_);
+        internal::draw_effect(canvas, context_);
+        internal::draw_balloon(canvas, context_);
     }
 
     DrawContext& context() noexcept { return context_; }
-    void set_overlay(std::function<void(M5Canvas&)> overlay) { overlay_ = std::move(overlay); }
 
     void set_face_tuning(const FaceTuning& tuning)
     {
@@ -64,23 +45,15 @@ public:
     }
 
 private:
-    M5GFX& display_;
-    M5Canvas canvas_;
     DrawContext context_{};
     internal::Face face_{};
     internal::FaceAnimator animator_{};
-    std::function<void(M5Canvas&)> overlay_{};
 };
 
-Avatar::Avatar(M5GFX& display) : impl_{std::make_unique<Impl>(display)} {}
+Avatar::Avatar() : impl_{std::make_unique<Impl>()} {}
 Avatar::~Avatar() = default;
 Avatar::Avatar(Avatar&&) noexcept = default;
 Avatar& Avatar::operator=(Avatar&&) noexcept = default;
-
-bool Avatar::begin()
-{
-    return impl_->begin();
-}
 
 void Avatar::set_expression(Expression expression) noexcept
 {
@@ -113,11 +86,6 @@ void Avatar::set_face_tuning(const FaceTuning& tuning) noexcept
     impl_->set_face_tuning(tuning);
 }
 
-void Avatar::set_overlay(std::function<void(M5Canvas&)> overlay) noexcept
-{
-    impl_->set_overlay(std::move(overlay));
-}
-
 void Avatar::set_balloon_text(std::string_view text, std::uint32_t hold_ms)
 {
     auto& ctx = impl_->context();
@@ -142,9 +110,9 @@ bool Avatar::is_balloon_done() const noexcept
     return impl_->context().balloon_done;
 }
 
-void Avatar::tick(std::uint32_t now_ms)
+void Avatar::tick(std::uint32_t now_ms, M5Canvas& canvas)
 {
-    impl_->tick(now_ms);
+    impl_->tick(now_ms, canvas);
 }
 
 } // namespace stackchan::avatar

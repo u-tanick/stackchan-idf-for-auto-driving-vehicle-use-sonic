@@ -61,8 +61,10 @@ std::atomic<bool> g_stage_bat_gauge{true};
 std::string g_ssid;
 std::string g_host;
 
-M5Canvas g_canvas; // standalone sprite, pushed with an explicit target
-bool g_canvas_ready = false;
+// Borrowed each frame from the render task (main owns the framebuffer). The
+// draw helpers below render through this; it is only valid for the duration of
+// a draw() call and is never owned/pushed here.
+M5Canvas* g_cv = nullptr;
 std::uint32_t g_last_info_ms = 0;
 
 std::uint32_t now_ms()
@@ -143,56 +145,56 @@ TabBar layout_tabbar()
 
 void draw_topbar(int page)
 {
-    const std::uint16_t bar = g_canvas.color565(40, 44, 54);
-    const std::uint16_t sel = g_canvas.color565(60, 120, 200);
-    const std::uint16_t fg = g_canvas.color565(235, 235, 235);
-    const std::uint16_t arrow = g_canvas.color565(70, 74, 84);
-    g_canvas.fillRect(0, 0, kW, kBarH, bar);
+    const std::uint16_t bar = g_cv->color565(40, 44, 54);
+    const std::uint16_t sel = g_cv->color565(60, 120, 200);
+    const std::uint16_t fg = g_cv->color565(235, 235, 235);
+    const std::uint16_t arrow = g_cv->color565(70, 74, 84);
+    g_cv->fillRect(0, 0, kW, kBarH, bar);
 
     const TabBar b = layout_tabbar();
-    g_canvas.setFont(kFontBody);
-    g_canvas.setTextDatum(lgfx::textdatum_t::middle_center);
+    g_cv->setFont(kFontBody);
+    g_cv->setTextDatum(lgfx::textdatum_t::middle_center);
 
     if (b.paging) {
-        g_canvas.fillRect(b.prev_x, 0, kArrowW, kBarH, arrow);
-        g_canvas.fillRect(b.next_x, 0, kArrowW, kBarH, arrow);
+        g_cv->fillRect(b.prev_x, 0, kArrowW, kBarH, arrow);
+        g_cv->fillRect(b.next_x, 0, kArrowW, kBarH, arrow);
         // Draw the paging arrows as triangles (font has no ‹ › glyphs).
         const int cy = kBarH / 2;
         const int pcx = b.prev_x + kArrowW / 2;
-        g_canvas.fillTriangle(pcx - 5, cy, pcx + 4, cy - 7, pcx + 4, cy + 7, fg); // ◀
+        g_cv->fillTriangle(pcx - 5, cy, pcx + 4, cy - 7, pcx + 4, cy + 7, fg); // ◀
         const int ncx = b.next_x + kArrowW / 2;
-        g_canvas.fillTriangle(ncx + 5, cy, ncx - 4, cy - 7, ncx - 4, cy + 7, fg); // ▶
+        g_cv->fillTriangle(ncx + 5, cy, ncx - 4, cy - 7, ncx - 4, cy + 7, fg); // ▶
     }
     for (int i = 0; i < b.slot_count; ++i) {
         const TabSlot& s = b.slots[i];
-        if (s.index == page) g_canvas.fillRect(s.x, 0, s.w, kBarH, sel);
-        g_canvas.setTextColor(fg);
-        g_canvas.drawString(kTabLabels[s.index], s.x + s.w / 2, kBarH / 2);
+        if (s.index == page) g_cv->fillRect(s.x, 0, s.w, kBarH, sel);
+        g_cv->setTextColor(fg);
+        g_cv->drawString(kTabLabels[s.index], s.x + s.w / 2, kBarH / 2);
     }
     // Close button.
-    g_canvas.fillRect(b.close_x, 0, kCloseW, kBarH, g_canvas.color565(120, 60, 60));
-    g_canvas.setTextColor(fg);
-    g_canvas.drawString("×", b.close_x + kCloseW / 2, kBarH / 2);
+    g_cv->fillRect(b.close_x, 0, kCloseW, kBarH, g_cv->color565(120, 60, 60));
+    g_cv->setTextColor(fg);
+    g_cv->drawString("×", b.close_x + kCloseW / 2, kBarH / 2);
 }
 
 void draw_kv(int y, const char* key, const char* value, std::uint16_t vcolor)
 {
-    const std::uint16_t dim = g_canvas.color565(150, 150, 150);
-    g_canvas.setFont(kFontBody);
-    g_canvas.setTextDatum(lgfx::textdatum_t::top_left);
-    g_canvas.setTextColor(dim);
-    g_canvas.drawString(key, 12, y);
-    g_canvas.setTextColor(vcolor);
-    g_canvas.drawString(value, 120, y);
+    const std::uint16_t dim = g_cv->color565(150, 150, 150);
+    g_cv->setFont(kFontBody);
+    g_cv->setTextDatum(lgfx::textdatum_t::top_left);
+    g_cv->setTextColor(dim);
+    g_cv->drawString(key, 12, y);
+    g_cv->setTextColor(vcolor);
+    g_cv->drawString(value, 120, y);
 }
 
 void draw_info()
 {
-    const std::uint16_t fg = g_canvas.color565(235, 235, 235);
-    const std::uint16_t ok = g_canvas.color565(80, 220, 120);
-    const std::uint16_t off = g_canvas.color565(230, 110, 110);
-    const std::uint16_t warn = g_canvas.color565(235, 200, 90);
-    const std::uint16_t dim = g_canvas.color565(150, 150, 150);
+    const std::uint16_t fg = g_cv->color565(235, 235, 235);
+    const std::uint16_t ok = g_cv->color565(80, 220, 120);
+    const std::uint16_t off = g_cv->color565(230, 110, 110);
+    const std::uint16_t warn = g_cv->color565(235, 200, 90);
+    const std::uint16_t dim = g_cv->color565(150, 150, 150);
 
     const esp_app_desc_t* app = esp_app_get_description();
     const bool wifi = wifi_is_connected();
@@ -240,31 +242,31 @@ void draw_toggle_row(int i, const char* label, bool on)
 {
     int rx, ry, rw, rh;
     row_rect(i, rx, ry, rw, rh);
-    g_canvas.fillRoundRect(rx, ry, rw, rh, 6, g_canvas.color565(40, 44, 54));
-    g_canvas.setFont(kFontBody);
-    g_canvas.setTextDatum(lgfx::textdatum_t::middle_left);
-    g_canvas.setTextColor(g_canvas.color565(235, 235, 235));
-    g_canvas.drawString(label, rx + 12, ry + rh / 2);
+    g_cv->fillRoundRect(rx, ry, rw, rh, 6, g_cv->color565(40, 44, 54));
+    g_cv->setFont(kFontBody);
+    g_cv->setTextDatum(lgfx::textdatum_t::middle_left);
+    g_cv->setTextColor(g_cv->color565(235, 235, 235));
+    g_cv->drawString(label, rx + 12, ry + rh / 2);
     // Pill switch on the right.
     const int pw = 58, ph = 26;
     const int px = rx + rw - pw - 10, py = ry + (rh - ph) / 2;
-    const std::uint16_t on_c = g_canvas.color565(80, 200, 120);
-    const std::uint16_t off_c = g_canvas.color565(90, 90, 96);
-    g_canvas.fillRoundRect(px, py, pw, ph, ph / 2, on ? on_c : off_c);
+    const std::uint16_t on_c = g_cv->color565(80, 200, 120);
+    const std::uint16_t off_c = g_cv->color565(90, 90, 96);
+    g_cv->fillRoundRect(px, py, pw, ph, ph / 2, on ? on_c : off_c);
     const int kn = ph - 6;
-    g_canvas.fillCircle(on ? (px + pw - ph / 2) : (px + ph / 2), py + ph / 2, kn / 2,
-                        g_canvas.color565(245, 245, 245));
+    g_cv->fillCircle(on ? (px + pw - ph / 2) : (px + ph / 2), py + ph / 2, kn / 2,
+                        g_cv->color565(245, 245, 245));
 }
 
 void draw_button(int i, const char* label, std::uint16_t color)
 {
     int rx, ry, rw, rh;
     row_rect(i, rx, ry, rw, rh);
-    g_canvas.fillRoundRect(rx, ry, rw, rh, 6, color);
-    g_canvas.setFont(kFontBody);
-    g_canvas.setTextDatum(lgfx::textdatum_t::middle_center);
-    g_canvas.setTextColor(g_canvas.color565(245, 245, 245));
-    g_canvas.drawString(label, rx + rw / 2, ry + rh / 2);
+    g_cv->fillRoundRect(rx, ry, rw, rh, 6, color);
+    g_cv->setFont(kFontBody);
+    g_cv->setTextDatum(lgfx::textdatum_t::middle_center);
+    g_cv->setTextColor(g_cv->color565(245, 245, 245));
+    g_cv->drawString(label, rx + rw / 2, ry + rh / 2);
 }
 
 void draw_settings()
@@ -272,27 +274,27 @@ void draw_settings()
     draw_toggle_row(0, "会話機能", g_stage_conv.load(std::memory_order_relaxed));
     draw_toggle_row(1, "RTP 音声受信", g_stage_rtp.load(std::memory_order_relaxed));
     draw_toggle_row(2, "電池ゲージ", g_stage_bat_gauge.load(std::memory_order_relaxed));
-    draw_button(3, "適用（保存して再起動）", g_canvas.color565(60, 120, 200));
-    g_canvas.setFont(kFontBody);
-    g_canvas.setTextDatum(lgfx::textdatum_t::top_left);
-    g_canvas.setTextColor(g_canvas.color565(150, 150, 150));
-    g_canvas.drawString("変更は適用で反映されます", 12, kContentY + 4 * kRowH + 2);
+    draw_button(3, "適用（保存して再起動）", g_cv->color565(60, 120, 200));
+    g_cv->setFont(kFontBody);
+    g_cv->setTextDatum(lgfx::textdatum_t::top_left);
+    g_cv->setTextColor(g_cv->color565(150, 150, 150));
+    g_cv->drawString("変更は適用で反映されます", 12, kContentY + 4 * kRowH + 2);
 }
 
 void draw_control()
 {
     const bool servo_on = g_state->servo_enabled.load(std::memory_order_relaxed);
     draw_toggle_row(0, "サーボ（脱力/復帰）", servo_on);
-    draw_button(1, "姿勢をリセット", g_canvas.color565(60, 120, 200));
+    draw_button(1, "姿勢をリセット", g_cv->color565(60, 120, 200));
 }
 
 void draw_conversation()
 {
-    const std::uint16_t fg = g_canvas.color565(235, 235, 235);
-    const std::uint16_t ok = g_canvas.color565(80, 220, 120);
-    const std::uint16_t warn = g_canvas.color565(235, 200, 90);
-    const std::uint16_t err = g_canvas.color565(235, 100, 100);
-    const std::uint16_t dim = g_canvas.color565(150, 150, 150);
+    const std::uint16_t fg = g_cv->color565(235, 235, 235);
+    const std::uint16_t ok = g_cv->color565(80, 220, 120);
+    const std::uint16_t warn = g_cv->color565(235, 200, 90);
+    const std::uint16_t err = g_cv->color565(235, 100, 100);
+    const std::uint16_t dim = g_cv->color565(150, 150, 150);
 
     const ConvStatus st = g_state->conversation_status.load(std::memory_order_relaxed);
     const char* status_text = "?";
@@ -321,10 +323,10 @@ void draw_conversation()
     draw_kv(y, "再接続", rc, reconnects > 0 ? warn : fg); y += dy;
 }
 
-void render_page(M5GFX& display)
+void render_page()
 {
     const int page = g_page.load(std::memory_order_relaxed);
-    g_canvas.fillScreen(g_canvas.color565(20, 22, 28));
+    g_cv->fillScreen(g_cv->color565(20, 22, 28));
     draw_topbar(page);
     if (page == kInfo) {
         draw_info();
@@ -335,7 +337,7 @@ void render_page(M5GFX& display)
     } else {
         draw_conversation();
     }
-    g_canvas.pushSprite(&display, 0, 0);
+    // No pushSprite here — the render task owns the canvas and pushes it.
 }
 
 // --- Actions -------------------------------------------------------------
@@ -457,14 +459,9 @@ void handle_tap(int x, int y)
     }
 }
 
-void draw(M5GFX& display)
+bool draw(M5Canvas& canvas)
 {
-    if (!g_canvas_ready) {
-        g_canvas.setColorDepth(16);
-        g_canvas.setPsram(true);
-        if (g_canvas.createSprite(kW, kH) == nullptr) return; // retry next frame
-        g_canvas_ready = true;
-    }
+    g_cv = &canvas; // borrowed for this frame; the draw helpers render through it
 
     bool need = g_dirty.exchange(false, std::memory_order_relaxed);
     // The info and 会話 pages have live fields (IP/uptime/heap, conn status /
@@ -477,7 +474,10 @@ void draw(M5GFX& display)
             need = true;
         }
     }
-    if (need) render_page(display);
+    if (need) {
+        render_page();
+    }
+    return need;
 }
 
 } // namespace stackchan::app::ui

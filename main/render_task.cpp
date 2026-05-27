@@ -21,11 +21,13 @@ namespace {
 
 constexpr const char* kTag = "render";
 constexpr TickType_t kPeriodTicks = pdMS_TO_TICKS(33);
+constexpr std::int16_t kCanvasWidth = 320;
+constexpr std::int16_t kCanvasHeight = 240;
 
-// Battery gauge overlay, composited into the avatar's off-screen canvas (via
-// Avatar::set_overlay) just before pushSprite, so it ships in the same frame as
-// the face (drawing onto the panel after the push flickers). `pct` is 0..100;
-// values < 0 are filtered out by the caller.
+// Battery gauge overlay, composited into the shared canvas just before the
+// render task pushes it, so it ships in the same frame as the face (drawing
+// onto the panel after the push flickers). `pct` is 0..100; values < 0 are
+// filtered out by the caller.
 void draw_battery_gauge(M5Canvas& canvas, int pct)
 {
     constexpr int x = 6, y = 6, w = 34, h = 16; // battery body
@@ -62,13 +64,24 @@ void draw_battery_gauge(M5Canvas& canvas, int pct)
 void render_task_entry(void* arg)
 {
     auto& args = *static_cast<RenderTaskArgs*>(arg);
+    M5GFX& display = *args.display;
+    SharedState* state = args.state;
 
-    avatar::Avatar avatar{*args.display};
-    if (!avatar.begin()) {
-        ESP_LOGE(kTag, "avatar.begin() failed");
+    // The single system framebuffer is owned here (main), not by the avatar or
+    // the on-device UI — they render into this borrowed canvas and the render
+    // task is the only code that pushes it to the panel. A standalone sprite
+    // (not display-parented) pushed with an explicit target avoids the CoreS3
+    // GPIO35 MISO/DC read hang.
+    M5Canvas canvas;
+    canvas.setColorDepth(16);
+    canvas.setPsram(true);
+    if (canvas.createSprite(kCanvasWidth, kCanvasHeight) == nullptr) {
+        ESP_LOGE(kTag, "createSprite(%d, %d) failed (need PSRAM)", kCanvasWidth, kCanvasHeight);
         vTaskDelete(nullptr);
         return;
     }
+
+    avatar::Avatar avatar;
 
     int last_expression = -1;
     std::uint32_t last_balloon_version = 0;
@@ -77,24 +90,16 @@ void render_task_entry(void* arg)
     bool balloon_pending = false;
     bool ui_was_active = false;
 
-    // Battery gauge overlay: composited into the avatar canvas each frame (no
-    // flicker). Reads SharedState live, so toggling / level changes apply at
-    // once. Drawn only when enabled and a valid reading exists.
-    SharedState* state = args.state;
-    avatar.set_overlay([state](M5Canvas& canvas) {
-        if (!state->battery_gauge_enabled.load(std::memory_order_relaxed)) return;
-        const int pct = state->battery_pct.load(std::memory_order_relaxed);
-        if (pct >= 0) {
-            draw_battery_gauge(canvas, pct);
-        }
-    });
-
     for (;;) {
         const std::uint32_t now_ms = static_cast<std::uint32_t>(esp_timer_get_time() / 1000);
 
-        // On-device touchscreen UI takes over the display while shown.
+        // On-device touchscreen UI takes over the display while shown. It draws
+        // into the shared canvas (lazily — only when something changed); push
+        // only when it actually repainted.
         if (ui::active()) {
-            ui::draw(*args.display);
+            if (ui::draw(canvas)) {
+                canvas.pushSprite(&display, 0, 0);
+            }
             ui_was_active = true;
             vTaskDelay(kPeriodTicks);
             continue;
@@ -135,7 +140,18 @@ void render_task_entry(void* arg)
             last_balloon_version = balloon_version;
         }
 
-        avatar.tick(now_ms); // composites the avatar + battery overlay, then pushes
+        avatar.tick(now_ms, canvas); // composes the face into the shared canvas
+
+        // Battery gauge overlay, composited into the canvas before the push so
+        // it ships in the same frame (no flicker). Live from SharedState.
+        if (state->battery_gauge_enabled.load(std::memory_order_relaxed)) {
+            const int pct = state->battery_pct.load(std::memory_order_relaxed);
+            if (pct >= 0) {
+                draw_battery_gauge(canvas, pct);
+            }
+        }
+
+        canvas.pushSprite(&display, 0, 0);
 
         if (balloon_pending && avatar.is_balloon_done()) {
             balloon_pending = false;
