@@ -5,7 +5,7 @@
 
 namespace stackchan::avatar::internal {
 
-void draw_mouth(M5Canvas& canvas, const Mouth& mouth, const DrawContext& ctx,
+void draw_mouth(Canvas& canvas, const Mouth& mouth, const DrawContext& ctx,
                 std::int16_t breath_offset_y)
 {
     const std::uint16_t fg = ctx.palette.primary;

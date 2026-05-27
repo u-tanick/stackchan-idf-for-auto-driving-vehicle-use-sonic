@@ -7,7 +7,7 @@
 
 namespace stackchan::avatar::internal {
 
-void draw_eye(M5Canvas& canvas, const Eye& eye, const DrawContext& ctx, std::int16_t breath_offset_y)
+void draw_eye(Canvas& canvas, const Eye& eye, const DrawContext& ctx, std::int16_t breath_offset_y)
 {
     const std::uint16_t fg = ctx.palette.primary;
     const std::uint16_t bg = ctx.palette.background;

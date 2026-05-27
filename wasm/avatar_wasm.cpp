@@ -17,11 +17,45 @@
 #include "avatar/face_tuning.hpp"
 #include "avatar/palette.hpp"
 #include "effect.hpp"
+#include "avatar/canvas.hpp"
 #include "face.hpp"
 
 using namespace stackchan::avatar;
 
 namespace {
+
+// Browser preview always has a full framebuffer, so this is the "buffered"
+// strategy: forward the Canvas primitives straight to the shim M5Canvas and
+// treat the grouping / frame hooks as no-ops (begin_frame just clears).
+class WasmCanvas final : public Canvas {
+public:
+    explicit WasmCanvas(M5Canvas& c) noexcept : c_{c} {}
+    std::int32_t width() const override { return c_.width(); }
+    std::int32_t height() const override { return c_.height(); }
+    void fillScreen(std::uint16_t color) override { c_.fillScreen(color); }
+    void fillRect(std::int32_t x, std::int32_t y, std::int32_t w, std::int32_t h,
+                  std::uint16_t color) override
+    {
+        c_.fillRect(x, y, w, h, color);
+    }
+    void fillCircle(std::int32_t x, std::int32_t y, std::int32_t r, std::uint16_t color) override
+    {
+        c_.fillCircle(x, y, r, color);
+    }
+    void fillTriangle(std::int32_t x0, std::int32_t y0, std::int32_t x1, std::int32_t y1,
+                      std::int32_t x2, std::int32_t y2, std::uint16_t color) override
+    {
+        c_.fillTriangle(x0, y0, x1, y1, x2, y2, color);
+    }
+    void begin_group(std::int32_t, std::int32_t, std::int32_t, std::int32_t) override {}
+    void end_group() override {}
+    void begin_frame(std::uint16_t bg) override { c_.fillScreen(bg); }
+    void end_frame() override {}
+    void request_full_repaint() override {}
+
+private:
+    M5Canvas& c_;
+};
 
 std::int32_t g_w = 320;
 std::int32_t g_h = 240;
@@ -193,9 +227,10 @@ EMSCRIPTEN_KEEPALIVE void avatar_tick(double now_ms)
     }
     g_ctx.now_ms = t;
 
-    g_canvas.fillScreen(g_ctx.palette.background);
-    internal::draw_face(g_canvas, g_face, g_ctx);
-    internal::draw_effect(g_canvas, g_ctx);
+    WasmCanvas canvas{g_canvas};
+    canvas.fillScreen(g_ctx.palette.background);
+    internal::draw_face(canvas, g_face, g_ctx);
+    internal::draw_effect(canvas, g_ctx);
 }
 
 } // extern "C"

@@ -12,6 +12,8 @@
 #include <freertos/task.h>
 
 #include "avatar/avatar.hpp"
+#include "avatar/canvas.hpp"
+#include "avatar/canvas_m5gfx.hpp"
 #include "device_ui.hpp"
 #include "face_config.hpp"
 
@@ -21,14 +23,16 @@ namespace {
 
 constexpr const char* kTag = "render";
 constexpr TickType_t kPeriodTicks = pdMS_TO_TICKS(33);
-constexpr std::int16_t kCanvasWidth = 320;
-constexpr std::int16_t kCanvasHeight = 240;
+constexpr std::int32_t kCanvasWidth = 320;
+constexpr std::int32_t kCanvasHeight = 240;
 
-// Battery gauge overlay, composited into the shared canvas just before the
-// render task pushes it, so it ships in the same frame as the face (drawing
-// onto the panel after the push flickers). `pct` is 0..100; values < 0 are
-// filtered out by the caller.
-void draw_battery_gauge(M5Canvas& canvas, int pct)
+using avatar::RichCanvas;
+
+// Battery gauge overlay, composited into the frame just before present (same
+// frame as the face — drawing after present flickers). `pct` is 0..100; values
+// < 0 are filtered out by the caller. Wrapped in a group so the direct strategy
+// composites it off-screen.
+void draw_battery_gauge(RichCanvas& canvas, int pct)
 {
     constexpr int x = 6, y = 6, w = 34, h = 16; // battery body
     constexpr int nub_w = 3, nub_h = 6;          // positive terminal nub
@@ -41,6 +45,7 @@ void draw_battery_gauge(M5Canvas& canvas, int pct)
                               : (pct >= 20 ? canvas.color565(235, 200, 90)
                                            : canvas.color565(230, 110, 110));
 
+    canvas.begin_group(x - 1, y - 1, w + nub_w + 44, h + 2);
     // Backing panel behind the icon + text so it stays legible over the face.
     canvas.fillRect(x - 1, y - 1, w + nub_w + 44, h + 2, black);
     // Body outline + terminal.
@@ -59,6 +64,7 @@ void draw_battery_gauge(M5Canvas& canvas, int pct)
     canvas.setTextColor(white, black);
     canvas.setTextSize(1);
     canvas.drawString(label, x + w + nub_w + 4, y + h / 2);
+    canvas.end_group();
 }
 
 void render_task_entry(void* arg)
@@ -67,19 +73,18 @@ void render_task_entry(void* arg)
     M5GFX& display = *args.display;
     SharedState* state = args.state;
 
-    // The single system framebuffer is owned here (main), not by the avatar or
-    // the on-device UI — they render into this borrowed canvas and the render
-    // task is the only code that pushes it to the panel. A standalone sprite
-    // (not display-parented) pushed with an explicit target avoids the CoreS3
-    // GPIO35 MISO/DC read hang.
-    M5Canvas canvas;
-    canvas.setColorDepth(16);
-    canvas.setPsram(true);
-    if (canvas.createSprite(kCanvasWidth, kCanvasHeight) == nullptr) {
-        ESP_LOGE(kTag, "createSprite(%d, %d) failed (need PSRAM)", kCanvasWidth, kCanvasHeight);
+    // The drawing strategy (= the system framebuffer) is owned here (main), not
+    // by the avatar / on-device UI — they render through the abstract Canvas.
+    // Buffered strategy: one full-screen PSRAM sprite, pushed once per frame.
+    // (DirectCanvas for PSRAM-less devices is selected here in a later step.)
+    avatar::BufferedCanvas buffered{display};
+    if (!buffered.begin(kCanvasWidth, kCanvasHeight)) {
+        ESP_LOGE(kTag, "framebuffer createSprite(%d, %d) failed (need PSRAM)",
+                 static_cast<int>(kCanvasWidth), static_cast<int>(kCanvasHeight));
         vTaskDelete(nullptr);
         return;
     }
+    RichCanvas& canvas = buffered;
 
     avatar::Avatar avatar;
 
@@ -97,17 +102,20 @@ void render_task_entry(void* arg)
         // into the shared canvas (lazily — only when something changed); push
         // only when it actually repainted.
         if (ui::active()) {
+            // device_ui clears + draws itself (lazily); present only when it
+            // repainted this frame.
             if (ui::draw(canvas)) {
-                canvas.pushSprite(&display, 0, 0);
+                canvas.end_frame();
             }
             ui_was_active = true;
             vTaskDelay(kPeriodTicks);
             continue;
         }
         if (ui_was_active) {
-            // Returning to the avatar — its pushSprite() repaints the whole
-            // screen on the next tick(), overwriting the UI.
+            // Returning to the avatar — force a full repaint so the direct
+            // strategy clears the whole panel (UI content) before redrawing.
             ui_was_active = false;
+            avatar.request_full_repaint();
             last_expression = -1; // force a fresh expression apply
         }
 
@@ -140,10 +148,11 @@ void render_task_entry(void* arg)
             last_balloon_version = balloon_version;
         }
 
-        avatar.tick(now_ms, canvas); // composes the face into the shared canvas
+        // avatar.tick() opens the frame (begin_frame) and draws the face;
+        // overlays compose into the same frame; end_frame() presents.
+        avatar.tick(now_ms, canvas);
 
-        // Battery gauge overlay, composited into the canvas before the push so
-        // it ships in the same frame (no flicker). Live from SharedState.
+        // Battery gauge overlay. Live from SharedState.
         if (state->battery_gauge_enabled.load(std::memory_order_relaxed)) {
             const int pct = state->battery_pct.load(std::memory_order_relaxed);
             if (pct >= 0) {
@@ -151,7 +160,7 @@ void render_task_entry(void* arg)
             }
         }
 
-        canvas.pushSprite(&display, 0, 0);
+        canvas.end_frame();
 
         if (balloon_pending && avatar.is_balloon_done()) {
             balloon_pending = false;

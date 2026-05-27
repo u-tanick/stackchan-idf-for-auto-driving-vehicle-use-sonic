@@ -24,30 +24,43 @@ class Avatar::Impl {
 public:
     Impl() noexcept = default;
 
-    void tick(std::uint32_t now_ms, M5Canvas& canvas)
+    void tick(std::uint32_t now_ms, RichCanvas& canvas)
     {
         animator_.tick(now_ms, context_);
         context_.now_ms = now_ms;
 
-        canvas.fillScreen(context_.palette.background);
+        // A pending full repaint (expression / layout / palette change, or a
+        // return from the on-device UI) is forwarded to the canvas so the
+        // direct strategy clears the whole panel this frame; the buffered
+        // strategy clears every frame regardless.
+        if (full_repaint_pending_) {
+            canvas.request_full_repaint();
+            full_repaint_pending_ = false;
+        }
+        canvas.begin_frame(context_.palette.background);
         internal::draw_face(canvas, face_, context_);
         internal::draw_effect(canvas, context_);
         internal::draw_balloon(canvas, context_);
+        // end_frame() (present) is the caller's responsibility, after it has
+        // composited any overlays (e.g. the battery gauge) onto the same frame.
     }
 
     DrawContext& context() noexcept { return context_; }
+    void request_full_repaint() noexcept { full_repaint_pending_ = true; }
 
     void set_face_tuning(const FaceTuning& tuning)
     {
         face_ = internal::build_face(tuning, kCanvasWidth, kCanvasHeight);
         context_.palette.primary = tuning.face_color;
         context_.palette.background = tuning.bg_color;
+        full_repaint_pending_ = true;
     }
 
 private:
     DrawContext context_{};
     internal::Face face_{};
     internal::FaceAnimator animator_{};
+    bool full_repaint_pending_ = true;
 };
 
 Avatar::Avatar() : impl_{std::make_unique<Impl>()} {}
@@ -58,6 +71,7 @@ Avatar& Avatar::operator=(Avatar&&) noexcept = default;
 void Avatar::set_expression(Expression expression) noexcept
 {
     impl_->context().expression = expression;
+    impl_->request_full_repaint(); // effect appears/disappears, eye masks change
 }
 
 void Avatar::set_mouth_open(float ratio) noexcept
@@ -79,6 +93,12 @@ void Avatar::set_gaze(float horizontal, float vertical) noexcept
 void Avatar::set_palette(const Palette& palette) noexcept
 {
     impl_->context().palette = palette;
+    impl_->request_full_repaint(); // background colour may have changed
+}
+
+void Avatar::request_full_repaint() noexcept
+{
+    impl_->request_full_repaint();
 }
 
 void Avatar::set_face_tuning(const FaceTuning& tuning) noexcept
@@ -110,7 +130,7 @@ bool Avatar::is_balloon_done() const noexcept
     return impl_->context().balloon_done;
 }
 
-void Avatar::tick(std::uint32_t now_ms, M5Canvas& canvas)
+void Avatar::tick(std::uint32_t now_ms, RichCanvas& canvas)
 {
     impl_->tick(now_ms, canvas);
 }

@@ -3,8 +3,7 @@
 
 #pragma once
 
-#include <M5GFX.h>
-
+#include "avatar/canvas.hpp"
 #include "shared_state.hpp"
 
 // On-device touchscreen UI: a tabbed info / settings / control screen reached
@@ -24,8 +23,8 @@ namespace stackchan::app::ui {
 void init(SharedState& state);
 void handle_tap(int x, int y);
 bool active();
-// Render into the caller-owned canvas (the render task's shared framebuffer).
-// Returns true if it repainted this frame; the caller pushes the canvas then.
-bool draw(M5Canvas& canvas);
+// Render into the caller-owned drawing surface (the render task's Canvas).
+// Returns true if it repainted this frame; the caller presents (end_frame) then.
+bool draw(avatar::RichCanvas& canvas);
 
 } // namespace stackchan::app::ui

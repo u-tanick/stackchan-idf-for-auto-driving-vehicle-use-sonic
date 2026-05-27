@@ -46,7 +46,7 @@ Face build_face(const FaceTuning& tuning, std::int16_t canvas_w, std::int16_t ca
     return face;
 }
 
-void draw_face(M5Canvas& canvas, const Face& face, const DrawContext& ctx)
+void draw_face(Canvas& canvas, const Face& face, const DrawContext& ctx)
 {
     const std::int16_t breath_offset_y = static_cast<std::int16_t>(ctx.breath * 3.0f);
     draw_mouth(canvas, face.mouth, ctx, breath_offset_y);

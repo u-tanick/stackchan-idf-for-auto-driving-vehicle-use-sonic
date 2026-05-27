@@ -5,8 +5,7 @@
 
 #include <cstdint>
 
-#include <M5GFX.h>
-
+#include "avatar/canvas.hpp"
 #include "avatar/draw_context.hpp"
 
 namespace stackchan::avatar::internal {
@@ -19,7 +18,7 @@ struct Eyebrow {
     bool is_left;
 };
 
-void draw_eyebrow(M5Canvas& canvas, const Eyebrow& eyebrow, const DrawContext& ctx,
+void draw_eyebrow(Canvas& canvas, const Eyebrow& eyebrow, const DrawContext& ctx,
                   std::int16_t breath_offset_y);
 
 } // namespace stackchan::avatar::internal

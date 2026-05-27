@@ -3,8 +3,7 @@
 
 #pragma once
 
-#include <M5GFX.h>
-
+#include "avatar/canvas.hpp"
 #include "avatar/draw_context.hpp"
 #include "avatar/face_tuning.hpp"
 #include "eye.hpp"
@@ -29,7 +28,7 @@ struct Face {
     bool show_eyebrows{true};
 };
 
-void draw_face(M5Canvas& canvas, const Face& face, const DrawContext& ctx);
+void draw_face(Canvas& canvas, const Face& face, const DrawContext& ctx);
 
 // Build a Face from user tuning, scaled + centred onto a canvas_w x canvas_h
 // target. The base layout is authored for 320x240; a uniform scale (preserving

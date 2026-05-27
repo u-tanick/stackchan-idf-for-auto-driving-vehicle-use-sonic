@@ -3,12 +3,11 @@
 
 #pragma once
 
-#include <M5GFX.h>
-
+#include "avatar/canvas.hpp"
 #include "avatar/draw_context.hpp"
 
 namespace stackchan::avatar::internal {
 
-void draw_balloon(M5Canvas& canvas, DrawContext& ctx);
+void draw_balloon(RichCanvas& canvas, DrawContext& ctx);
 
 } // namespace stackchan::avatar::internal

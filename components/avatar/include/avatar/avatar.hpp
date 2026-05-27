@@ -9,6 +9,7 @@
 
 #include <M5GFX.h>
 
+#include "avatar/canvas.hpp"
 #include "avatar/draw_context.hpp"
 #include "avatar/expression.hpp"
 #include "avatar/face_tuning.hpp"
@@ -44,11 +45,16 @@ public:
     // set_balloon_text / clear_balloon.
     bool is_balloon_done() const noexcept;
 
-    // Drives the animators with the current time (ms) and renders one frame into
-    // `canvas` (fills the background then draws face / effect / balloon). The
-    // caller owns the canvas and is responsible for pushing it to the panel —
-    // Avatar never touches the display. The canvas is expected to be 320x240.
-    void tick(std::uint32_t now_ms, M5Canvas& canvas);
+    // Drives the animators with the current time (ms) and renders one frame
+    // through `canvas` (begin_frame → face / effect / balloon). The canvas owns
+    // the framebuffer/present strategy (buffered vs direct); Avatar never
+    // touches the panel itself. Authored for a 320x240 surface.
+    void tick(std::uint32_t now_ms, RichCanvas& canvas);
+
+    // Force a full background repaint on the next tick(). Needed for the direct
+    // (PSRAM-less) strategy after the panel was used by something else — e.g.
+    // returning from the on-device UI. No-op cost on the buffered strategy.
+    void request_full_repaint() noexcept;
 
 private:
     class Impl;

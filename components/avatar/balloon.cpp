@@ -32,7 +32,7 @@ constexpr std::uint32_t kDefaultStaticHoldMs = 3000;
 
 } // namespace
 
-void draw_balloon(M5Canvas& canvas, DrawContext& ctx)
+void draw_balloon(RichCanvas& canvas, DrawContext& ctx)
 {
     if (!ctx.balloon_text.has_value()) {
         return;

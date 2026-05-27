@@ -5,8 +5,7 @@
 
 #include <cstdint>
 
-#include <M5GFX.h>
-
+#include "avatar/canvas.hpp"
 #include "avatar/draw_context.hpp"
 
 namespace stackchan::avatar::internal {
@@ -20,7 +19,7 @@ struct Mouth {
     std::uint16_t max_height;
 };
 
-void draw_mouth(M5Canvas& canvas, const Mouth& mouth, const DrawContext& ctx,
+void draw_mouth(Canvas& canvas, const Mouth& mouth, const DrawContext& ctx,
                 std::int16_t breath_offset_y);
 
 } // namespace stackchan::avatar::internal

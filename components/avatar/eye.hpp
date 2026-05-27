@@ -5,8 +5,7 @@
 
 #include <cstdint>
 
-#include <M5GFX.h>
-
+#include "avatar/canvas.hpp"
 #include "avatar/draw_context.hpp"
 
 namespace stackchan::avatar::internal {
@@ -18,6 +17,6 @@ struct Eye {
     bool is_left;
 };
 
-void draw_eye(M5Canvas& canvas, const Eye& eye, const DrawContext& ctx, std::int16_t breath_offset_y);
+void draw_eye(Canvas& canvas, const Eye& eye, const DrawContext& ctx, std::int16_t breath_offset_y);
 
 } // namespace stackchan::avatar::internal

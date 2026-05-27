@@ -11,7 +11,7 @@ namespace stackchan::avatar::internal {
 
 namespace {
 
-void draw_sweat(M5Canvas& canvas, std::int16_t x, std::int16_t y, float r, float offset, std::uint16_t color)
+void draw_sweat(Canvas& canvas, std::int16_t x, std::int16_t y, float r, float offset, std::uint16_t color)
 {
     const std::int16_t yy = static_cast<std::int16_t>(y + std::floor(offset * 5.0f));
     const float rr = r + std::floor(r * 0.2f * offset);
@@ -22,7 +22,7 @@ void draw_sweat(M5Canvas& canvas, std::int16_t x, std::int16_t y, float r, float
                         static_cast<std::int16_t>(x + a), static_cast<std::int16_t>(yy - rr * 0.5f), color);
 }
 
-void draw_anger(M5Canvas& canvas, std::int16_t cx, std::int16_t cy, float r, float offset,
+void draw_anger(Canvas& canvas, std::int16_t cx, std::int16_t cy, float r, float offset,
                 std::uint16_t fg, std::uint16_t bg)
 {
     const float rr = r + r * 0.4f * offset;
@@ -41,7 +41,7 @@ void draw_anger(M5Canvas& canvas, std::int16_t cx, std::int16_t cy, float r, flo
                     static_cast<std::int16_t>(rr * 2.0f), static_cast<std::int16_t>(rr * 2.0f / 3.0f - 4.0f), bg);
 }
 
-void draw_chill(M5Canvas& canvas, std::int16_t x, std::int16_t y, float r, float offset, std::uint16_t color)
+void draw_chill(Canvas& canvas, std::int16_t x, std::int16_t y, float r, float offset, std::uint16_t color)
 {
     const float h = r + std::fabs(r * 0.2f * offset);
     const float h_half = std::round(h / 2.0f);
@@ -50,7 +50,7 @@ void draw_chill(M5Canvas& canvas, std::int16_t x, std::int16_t y, float r, float
     canvas.fillRect(static_cast<std::int16_t>(x + h_half), y, 3, static_cast<std::int16_t>(h), color);
 }
 
-void draw_bubble(M5Canvas& canvas, std::int16_t x, std::int16_t y, float r, float offset, std::uint16_t color)
+void draw_bubble(Canvas& canvas, std::int16_t x, std::int16_t y, float r, float offset, std::uint16_t color)
 {
     const float rr = r + std::floor(r * 0.2f * offset);
     const float r_small = std::round(rr / 4.0f);
@@ -58,7 +58,7 @@ void draw_bubble(M5Canvas& canvas, std::int16_t x, std::int16_t y, float r, floa
     canvas.fillCircle(x, y, static_cast<std::int16_t>(r_small), color);
 }
 
-void draw_heart(M5Canvas& canvas, std::int16_t x, std::int16_t y, float r, float offset,
+void draw_heart(Canvas& canvas, std::int16_t x, std::int16_t y, float r, float offset,
                 std::uint16_t color)
 {
     const float rr = r + r * 0.4f * offset;
@@ -80,7 +80,7 @@ void draw_heart(M5Canvas& canvas, std::int16_t x, std::int16_t y, float r, float
 
 } // namespace
 
-void draw_effect(M5Canvas& canvas, const DrawContext& ctx)
+void draw_effect(Canvas& canvas, const DrawContext& ctx)
 {
     const std::uint16_t fg = ctx.palette.primary;
     const std::uint16_t bg = ctx.palette.background;

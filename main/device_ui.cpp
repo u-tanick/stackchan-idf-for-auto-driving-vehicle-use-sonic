@@ -61,10 +61,10 @@ std::atomic<bool> g_stage_bat_gauge{true};
 std::string g_ssid;
 std::string g_host;
 
-// Borrowed each frame from the render task (main owns the framebuffer). The
-// draw helpers below render through this; it is only valid for the duration of
-// a draw() call and is never owned/pushed here.
-M5Canvas* g_cv = nullptr;
+// Borrowed each frame from the render task (main owns the drawing strategy).
+// The draw helpers below render through this; it is only valid for the duration
+// of a draw() call and is never owned/presented here.
+avatar::RichCanvas* g_cv = nullptr;
 std::uint32_t g_last_info_ms = 0;
 
 std::uint32_t now_ms()
@@ -459,7 +459,7 @@ void handle_tap(int x, int y)
     }
 }
 
-bool draw(M5Canvas& canvas)
+bool draw(avatar::RichCanvas& canvas)
 {
     g_cv = &canvas; // borrowed for this frame; the draw helpers render through it
 
