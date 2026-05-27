@@ -15,12 +15,22 @@ void draw_eye(Canvas& canvas, const Eye& eye, const DrawContext& ctx, std::int16
     const float cx = static_cast<float>(eye.center_x) + ctx.gaze_horizontal * 3.0f;
     const float cy = static_cast<float>(eye.center_y) + ctx.gaze_vertical * 3.0f + static_cast<float>(breath_offset_y);
 
+    // Composite the (multi-primitive) eye into a bounding box covering its full
+    // animation range — radius + gaze (±3) + breath travel + the masks that
+    // extend up to ~radius+2 around the centre. The direct strategy clears this
+    // region and blits it once (flicker-free); the buffered strategy treats the
+    // group as a no-op. Centred on the nominal centre so the cleared region is
+    // stable frame-to-frame regardless of gaze/breath offset.
+    const int half = static_cast<int>(eye.radius) + 16;
+    canvas.begin_group(eye.center_x - half, eye.center_y - half, half * 2, half * 2);
+
     if (ctx.eye_open_ratio <= 0.0f) {
         // closed: short rectangle
         const float w = eye.radius * 2.0f;
         const float h = 4.0f;
         canvas.fillRect(static_cast<std::int16_t>(cx - eye.radius), static_cast<std::int16_t>(cy - 2.0f),
                         static_cast<std::int16_t>(w), static_cast<std::int16_t>(h), fg);
+        canvas.end_group();
         return;
     }
 
@@ -67,6 +77,8 @@ void draw_eye(Canvas& canvas, const Eye& eye, const DrawContext& ctx, std::int16
     default:
         break;
     }
+
+    canvas.end_group();
 }
 
 } // namespace stackchan::avatar::internal

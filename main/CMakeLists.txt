@@ -26,6 +26,7 @@ idf_component_register(
         M5Unified
         M5GFX
         esp_timer
+        esp_psram
         driver
         nvs_flash
         esp_wifi

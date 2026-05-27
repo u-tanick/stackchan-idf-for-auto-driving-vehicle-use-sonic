@@ -121,6 +121,9 @@ void Avatar::clear_balloon() noexcept
 {
     auto& ctx = impl_->context();
     ctx.balloon_text.reset();
+    // The balloon strip won't be redrawn once it's gone, so the direct strategy
+    // needs a full repaint to erase it from the persistent panel.
+    impl_->request_full_repaint();
     ctx.balloon_hold_ms = 0;
     ctx.balloon_done = false;
 }

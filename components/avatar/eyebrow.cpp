@@ -14,6 +14,13 @@ void draw_eyebrow(Canvas& canvas, const Eyebrow& eyebrow, const DrawContext& ctx
     const float w = static_cast<float>(eyebrow.width);
     const float h = static_cast<float>(eyebrow.height);
 
+    // Group bbox: nominal centre ± (half width + a margin for the angry/sad
+    // tilt (±5), the happy offset (-5), breath travel and rounding). No-op for
+    // the buffered strategy; the direct strategy composites/clears this region.
+    const int hw = static_cast<int>(eyebrow.width) / 2 + 6;
+    const int hh = static_cast<int>(eyebrow.height) / 2 + 12;
+    canvas.begin_group(eyebrow.center_x - hw, eyebrow.center_y - hh, hw * 2, hh * 2);
+
     if (ctx.expression == Expression::Angry || ctx.expression == Expression::Sad) {
         const float aspect = (eyebrow.is_left ^ (ctx.expression == Expression::Sad)) ? -1.0f : 1.0f;
         const float dx = aspect * 3.0f;
@@ -39,6 +46,8 @@ void draw_eyebrow(Canvas& canvas, const Eyebrow& eyebrow, const DrawContext& ctx
         canvas.fillRect(static_cast<std::int16_t>(x), static_cast<std::int16_t>(y),
                         static_cast<std::int16_t>(eyebrow.width), static_cast<std::int16_t>(eyebrow.height), fg);
     }
+
+    canvas.end_group();
 }
 
 } // namespace stackchan::avatar::internal

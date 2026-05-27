@@ -97,6 +97,19 @@ void draw_effect(Canvas& canvas, const DrawContext& ctx)
     auto ty = [&](float by) { return static_cast<std::int16_t>(ccy + (by - 120.0f) * scale); };
     auto sr = [&](float r) { return r * scale; };
 
+    // Neutral has no effect — skip (avoids the direct strategy needlessly
+    // clearing the top-right zone every frame).
+    if (ctx.expression == Expression::Neutral) {
+        return;
+    }
+    // Composite the effect into one group covering the top-right zone (all
+    // expression effects live there). No-op for the buffered strategy.
+    const std::int16_t gx = tx(236.0f);
+    const std::int16_t gy = ty(-8.0f);
+    const std::int16_t gw = static_cast<std::int16_t>(canvas.width()) - gx;
+    const std::int16_t gh = static_cast<std::int16_t>(ty(136.0f) - gy);
+    canvas.begin_group(gx, gy, gw, gh);
+
     switch (ctx.expression) {
     case Expression::Happy:
         draw_heart(canvas, tx(280), ty(50), sr(12.0f), offset, fg);
@@ -117,6 +130,8 @@ void draw_effect(Canvas& canvas, const DrawContext& ctx)
     default:
         break;
     }
+
+    canvas.end_group();
 }
 
 } // namespace stackchan::avatar::internal

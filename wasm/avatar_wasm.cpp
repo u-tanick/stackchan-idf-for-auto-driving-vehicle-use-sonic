@@ -57,6 +57,102 @@ private:
     M5Canvas& c_;
 };
 
+// Mirror of the firmware DirectCanvas (canvas_m5gfx.hpp) for browser debugging:
+// the framebuffer is treated as a *persistent panel* (only cleared on a full
+// repaint), narrow multi-primitive groups composite into a grow-only scratch
+// and blit clipped to the group rect, and wide groups (the balloon) draw
+// straight to the panel. Lets us reproduce the direct-strategy rendering (and
+// its bugs) headlessly in the browser.
+class WasmDirectCanvas final : public Canvas {
+public:
+    explicit WasmDirectCanvas(M5Canvas& panel) noexcept : panel_{panel} {}
+
+    std::int32_t width() const override { return panel_.width(); }
+    std::int32_t height() const override { return panel_.height(); }
+
+    void fillScreen(std::uint16_t color) override { tgt().fillScreen(color); }
+    void fillRect(std::int32_t x, std::int32_t y, std::int32_t w, std::int32_t h,
+                  std::uint16_t color) override
+    {
+        tgt().fillRect(x - ox_, y - oy_, w, h, color);
+    }
+    void fillCircle(std::int32_t x, std::int32_t y, std::int32_t r, std::uint16_t color) override
+    {
+        tgt().fillCircle(x - ox_, y - oy_, r, color);
+    }
+    void fillTriangle(std::int32_t x0, std::int32_t y0, std::int32_t x1, std::int32_t y1,
+                      std::int32_t x2, std::int32_t y2, std::uint16_t color) override
+    {
+        tgt().fillTriangle(x0 - ox_, y0 - oy_, x1 - ox_, y1 - oy_, x2 - ox_, y2 - oy_, color);
+    }
+    void begin_group(std::int32_t x, std::int32_t y, std::int32_t w, std::int32_t h) override
+    {
+        std::int32_t x0 = x < 0 ? 0 : x, y0 = y < 0 ? 0 : y;
+        std::int32_t x1 = x + w, y1 = y + h;
+        if (x1 > panel_.width()) x1 = panel_.width();
+        if (y1 > panel_.height()) y1 = panel_.height();
+        gx_ = x0; gy_ = y0; gw_ = x1 - x0; gh_ = y1 - y0;
+        if (gw_ <= 0 || gh_ <= 0 || gw_ > kMaxScratchWidth || !ensure_scratch(gw_, gh_)) {
+            in_group_ = false; ox_ = oy_ = 0; return;
+        }
+        ox_ = gx_; oy_ = gy_; in_group_ = true;
+        scratch_.fillRect(0, 0, gw_, gh_, bg_);
+    }
+    void end_group() override
+    {
+        if (!in_group_) return;
+        in_group_ = false; ox_ = oy_ = 0;
+        // Blit scratch[0..gw,0..gh] → panel[gx..,gy..] (clipped to the panel).
+        const std::uint16_t* src = scratch_.getBuffer();
+        std::uint16_t* dst = panel_.getBuffer();
+        const std::int32_t sw = scratch_.width();
+        const std::int32_t pw = panel_.width(), ph = panel_.height();
+        if (src == nullptr || dst == nullptr) return;
+        for (std::int32_t r = 0; r < gh_; ++r) {
+            const std::int32_t py = gy_ + r;
+            if (py < 0 || py >= ph) continue;
+            for (std::int32_t c = 0; c < gw_; ++c) {
+                const std::int32_t px = gx_ + c;
+                if (px < 0 || px >= pw) continue;
+                dst[py * pw + px] = src[r * sw + c];
+            }
+        }
+    }
+    void begin_frame(std::uint16_t bg) override
+    {
+        bg_ = bg;
+        if (full_repaint_pending_) {
+            panel_.fillScreen(bg);
+            full_repaint_pending_ = false;
+        }
+    }
+    void end_frame() override {}
+    void request_full_repaint() override { full_repaint_pending_ = true; }
+
+private:
+    M5Canvas& tgt() { return in_group_ ? scratch_ : panel_; }
+    bool ensure_scratch(std::int32_t w, std::int32_t h)
+    {
+        if (w <= scratch_w_ && h <= scratch_h_) return true;
+        const std::int32_t nw = w > scratch_w_ ? w : scratch_w_;
+        const std::int32_t nh = h > scratch_h_ ? h : scratch_h_;
+        scratch_.deleteSprite();
+        if (scratch_.createSprite(nw, nh) != nullptr) {
+            scratch_w_ = nw; scratch_h_ = nh; return true;
+        }
+        scratch_w_ = scratch_h_ = 0; return false;
+    }
+
+    static constexpr std::int32_t kMaxScratchWidth = 160;
+    M5Canvas& panel_;
+    M5Canvas scratch_;
+    std::int32_t scratch_w_ = 0, scratch_h_ = 0;
+    std::uint16_t bg_ = 0;
+    std::int32_t gx_ = 0, gy_ = 0, gw_ = 0, gh_ = 0, ox_ = 0, oy_ = 0;
+    bool in_group_ = false;
+    bool full_repaint_pending_ = true;
+};
+
 std::int32_t g_w = 320;
 std::int32_t g_h = 240;
 
@@ -64,6 +160,10 @@ M5Canvas g_canvas;
 DrawContext g_ctx;
 internal::Face g_face;
 internal::FaceAnimator g_anim;
+
+WasmDirectCanvas g_direct{g_canvas}; // mirrors firmware DirectCanvas, for debugging
+bool g_direct_mode = false;
+int g_last_expr = -1; // tracks expression changes to trigger a full repaint
 
 bool g_manual_gaze = false;
 float g_gaze_h = 0.0f;
@@ -80,6 +180,7 @@ void rebuild_face()
 {
     g_face = internal::build_face(g_tune, static_cast<std::int16_t>(g_w),
                                   static_cast<std::int16_t>(g_h));
+    g_direct.request_full_repaint(); // layout changed — clear the persistent panel
 }
 } // namespace
 
@@ -214,6 +315,16 @@ EMSCRIPTEN_KEEPALIVE void avatar_set_colors(int face_rgb, int bg_rgb)
     };
     g_ctx.palette.primary = to565(face_rgb);
     g_ctx.palette.background = to565(bg_rgb);
+    g_direct.request_full_repaint(); // background colour changed
+}
+
+// Toggle the direct rendering strategy (mirrors the firmware PSRAM-less path).
+// 0 = buffered (full-frame clear + redraw), 1 = direct (persistent panel +
+// per-element group composite). Forces a full repaint on the next frame.
+EMSCRIPTEN_KEEPALIVE void avatar_set_direct(int on)
+{
+    g_direct_mode = on != 0;
+    g_direct.request_full_repaint();
 }
 
 // Render one frame at the given wall-clock time (ms). Mirrors Avatar::tick().
@@ -227,10 +338,23 @@ EMSCRIPTEN_KEEPALIVE void avatar_tick(double now_ms)
     }
     g_ctx.now_ms = t;
 
-    WasmCanvas canvas{g_canvas};
-    canvas.fillScreen(g_ctx.palette.background);
-    internal::draw_face(canvas, g_face, g_ctx);
-    internal::draw_effect(canvas, g_ctx);
+    const int expr = static_cast<int>(g_ctx.expression);
+    if (g_direct_mode) {
+        if (expr != g_last_expr) {
+            g_direct.request_full_repaint(); // effect appears/disappears, masks change
+            g_last_expr = expr;
+        }
+        g_direct.begin_frame(g_ctx.palette.background);
+        internal::draw_face(g_direct, g_face, g_ctx);
+        internal::draw_effect(g_direct, g_ctx);
+        g_direct.end_frame();
+    } else {
+        g_last_expr = expr;
+        WasmCanvas canvas{g_canvas};
+        canvas.begin_frame(g_ctx.palette.background);
+        internal::draw_face(canvas, g_face, g_ctx);
+        internal::draw_effect(canvas, g_ctx);
+    }
 }
 
 } // extern "C"

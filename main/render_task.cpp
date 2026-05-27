@@ -7,6 +7,7 @@
 #include <string>
 
 #include <esp_log.h>
+#include <esp_psram.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -73,18 +74,25 @@ void render_task_entry(void* arg)
     M5GFX& display = *args.display;
     SharedState* state = args.state;
 
-    // The drawing strategy (= the system framebuffer) is owned here (main), not
-    // by the avatar / on-device UI — they render through the abstract Canvas.
-    // Buffered strategy: one full-screen PSRAM sprite, pushed once per frame.
-    // (DirectCanvas for PSRAM-less devices is selected here in a later step.)
+    // The drawing strategy (= how the system reaches the panel) is owned here
+    // (main), not by the avatar / on-device UI — they render through the
+    // abstract Canvas. Chosen at runtime by PSRAM availability:
+    //   - PSRAM present: BufferedCanvas — one full-screen sprite, pushed once.
+    //   - PSRAM absent:  DirectCanvas   — draw to the panel + small scratch.
+    // Both objects are cheap to construct (no buffer until used), so we hold
+    // both and bind the base reference to the chosen one.
     avatar::BufferedCanvas buffered{display};
-    if (!buffered.begin(kCanvasWidth, kCanvasHeight)) {
-        ESP_LOGE(kTag, "framebuffer createSprite(%d, %d) failed (need PSRAM)",
-                 static_cast<int>(kCanvasWidth), static_cast<int>(kCanvasHeight));
-        vTaskDelete(nullptr);
-        return;
+    avatar::DirectCanvas direct{display};
+    avatar::RichCanvas* cv = nullptr;
+    if (esp_psram_get_size() > 0 && buffered.begin(kCanvasWidth, kCanvasHeight)) {
+        cv = &buffered;
+        ESP_LOGI(kTag, "PSRAM detected: buffered full-screen framebuffer");
+    } else {
+        direct.begin();
+        cv = &direct;
+        ESP_LOGI(kTag, "no PSRAM framebuffer: direct + partial-buffer rendering");
     }
-    RichCanvas& canvas = buffered;
+    RichCanvas& canvas = *cv;
 
     avatar::Avatar avatar;
 

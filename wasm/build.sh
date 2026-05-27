@@ -22,7 +22,7 @@ OUT_MODULE="build/avatar_web/avatar_module.js"
 
 mkdir -p "$ROOT/build/avatar_web" "$ROOT/build/emcache"
 
-EXPORTS='_avatar_init,_avatar_set_size,_avatar_width,_avatar_height,_avatar_framebuffer,_avatar_set_expression,_avatar_set_mouth,_avatar_set_manual_gaze,_avatar_set_saccade,_avatar_set_blink,_avatar_set_breath,_avatar_set_colors,_avatar_set_eyebrows_visible,_avatar_set_eye_params,_avatar_set_eyebrow_params,_avatar_set_mouth_params,_avatar_tick'
+EXPORTS='_avatar_init,_avatar_set_size,_avatar_width,_avatar_height,_avatar_framebuffer,_avatar_set_expression,_avatar_set_mouth,_avatar_set_manual_gaze,_avatar_set_saccade,_avatar_set_blink,_avatar_set_breath,_avatar_set_colors,_avatar_set_eyebrows_visible,_avatar_set_eye_params,_avatar_set_eyebrow_params,_avatar_set_mouth_params,_avatar_set_direct,_avatar_tick'
 
 # Shared compile inputs/flags for both outputs (same C++, same exports). Kept
 # on single lines so the values interpolate cleanly into the `bash -c` script

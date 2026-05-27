@@ -45,6 +45,9 @@ void draw_balloon(RichCanvas& canvas, DrawContext& ctx)
     const std::uint16_t fg = ctx.palette.balloon_foreground;
     const std::uint16_t bg = ctx.palette.balloon_background;
 
+    // Composite the bottom balloon strip as one group (direct strategy clears +
+    // blits the whole panel; buffered strategy treats it as a no-op).
+    canvas.begin_group(kPanelX, kPanelY, kPanelW, kPanelH);
     canvas.fillRoundRect(kPanelX, kPanelY, kPanelW, kPanelH, kPanelRadius, bg);
     canvas.drawRoundRect(kPanelX, kPanelY, kPanelW, kPanelH, kPanelRadius, fg);
 
@@ -68,6 +71,7 @@ void draw_balloon(RichCanvas& canvas, DrawContext& ctx)
         if (elapsed_ms >= hold_ms) {
             ctx.balloon_done = true;
         }
+        canvas.end_group();
         return;
     }
 
@@ -95,6 +99,7 @@ void draw_balloon(RichCanvas& canvas, DrawContext& ctx)
     if (elapsed_ms >= complete_at) {
         ctx.balloon_done = true;
     }
+    canvas.end_group();
 }
 
 } // namespace stackchan::avatar::internal

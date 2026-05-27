@@ -151,6 +151,7 @@
         <div class="row"><label for="breath-en">呼吸 (breath)</label><input type="checkbox" id="breath-en" checked></div>
         <div class="row"><label for="col-face">顔の色</label><input type="color" id="col-face" value="#ffffff"></div>
         <div class="row"><label for="col-bg">背景色</label><input type="color" id="col-bg" value="#000000"></div>
+        <div class="row"><label for="direct-en">direct 描画 (PSRAM 無)</label><input type="checkbox" id="direct-en"></div>
       </fieldset>
 
       <fieldset>
@@ -289,6 +290,7 @@
         parseInt($('blink-omin').value, 10), parseInt($('blink-omax').value, 10),
         parseInt($('blink-cmin').value, 10), parseInt($('blink-cmax').value, 10));
       Module._avatar_set_breath($('breath-en').checked ? 1 : 0);
+      Module._avatar_set_direct($('direct-en').checked ? 1 : 0);
       Module._avatar_set_colors(hexToRgbInt($('col-face').value), hexToRgbInt($('col-bg').value));
       // layout tuning
       Module._avatar_set_eyebrows_visible($('brow-show').checked ? 1 : 0);
