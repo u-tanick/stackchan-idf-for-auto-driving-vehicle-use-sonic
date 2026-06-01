@@ -513,6 +513,25 @@
         <input type="number" id="sv-pitch-max" min="-90" max="90" step="1" placeholder="25">
       </div>
     </div>
+    <div id="sv-range-area" style="margin-top:0.8rem;padding-top:0.6rem;border-top:1px dashed #555">
+      <p class="hint" style="margin-bottom:0.5rem">
+        範囲設定モードを ON にするとサーボの力が抜け、手で動かした位置を取り込めます。
+        中央位置で「Yaw 原点取込」、左端で「Yaw 最小取込」、右端で「Yaw 最大取込」を順にタップしてください。
+        取り込んだ値は上の入力欄に反映されます。最後に「保存 &amp; 再起動」で確定します。
+      </p>
+      <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap">
+        <button type="button" id="sv-range-mode">範囲設定モード: OFF</button>
+        <span class="hint" id="sv-live-pos">Yaw: -- (--°)   Pitch: -- (--°)</span>
+      </div>
+      <div style="margin-top:0.4rem;display:flex;flex-wrap:wrap;gap:0.3rem">
+        <button type="button" id="sv-cap-yaw-zero" disabled>Yaw 原点取込</button>
+        <button type="button" id="sv-cap-yaw-min"  disabled>Yaw 最小取込</button>
+        <button type="button" id="sv-cap-yaw-max"  disabled>Yaw 最大取込</button>
+        <button type="button" id="sv-cap-pitch-zero" disabled>Pitch 原点取込</button>
+        <button type="button" id="sv-cap-pitch-min"  disabled>Pitch 最小取込</button>
+        <button type="button" id="sv-cap-pitch-max"  disabled>Pitch 最大取込</button>
+      </div>
+    </div>
   </details>
 
   <div class="actions">
@@ -550,6 +569,12 @@ const CHR_RTP_EN  = 'e3f0a011-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_BAT_GAUGE = 'e3f0a017-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // ServoLimits — encrypted compact JSON of per-servo zero + motion range.
 const CHR_SERVO_LIMITS = 'e3f0a018-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+// ServoRangeMode — encrypted 1-byte flag (0=off, 1=on). ON puts the device
+// into "torque off + poll present-position" mode for hand-driven calibration.
+const CHR_SERVO_RANGE_MODE = 'e3f0a019-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+// ServoPositions — encrypted READ-only 4-byte snapshot of live raw positions
+// [yaw_raw i16 LE][pitch_raw i16 LE]. -1 = unknown. Polled while in range mode.
+const CHR_SERVO_POSITIONS = 'e3f0a01a-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_JTTS    = 'e3f0a008-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_OTA_CTRL = 'e3f0a009-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_OTA_DATA = 'e3f0a00a-7b1c-4d2a-9e6f-2c5a8d4b1f00';
@@ -595,7 +620,7 @@ const DIS_CHRS = {
 
 // --- State ---
 let bleDevice = null, bleServer = null, svc = null;
-let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrBatGauge = null, chrServoLimits = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null;
+let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrBatGauge = null, chrServoLimits = null, chrServoRangeMode = null, chrServoPositions = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null;
 let batteryPollTimer = null;  // setInterval handle while connected
 let jttsInitialJson = '';  // last read JSON, used to detect Apply-time changes
 let servoLimitsInitial = ''; // last read servo-limits JSON (Apply-time change detection)
@@ -1548,6 +1573,8 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
       ['rtpEn',      CHR_RTP_EN],
       ['batGauge',   CHR_BAT_GAUGE],
       ['servoLimits',CHR_SERVO_LIMITS],
+      ['servoRangeMode', CHR_SERVO_RANGE_MODE],
+      ['servoPositions', CHR_SERVO_POSITIONS],
       ['jtts',       CHR_JTTS],
       ['otaCtrl',    CHR_OTA_CTRL],
       ['otaData',    CHR_OTA_DATA],
@@ -1582,6 +1609,8 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
     chrRtpEn    = found.rtpEn    ?? null;
     chrBatGauge = found.batGauge ?? null;
     chrServoLimits = found.servoLimits ?? null;
+    chrServoRangeMode = found.servoRangeMode ?? null;
+    chrServoPositions = found.servoPositions ?? null;
     chrJtts     = found.jtts     ?? null;
     chrOtaCtrl  = found.otaCtrl  ?? null;
     chrOtaData  = found.otaData  ?? null;
@@ -1755,6 +1784,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
 
     applyCapabilityGating();
     setBleUi(true);
+    updateSvCaptureUi();
   } catch (e) {
     log(`接続失敗: ${e.message}`, 'err');
     setBleUi(false);
@@ -1769,7 +1799,10 @@ function onDisconnected() {
   log('切断されました', 'err');
   setBleUi(false);
   clearInterval(batteryPollTimer); batteryPollTimer = null;
-  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrXiaozhiUrl = chrXiaozhiToken = chrFaceConfig = chrBattery = chrBatGauge = chrServoLimits = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = null;
+  clearInterval(svPosPollTimer); svPosPollTimer = null;
+  svRangeOn = false;
+  svLiveYaw = svLivePitch = -1;
+  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrXiaozhiUrl = chrXiaozhiToken = chrFaceConfig = chrBattery = chrBatGauge = chrServoLimits = chrServoRangeMode = chrServoPositions = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = null;
   aesKey = null;
   clearDeviceInfo();
   delete document.getElementById('openai-enabled').dataset.initial;
@@ -1779,6 +1812,8 @@ function onDisconnected() {
   jttsInitialJson = '';
   servoLimitsInitial = '';
   writeJttsForm('');
+  updateSvCaptureUi();
+  document.getElementById('sv-live-pos').textContent = 'Yaw: -- (--°)   Pitch: -- (--°)';
   document.getElementById('btn-ota').disabled = true;
   if (!otaInFlight) {
     document.getElementById('ota-bar-fill').style.width = '0';
@@ -2159,6 +2194,113 @@ function seedServoLimits(json) {
   document.getElementById('sv-pitch-max').value  = o.pitch_max;
   servoLimitsInitial = canonicaliseServoLimits();
 }
+
+// ===== Servo range-setting mode (hand-driven calibration) ===================
+//
+// While range mode is ON the device's servo task drops torque so the user can
+// move the head by hand, and the ServoPositions characteristic returns the
+// live raw step of each axis. The capture buttons read the latest live raw
+// and either set the per-axis zero directly (zero button) or compute
+// (raw - zero) * 5/16 → degrees (min / max buttons) and write into the form
+// inputs. The final "保存 & 再起動" persists the resulting limits as usual.
+//
+// Range mode is intentionally local-only / ephemeral — it auto-OFFs on
+// disconnect (device-side, when the BLE session resets) and is not persisted.
+
+let svPosPollTimer = null;
+let svRangeOn = false;
+let svLiveYaw = -1, svLivePitch = -1;
+
+function updateSvCaptureUi() {
+  const ok = svRangeOn && !!chrServoPositions && aesKey != null;
+  for (const id of ['sv-cap-yaw-zero','sv-cap-yaw-min','sv-cap-yaw-max',
+                    'sv-cap-pitch-zero','sv-cap-pitch-min','sv-cap-pitch-max']) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !ok;
+  }
+  const btn = document.getElementById('sv-range-mode');
+  if (btn) {
+    btn.textContent = '範囲設定モード: ' + (svRangeOn ? 'ON' : 'OFF');
+    btn.disabled = !chrServoRangeMode || !aesKey;
+  }
+}
+
+function rawDeltaToDeg(raw, zero) {
+  const d = (raw - zero) * 5 / 16;
+  return Math.round(d);
+}
+
+async function refreshServoPositions() {
+  if (!chrServoPositions || !aesKey) return;
+  try {
+    const b = await readEncrypted(chrServoPositions);
+    if (b.length < 4) return;
+    const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+    svLiveYaw = dv.getInt16(0, true);
+    svLivePitch = dv.getInt16(2, true);
+    const zy = parseInt(document.getElementById('sv-yaw-zero').value, 10) || SV_DEFAULTS.yaw_zero;
+    const zp = parseInt(document.getElementById('sv-pitch-zero').value, 10) || SV_DEFAULTS.pitch_zero;
+    const yStr = svLiveYaw >= 0 ? `${svLiveYaw} (${rawDeltaToDeg(svLiveYaw, zy)>=0?'+':''}${rawDeltaToDeg(svLiveYaw, zy)}°)` : '--';
+    const pStr = svLivePitch >= 0 ? `${svLivePitch} (${rawDeltaToDeg(svLivePitch, zp)>=0?'+':''}${rawDeltaToDeg(svLivePitch, zp)}°)` : '--';
+    document.getElementById('sv-live-pos').textContent = `Yaw: ${yStr}   Pitch: ${pStr}`;
+  } catch (e) {
+    // Transient — leave the last reading visible.
+  }
+}
+
+async function setServoRangeMode(on) {
+  if (!chrServoRangeMode || !aesKey) return;
+  try {
+    await writeEncrypted(chrServoRangeMode, new Uint8Array([on ? 1 : 0]));
+    svRangeOn = on;
+    updateSvCaptureUi();
+    clearInterval(svPosPollTimer); svPosPollTimer = null;
+    if (on) {
+      svPosPollTimer = setInterval(refreshServoPositions, 250);
+      log('範囲設定モード: ON (サーボの力が抜けます)', 'ok');
+      refreshServoPositions();
+    } else {
+      log('範囲設定モード: OFF');
+      svLiveYaw = svLivePitch = -1;
+      document.getElementById('sv-live-pos').textContent = 'Yaw: -- (--°)   Pitch: -- (--°)';
+    }
+  } catch (e) {
+    log(`範囲設定モード切替失敗: ${e.message}`, 'err');
+  }
+}
+
+document.getElementById('sv-range-mode').addEventListener('click', () => {
+  setServoRangeMode(!svRangeOn);
+});
+
+function setNumInput(id, v) {
+  const el = document.getElementById(id);
+  el.value = v;
+  // Re-flow the live °-display since the zero just moved.
+  refreshServoPositions();
+}
+function captureYaw(which) {
+  if (svLiveYaw < 0) { log('まだサーボ位置を取得できていません', 'err'); return; }
+  if (which === 'zero') setNumInput('sv-yaw-zero', svLiveYaw);
+  else {
+    const z = parseInt(document.getElementById('sv-yaw-zero').value, 10) || SV_DEFAULTS.yaw_zero;
+    setNumInput(which === 'min' ? 'sv-yaw-min' : 'sv-yaw-max', rawDeltaToDeg(svLiveYaw, z));
+  }
+}
+function capturePitch(which) {
+  if (svLivePitch < 0) { log('まだサーボ位置を取得できていません', 'err'); return; }
+  if (which === 'zero') setNumInput('sv-pitch-zero', svLivePitch);
+  else {
+    const z = parseInt(document.getElementById('sv-pitch-zero').value, 10) || SV_DEFAULTS.pitch_zero;
+    setNumInput(which === 'min' ? 'sv-pitch-min' : 'sv-pitch-max', rawDeltaToDeg(svLivePitch, z));
+  }
+}
+document.getElementById('sv-cap-yaw-zero').addEventListener('click', () => captureYaw('zero'));
+document.getElementById('sv-cap-yaw-min').addEventListener('click',  () => captureYaw('min'));
+document.getElementById('sv-cap-yaw-max').addEventListener('click',  () => captureYaw('max'));
+document.getElementById('sv-cap-pitch-zero').addEventListener('click', () => capturePitch('zero'));
+document.getElementById('sv-cap-pitch-min').addEventListener('click',  () => capturePitch('min'));
+document.getElementById('sv-cap-pitch-max').addEventListener('click',  () => capturePitch('max'));
 
 // ===== Battery (READ + poll) ================================================
 // Decode the 5-byte Battery payload [mV u16 LE][mA i16 LE][pct i8] into a label.

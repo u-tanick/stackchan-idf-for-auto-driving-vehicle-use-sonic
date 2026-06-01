@@ -20,4 +20,9 @@ void set_wifi_connected(bool connected);
 // Update the cached battery snapshot (mV / mA / percent) exposed by /api/status.
 void set_battery(int millivolts, int milliamps, int percent);
 
+// Register the servo range-mode sink + live position getter. See
+// wifi_config_service.hpp.
+void set_servo_range_mode_sink(config::ServoRangeModeSink sink);
+void set_servo_positions_getter(config::ServoPositionsGetter getter);
+
 } // namespace stackchan::wifi_config::http

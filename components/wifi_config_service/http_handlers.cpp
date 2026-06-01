@@ -59,6 +59,14 @@ int g_battery_ma = 0;
 int g_battery_pct = -1;
 esp_timer_handle_t g_restart_timer = nullptr;
 
+// Servo range-setting mode integration. Sink is invoked on every POST to
+// /api/servo-range-mode (and the cached active state is mirrored locally so
+// /api/status can return it). Getter is consulted on /api/status to surface
+// live present-positions for the capture UI.
+config::ServoRangeModeSink g_servo_range_mode_sink = nullptr;
+config::ServoPositionsGetter g_servo_positions_getter = nullptr;
+bool g_servo_range_mode = false;
+
 // Plaintext caps mirror the BLE chr limits so the same DeviceConfig.cpp
 // invariants hold whichever transport wrote the value.
 constexpr std::size_t kMaxSsid = 32;
@@ -196,7 +204,12 @@ esp_err_t handle_status_get(httpd_req_t* req)
     const int bat_mv = g_battery_mv;
     const int bat_ma = g_battery_ma;
     const int bat_pct = g_battery_pct;
+    const bool range_mode = g_servo_range_mode;
+    config::ServoPositionsGetter pos_getter = g_servo_positions_getter;
     xSemaphoreGive(g_mutex);
+
+    config::ServoPositionsView pos{-1, -1};
+    if (pos_getter != nullptr) pos = pos_getter();
 
     const esp_app_desc_t* desc = esp_app_get_description();
     const std::string fw = desc ? desc->version : "unknown";
@@ -224,7 +237,10 @@ esp_err_t handle_status_get(httpd_req_t* req)
     body += "\"conv_extra_headers\":\"" + escape_json(cfg.conv_extra_headers) + "\",";
     body += "\"battery_mv\":" + std::to_string(bat_mv) + ",";
     body += "\"battery_ma\":" + std::to_string(bat_ma) + ",";
-    body += "\"battery_pct\":" + std::to_string(bat_pct);
+    body += "\"battery_pct\":" + std::to_string(bat_pct) + ",";
+    body += "\"servo_range_mode\":" + std::string(range_mode ? "true" : "false") + ",";
+    body += "\"servo_yaw_raw\":" + std::to_string(pos.yaw_raw) + ",";
+    body += "\"servo_pitch_raw\":" + std::to_string(pos.pitch_raw);
     body += "}";
     return send_json(req, body);
 }
@@ -380,6 +396,19 @@ esp_err_t handle_conv_headers_post(httpd_req_t* req)
     return send_empty(req);
 }
 
+esp_err_t handle_servo_range_mode_post(httpd_req_t* req)
+{
+    std::string body;
+    if (read_body_str(req, body, 8) != ESP_OK) return ESP_OK;
+    const bool on = !body.empty() && (body[0] == '1' || body[0] == 't' || body[0] == 'y');
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_servo_range_mode = on;
+    config::ServoRangeModeSink sink = g_servo_range_mode_sink;
+    xSemaphoreGive(g_mutex);
+    if (sink != nullptr) sink(on);
+    return send_empty(req);
+}
+
 esp_err_t handle_apply_post(httpd_req_t* req)
 {
     xSemaphoreTake(g_mutex, portMAX_DELAY);
@@ -482,6 +511,7 @@ void register_handlers(httpd_handle_t server, const config::DeviceConfig& curren
     add(server, "/api/provider",        HTTP_POST, handle_provider_post);
     add(server, "/api/jtts-config",     HTTP_POST, handle_jtts_config_post);
     add(server, "/api/servo-limits",    HTTP_POST, handle_servo_limits_post);
+    add(server, "/api/servo-range-mode", HTTP_POST, handle_servo_range_mode_post);
     add(server, "/api/system-prompt",   HTTP_POST, handle_system_prompt_post);
     add(server, "/api/conv-headers",     HTTP_POST, handle_conv_headers_post);
     add(server, "/api/apply",           HTTP_POST, handle_apply_post);
@@ -505,6 +535,28 @@ void set_battery(int millivolts, int milliamps, int percent)
     g_battery_mv = millivolts;
     g_battery_ma = milliamps;
     g_battery_pct = percent;
+    xSemaphoreGive(g_mutex);
+}
+
+void set_servo_range_mode_sink(config::ServoRangeModeSink sink)
+{
+    if (g_mutex == nullptr) {
+        g_servo_range_mode_sink = sink;
+        return;
+    }
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_servo_range_mode_sink = sink;
+    xSemaphoreGive(g_mutex);
+}
+
+void set_servo_positions_getter(config::ServoPositionsGetter getter)
+{
+    if (g_mutex == nullptr) {
+        g_servo_positions_getter = getter;
+        return;
+    }
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_servo_positions_getter = getter;
     xSemaphoreGive(g_mutex);
 }
 

@@ -348,6 +348,16 @@ void set_face_config_sink(FaceConfigSink sink)
     gatt::set_face_config_sink(sink);
 }
 
+void set_servo_range_mode_sink(ServoRangeModeSink sink)
+{
+    gatt::set_servo_range_mode_sink(sink);
+}
+
+void set_servo_positions_getter(ServoPositionsGetter getter)
+{
+    gatt::set_servo_positions_getter(getter);
+}
+
 void notify_battery(int millivolts, int milliamps, int percent)
 {
     gatt::set_battery(millivolts, milliamps, percent);

@@ -58,6 +58,22 @@ void on_face_config(std::string_view json)
     }
 }
 
+// Range-mode sink + live-positions getter shared by BLE and Wi-Fi services.
+// Sink mutates SharedState; the servo task picks up the flag on its next
+// iteration and disables/enables torque accordingly.
+void on_servo_range_mode(bool on)
+{
+    if (g_state != nullptr) {
+        g_state->servo_range_mode.store(on, std::memory_order_relaxed);
+    }
+}
+stackchan::config::ServoPositionsView servo_positions()
+{
+    if (g_state == nullptr) return {-1, -1};
+    return {g_state->servo_yaw_raw.load(std::memory_order_relaxed),
+            g_state->servo_pitch_raw.load(std::memory_order_relaxed)};
+}
+
 // CoreS3 mic + speaker share I2S_NUM_1, so we have to hand the bus around
 // explicitly. Records `seconds` of audio at 16 kHz then plays it straight
 // back. Blocks the caller for ~2 * seconds.
@@ -520,6 +536,8 @@ extern "C" void app_main()
     g_state->set_face_config(cfg.face_config_json);
     g_state->battery_gauge_enabled.store(cfg.battery_gauge_enabled, std::memory_order_relaxed);
     stackchan::config::set_face_config_sink(&on_face_config);
+    stackchan::config::set_servo_range_mode_sink(&on_servo_range_mode);
+    stackchan::config::set_servo_positions_getter(&servo_positions);
     // BLE audio streaming and the realtime voice conversation are mutually
     // exclusive — both saturate the radio/CPU and running them together
     // makes streaming playback choppy. Pass the conversation-enabled flag
@@ -532,6 +550,12 @@ extern "C" void app_main()
     }
 
     stackchan::app::wifi_start(cfg);
+    // Same sink/getter on the Wi-Fi side. The Wi-Fi service starts on a worker
+    // task after Wi-Fi STA gets an IP — the calls below race that; the setters
+    // tolerate being called before the HTTP server is up (the values are
+    // cached in static storage and applied once the handlers register).
+    stackchan::wifi_config::set_servo_range_mode_sink(&on_servo_range_mode);
+    stackchan::wifi_config::set_servo_positions_getter(&servo_positions);
 
     // Wi-Fi live audio (RTP/L16 today). Like the BLE sink, mutually exclusive
     // with the conversation backend, so it self-disables when voice chat is on.

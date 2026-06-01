@@ -85,6 +85,17 @@ public:
     // the servo task enables/disables torque to match (false = head goes limp).
     std::atomic<bool> servo_enabled{true};
 
+    // Servo range-setting mode: forces torque off (head moves freely by hand)
+    // and the servo task polls present-position via Read so the settings UIs
+    // can capture zero / min / max while the user holds the head at each pose.
+    // While set, the servo task ignores target_yaw_deg / target_pitch_deg
+    // entirely. The captured raw steps are published below.
+    std::atomic<bool> servo_range_mode{false};
+    // Most recent present-position read in range mode (raw SCS step, 0..1023).
+    // -1 = unread (e.g. servo absent / read failed since entering the mode).
+    std::atomic<std::int16_t> servo_yaw_raw{-1};
+    std::atomic<std::int16_t> servo_pitch_raw{-1};
+
     // Servo motion mask: true while audible speech output is in progress, so
     // the servo task holds the head perfectly still (no goal writes, no torque
     // toggles). The servos and the speaker amp/codec share a power rail, and a

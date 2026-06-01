@@ -99,10 +99,13 @@ BoardKind Board::kind() const noexcept
 ServoBusConfig Board::servo_bus_config() const noexcept
 {
     if (impl_->kind() == BoardKind::TakaoBase) {
-        // Takao base on CoreS3 port A (G1/G2), half-duplex (TX echoes onto RX).
-        // TX/RX assignment is provisional — verify against the Takao wiring on
-        // hardware bring-up (swap, or use a single shared pin, if needed).
-        return {UART_NUM_1, GPIO_NUM_1, GPIO_NUM_2, 1'000'000u, /*echo_cancel=*/true};
+        // Takao base on CoreS3 port A: TX=G2, RX=G1. (Port A naming wasn't a
+        // reliable guide to which physical pin carries which signal; this
+        // assignment was found by bring-up — the reverse order leaves RX
+        // unable to see the servo's reply.) Half-duplex bus: TX drives the
+        // bus through a series diode that isolates our push-pull driver from
+        // the bus when idle-high, and the line echoes our bytes back onto RX.
+        return {UART_NUM_1, GPIO_NUM_2, GPIO_NUM_1, 1'000'000u, /*echo_cancel=*/true};
     }
     // M5 base: dedicated servo UART on G6/G7, no echo.
     return {UART_NUM_1, GPIO_NUM_6, GPIO_NUM_7, 1'000'000u, /*echo_cancel=*/false};

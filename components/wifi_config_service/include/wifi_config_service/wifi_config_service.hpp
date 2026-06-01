@@ -31,4 +31,11 @@ void notify_wifi_connected(bool connected);
 // No-op until the HTTP server has started. Thread-safe.
 void set_battery(int millivolts, int milliamps, int percent);
 
+// Register the servo range-setting mode sink and live-position getter. See
+// config_service.hpp for the contract; the Wi-Fi service shares the same
+// types. POST /api/servo-range-mode forwards to the sink; /api/status pulls
+// from the getter.
+void set_servo_range_mode_sink(config::ServoRangeModeSink sink);
+void set_servo_positions_getter(config::ServoPositionsGetter getter);
+
 } // namespace stackchan::wifi_config

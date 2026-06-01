@@ -182,6 +182,19 @@ static const ble_uuid128_t kBatteryGaugeUuid = BLE_UUID128_INIT(
 static const ble_uuid128_t kServoLimitsUuid = BLE_UUID128_INIT(
     0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
     0x2a, 0x4d, 0x1c, 0x7b, 0x18, 0xa0, 0xf0, 0xe3);
+// ServoRangeMode — encrypted 1-byte flag (0=off, 1=on). WRITE flips the servo
+// task into "torque off + poll present-position" so the user can move the head
+// by hand while the settings UI captures per-axis zero / min / max. READ
+// returns the active state. Ephemeral — not persisted.
+static const ble_uuid128_t kServoRangeModeUuid = BLE_UUID128_INIT(
+    0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
+    0x2a, 0x4d, 0x1c, 0x7b, 0x19, 0xa0, 0xf0, 0xe3);
+// ServoPositions — encrypted READ-only 4-byte snapshot of live raw positions
+// while in range mode: [yaw_raw i16 LE][pitch_raw i16 LE]. -1 = unknown
+// (servo absent / not yet read). The browser polls this; no NOTIFY.
+static const ble_uuid128_t kServoPositionsUuid = BLE_UUID128_INIT(
+    0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
+    0x2a, 0x4d, 0x1c, 0x7b, 0x1a, 0xa0, 0xf0, 0xe3);
 
 // --- Mutable state guarded by g_mutex ---
 static SemaphoreHandle_t g_mutex = nullptr;
@@ -217,6 +230,8 @@ static uint16_t g_enabled_handle = 0;
 static uint16_t g_rtp_enabled_handle = 0;
 static uint16_t g_bat_gauge_handle = 0;
 static uint16_t g_servo_limits_handle = 0;
+static uint16_t g_servo_range_mode_handle = 0;
+static uint16_t g_servo_positions_handle = 0;
 static uint16_t g_jtts_handle = 0;
 static uint16_t g_ota_ctrl_handle = 0;
 static uint16_t g_ota_data_handle = 0;
@@ -244,6 +259,13 @@ static bool g_audio_session_active = false;
 // dropped (the value is still staged + persisted on Apply). Called from the
 // GATT host task; the callback must not parse JSON there (small stack).
 static FaceConfigSink g_face_config_sink = nullptr;
+
+// Range-mode sink + live position getter, owned by main/app_main. nullptr
+// callbacks make the corresponding READ/WRITE behave as if the feature is
+// disabled (positions read as unknown, range-mode WRITE is dropped).
+static ServoRangeModeSink g_servo_range_mode_sink = nullptr;
+static ServoPositionsGetter g_servo_positions_getter = nullptr;
+static bool g_servo_range_mode = false; // active state, mirrored for READ
 
 // Largest plaintext payload we accept on a single write — chosen to fit the
 // jtts config JSON comfortably. The encrypted wire form adds 12 (nonce) + 16
@@ -474,6 +496,37 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             const bool ok = append_encrypted(
                 ctxt->om,
                 {reinterpret_cast<const std::uint8_t*>(json.data()), json.size()});
+            xSemaphoreGive(g_mutex);
+            return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
+        }
+        if (attr_handle == g_servo_range_mode_handle) {
+            xSemaphoreTake(g_mutex, portMAX_DELAY);
+            if (!g_session.is_established()) {
+                xSemaphoreGive(g_mutex);
+                return BLE_ATT_ERR_UNLIKELY;
+            }
+            const std::uint8_t byte = g_servo_range_mode ? 1 : 0;
+            const bool ok = append_encrypted(ctxt->om, {&byte, 1});
+            xSemaphoreGive(g_mutex);
+            return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
+        }
+        if (attr_handle == g_servo_positions_handle) {
+            ServoPositionsView view{-1, -1};
+            ServoPositionsGetter getter = g_servo_positions_getter;
+            if (getter != nullptr) view = getter();
+            xSemaphoreTake(g_mutex, portMAX_DELAY);
+            if (!g_session.is_established()) {
+                xSemaphoreGive(g_mutex);
+                return BLE_ATT_ERR_UNLIKELY;
+            }
+            const std::uint16_t y = static_cast<std::uint16_t>(view.yaw_raw);
+            const std::uint16_t p = static_cast<std::uint16_t>(view.pitch_raw);
+            const std::array<std::uint8_t, 4> payload{
+                static_cast<std::uint8_t>(y & 0xff),
+                static_cast<std::uint8_t>((y >> 8) & 0xff),
+                static_cast<std::uint8_t>(p & 0xff),
+                static_cast<std::uint8_t>((p >> 8) & 0xff)};
+            const bool ok = append_encrypted(ctxt->om, {payload.data(), payload.size()});
             xSemaphoreGive(g_mutex);
             return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
         }
@@ -752,6 +805,16 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             xSemaphoreGive(g_mutex);
             return 0;
         }
+        if (attr_handle == g_servo_range_mode_handle) {
+            if (pt.size() != 1) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            const bool on = (pt[0] != 0);
+            xSemaphoreTake(g_mutex, portMAX_DELAY);
+            g_servo_range_mode = on;
+            ServoRangeModeSink sink = g_servo_range_mode_sink;
+            xSemaphoreGive(g_mutex);
+            if (sink != nullptr) sink(on);
+            return 0;
+        }
         if (attr_handle == g_apply_handle) {
             if (pt.empty()) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
 
@@ -866,6 +929,18 @@ static ble_gatt_chr_def kChrs[] = {
         .access_cb = gatt_access_cb,
         .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
         .val_handle = &g_servo_limits_handle,
+    },
+    {
+        .uuid = &kServoRangeModeUuid.u,
+        .access_cb = gatt_access_cb,
+        .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+        .val_handle = &g_servo_range_mode_handle,
+    },
+    {
+        .uuid = &kServoPositionsUuid.u,
+        .access_cb = gatt_access_cb,
+        .flags = BLE_GATT_CHR_F_READ,
+        .val_handle = &g_servo_positions_handle,
     },
     {
         .uuid = &kJttsConfigUuid.u,
@@ -1068,6 +1143,16 @@ void set_face_config_sink(FaceConfigSink sink)
     // gatt::init() creates the mutex, and it's not on a hot path. The WRITE
     // handler snapshots g_face_config_sink under g_mutex before calling it.
     g_face_config_sink = sink;
+}
+
+void set_servo_range_mode_sink(ServoRangeModeSink sink)
+{
+    g_servo_range_mode_sink = sink;
+}
+
+void set_servo_positions_getter(ServoPositionsGetter getter)
+{
+    g_servo_positions_getter = getter;
 }
 
 void set_battery(int millivolts, int milliamps, int percent)

@@ -17,6 +17,7 @@
 #include <config_service/config_service.hpp>
 #include <config_service/config_store.hpp>
 
+#include "servo_limits.hpp"
 #include "wifi_sta.hpp"
 
 namespace stackchan::app::ui {
@@ -37,8 +38,8 @@ constexpr int kTabsPerPage = 3;
 constexpr int kContentY = kBarH + 8;     // 46
 constexpr int kRowH = 42;
 
-enum Page : int { kInfo = 0, kSettings = 1, kControl = 2, kConversation = 3, kTabCount };
-const char* const kTabLabels[kTabCount] = {"情報", "設定", "操作", "会話"};
+enum Page : int { kInfo = 0, kSettings = 1, kControl = 2, kRange = 3, kConversation = 4, kTabCount };
+const char* const kTabLabels[kTabCount] = {"情報", "設定", "操作", "範囲", "会話"};
 int num_tab_pages() { return (kTabCount + kTabsPerPage - 1) / kTabsPerPage; }
 
 const auto* const kFontTitle = &fonts::lgfxJapanGothic_24;
@@ -56,6 +57,11 @@ int g_provider = 0; // 0 = OpenAI, 1 = Gemini, 2 = XiaoZhi (cached at init)
 std::atomic<bool> g_stage_conv{true};
 std::atomic<bool> g_stage_rtp{true};
 std::atomic<bool> g_stage_bat_gauge{true};
+
+// Range-setting page: staged ServoLimits (loaded from NVS on tab open, mutated
+// by capture taps, saved + reboot on 保存). Plain (non-atomic): the device UI
+// runs entirely on the render task, so reads/writes never race.
+ServoLimits g_stage_limits;
 
 // Cached once at init() (don't change at runtime) — read by the render task.
 std::string g_ssid;
@@ -288,6 +294,105 @@ void draw_control()
     draw_button(1, "姿勢をリセット", g_cv->color565(60, 120, 200));
 }
 
+// --- 範囲設定 (servo range-setting) page --------------------------------------
+//
+// While this page is the active tab, servo_range_mode is held true (set in
+// handle_tap on tab change, cleared on leave). The servo task drops torque so
+// the user moves the head by hand; the on-screen Y / P readouts update from
+// the periodically-polled present-positions. Buttons capture the live raw
+// position as zero / min / max for the displayed axis. 保存 writes the
+// resulting limits to NVS and reboots so the servo task picks them up.
+
+// Layout: kRowH is too tall to fit two display rows + two button rows + a
+// save row, so the range page uses its own tighter geometry.
+constexpr int kRangeInfoH = 30;     // per-axis info row
+constexpr int kRangeBtnRowH = 36;   // per-axis 3-button row
+constexpr int kRangeSaveH = 40;     // bottom save button
+
+struct RangeLayout {
+    int y_yaw_info;
+    int y_yaw_btns;
+    int y_pitch_info;
+    int y_pitch_btns;
+    int y_save;
+    int btn_w;   // width of each of the three capture buttons
+    int save_w;
+};
+RangeLayout layout_range()
+{
+    RangeLayout L;
+    L.y_yaw_info = kContentY;
+    L.y_yaw_btns = L.y_yaw_info + kRangeInfoH;
+    L.y_pitch_info = L.y_yaw_btns + kRangeBtnRowH + 2;
+    L.y_pitch_btns = L.y_pitch_info + kRangeInfoH;
+    L.y_save = L.y_pitch_btns + kRangeBtnRowH + 4;
+    L.btn_w = (kW - 24) / 3; // 8 px outer padding, 3 buttons
+    L.save_w = kW - 24;
+    return L;
+}
+
+// Round a (raw - zero) step delta to integer degrees. SCS0009: 1 step ≈ 0.3125°.
+int raw_delta_to_deg(int raw, int zero)
+{
+    const float d = (raw - zero) * 5.0f / 16.0f;
+    return static_cast<int>(d >= 0 ? d + 0.5f : d - 0.5f);
+}
+
+void draw_range_info(int y, const char* axis, int live_raw, int zero, int lo_deg,
+                     int hi_deg)
+{
+    g_cv->setFont(kFontBody);
+    g_cv->setTextDatum(lgfx::textdatum_t::top_left);
+    g_cv->setTextColor(g_cv->color565(235, 235, 235));
+    char line[64];
+    if (live_raw < 0) {
+        std::snprintf(line, sizeof(line), "%s: --   z=%d  [%d, %d]°", axis, zero,
+                      lo_deg, hi_deg);
+    } else {
+        const int cur_deg = raw_delta_to_deg(live_raw, zero);
+        std::snprintf(line, sizeof(line), "%s: %d (%+d°)  z=%d  [%d, %d]°", axis,
+                      live_raw, cur_deg, zero, lo_deg, hi_deg);
+    }
+    g_cv->drawString(line, 12, y + 4);
+}
+
+void draw_range_btn(int x, int y, int w, int h, const char* label, std::uint16_t color)
+{
+    g_cv->fillRoundRect(x, y, w, h, 6, color);
+    g_cv->setFont(kFontBody);
+    g_cv->setTextDatum(lgfx::textdatum_t::middle_center);
+    g_cv->setTextColor(g_cv->color565(245, 245, 245));
+    g_cv->drawString(label, x + w / 2, y + h / 2);
+}
+
+void draw_range()
+{
+    const RangeLayout L = layout_range();
+    const std::int16_t yaw_raw = g_state->servo_yaw_raw.load(std::memory_order_relaxed);
+    const std::int16_t pitch_raw = g_state->servo_pitch_raw.load(std::memory_order_relaxed);
+    const std::uint16_t zero_c = g_cv->color565(70, 110, 170);
+    const std::uint16_t min_c = g_cv->color565(120, 80, 160);
+    const std::uint16_t max_c = g_cv->color565(160, 100, 70);
+
+    draw_range_info(L.y_yaw_info, "Y", yaw_raw, g_stage_limits.yaw_zero,
+                    g_stage_limits.yaw_min_deg, g_stage_limits.yaw_max_deg);
+    const int x0 = 12;
+    const int gap = 4;
+    const int bw = (kW - 24 - 2 * gap) / 3;
+    draw_range_btn(x0,                 L.y_yaw_btns, bw, kRangeBtnRowH - 4, "Y0", zero_c);
+    draw_range_btn(x0 + bw + gap,      L.y_yaw_btns, bw, kRangeBtnRowH - 4, "Y-", min_c);
+    draw_range_btn(x0 + 2 * (bw + gap), L.y_yaw_btns, bw, kRangeBtnRowH - 4, "Y+", max_c);
+
+    draw_range_info(L.y_pitch_info, "P", pitch_raw, g_stage_limits.pitch_zero,
+                    g_stage_limits.pitch_min_deg, g_stage_limits.pitch_max_deg);
+    draw_range_btn(x0,                 L.y_pitch_btns, bw, kRangeBtnRowH - 4, "P0", zero_c);
+    draw_range_btn(x0 + bw + gap,      L.y_pitch_btns, bw, kRangeBtnRowH - 4, "P-", min_c);
+    draw_range_btn(x0 + 2 * (bw + gap), L.y_pitch_btns, bw, kRangeBtnRowH - 4, "P+", max_c);
+
+    draw_range_btn(12, L.y_save, kW - 24, kRangeSaveH, "保存（再起動）",
+                   g_cv->color565(60, 140, 80));
+}
+
 void draw_conversation()
 {
     const std::uint16_t fg = g_cv->color565(235, 235, 235);
@@ -334,6 +439,8 @@ void render_page()
         draw_settings();
     } else if (page == kControl) {
         draw_control();
+    } else if (page == kRange) {
+        draw_range();
     } else {
         draw_conversation();
     }
@@ -348,6 +455,7 @@ void load_staged()
     g_stage_conv.store(cfg.openai_enabled, std::memory_order_relaxed);
     g_stage_rtp.store(cfg.rtp_audio_enabled, std::memory_order_relaxed);
     g_stage_bat_gauge.store(cfg.battery_gauge_enabled, std::memory_order_relaxed);
+    g_stage_limits = parse_servo_limits(cfg.servo_limits_json);
 }
 
 void apply_and_reboot()
@@ -358,6 +466,38 @@ void apply_and_reboot()
     cfg.battery_gauge_enabled = g_stage_bat_gauge.load(std::memory_order_relaxed);
     (void)config::store::save(cfg);
     esp_restart();
+}
+
+// Serialize the staged ServoLimits as the compact JSON parse_servo_limits expects,
+// persist to NVS, and reboot so the servo task picks up the new limits.
+std::string format_servo_limits(const ServoLimits& l)
+{
+    char buf[192];
+    std::snprintf(buf, sizeof(buf),
+                  "{\"yaw_zero\":%u,\"yaw_min\":%d,\"yaw_max\":%d,"
+                  "\"pitch_zero\":%u,\"pitch_min\":%d,\"pitch_max\":%d}",
+                  static_cast<unsigned>(l.yaw_zero), l.yaw_min_deg, l.yaw_max_deg,
+                  static_cast<unsigned>(l.pitch_zero), l.pitch_min_deg, l.pitch_max_deg);
+    return std::string(buf);
+}
+
+void save_range_and_reboot()
+{
+    // Release range mode so the new limits aren't shadowed by the
+    // "torque off / no goal writes" branch on the way down (servo task may
+    // briefly re-engage between this call and esp_restart).
+    g_state->servo_range_mode.store(false, std::memory_order_relaxed);
+    config::DeviceConfig cfg = config::load();
+    cfg.servo_limits_json = format_servo_limits(g_stage_limits);
+    (void)config::store::save(cfg);
+    esp_restart();
+}
+
+// Called on every tab change so range mode is on iff the user is looking at
+// the 範囲 page. The servo task picks up the change on its next iteration.
+void update_range_mode_for_page(int page)
+{
+    g_state->servo_range_mode.store(page == kRange, std::memory_order_relaxed);
 }
 
 } // namespace
@@ -401,6 +541,7 @@ void handle_tap(int x, int y)
     if (y < kBarH) {
         const TabBar b = layout_tabbar();
         if (x >= b.close_x) { // close
+            update_range_mode_for_page(-1); // ensure range mode is off on close
             g_active.store(false, std::memory_order_relaxed);
             return;
         }
@@ -419,7 +560,14 @@ void handle_tap(int x, int y)
         }
         for (int i = 0; i < b.slot_count; ++i) {
             if (x >= b.slots[i].x && x < b.slots[i].x + b.slots[i].w) {
-                g_page.store(b.slots[i].index, std::memory_order_relaxed);
+                const int new_page = b.slots[i].index;
+                if (new_page == kRange) {
+                    // Re-load the staged limits each time we enter the page so
+                    // editor state matches whatever's currently in NVS.
+                    load_staged();
+                }
+                g_page.store(new_page, std::memory_order_relaxed);
+                update_range_mode_for_page(new_page);
                 g_dirty.store(true, std::memory_order_relaxed);
                 break;
             }
@@ -456,6 +604,40 @@ void handle_tap(int x, int y)
             g_state->target_yaw_deg.store(0.0f, std::memory_order_relaxed);
             g_state->target_pitch_deg.store(0.0f, std::memory_order_relaxed);
         }
+    } else if (page == kRange) {
+        const RangeLayout L = layout_range();
+        const int x0 = 12;
+        const int gap = 4;
+        const int bw = (kW - 24 - 2 * gap) / 3;
+        const int bh = kRangeBtnRowH - 4;
+        auto hit_btn = [&](int bx, int by) {
+            return in_rect(x, y, bx, by, bw, bh);
+        };
+        const std::int16_t yr = g_state->servo_yaw_raw.load(std::memory_order_relaxed);
+        const std::int16_t pr = g_state->servo_pitch_raw.load(std::memory_order_relaxed);
+        bool changed = false;
+        if (hit_btn(x0, L.y_yaw_btns) && yr >= 0) {
+            g_stage_limits.yaw_zero = static_cast<std::uint16_t>(yr);
+            changed = true;
+        } else if (hit_btn(x0 + bw + gap, L.y_yaw_btns) && yr >= 0) {
+            g_stage_limits.yaw_min_deg = raw_delta_to_deg(yr, g_stage_limits.yaw_zero);
+            changed = true;
+        } else if (hit_btn(x0 + 2 * (bw + gap), L.y_yaw_btns) && yr >= 0) {
+            g_stage_limits.yaw_max_deg = raw_delta_to_deg(yr, g_stage_limits.yaw_zero);
+            changed = true;
+        } else if (hit_btn(x0, L.y_pitch_btns) && pr >= 0) {
+            g_stage_limits.pitch_zero = static_cast<std::uint16_t>(pr);
+            changed = true;
+        } else if (hit_btn(x0 + bw + gap, L.y_pitch_btns) && pr >= 0) {
+            g_stage_limits.pitch_min_deg = raw_delta_to_deg(pr, g_stage_limits.pitch_zero);
+            changed = true;
+        } else if (hit_btn(x0 + 2 * (bw + gap), L.y_pitch_btns) && pr >= 0) {
+            g_stage_limits.pitch_max_deg = raw_delta_to_deg(pr, g_stage_limits.pitch_zero);
+            changed = true;
+        } else if (in_rect(x, y, 12, L.y_save, kW - 24, kRangeSaveH)) {
+            save_range_and_reboot(); // does not return
+        }
+        if (changed) g_dirty.store(true, std::memory_order_relaxed);
     }
 }
 
@@ -465,11 +647,19 @@ bool draw(avatar::RichCanvas& canvas)
 
     bool need = g_dirty.exchange(false, std::memory_order_relaxed);
     // The info and 会話 pages have live fields (IP/uptime/heap, conn status /
-    // reconnect count) — refresh ~2 Hz so they stay current.
+    // reconnect count) — refresh ~2 Hz so they stay current. 範囲 also has live
+    // fields (present-position from the servo task) and wants a faster refresh
+    // so the captured raw doesn't lag the user's hand.
     const int page = g_page.load(std::memory_order_relaxed);
     if (page == kInfo || page == kConversation) {
         const std::uint32_t t = now_ms();
         if (t - g_last_info_ms > 500) {
+            g_last_info_ms = t;
+            need = true;
+        }
+    } else if (page == kRange) {
+        const std::uint32_t t = now_ms();
+        if (t - g_last_info_ms > 150) {
             g_last_info_ms = t;
             need = true;
         }

@@ -146,4 +146,21 @@ void set_audio_stream_sink(const AudioStreamSink* sink);
 using FaceConfigSink = void (*)(std::string_view json);
 void set_face_config_sink(FaceConfigSink sink);
 
+// Servo range-setting mode: writing 1 puts the servo task into "torque off +
+// poll present-position" mode so the user can move the head by hand and the
+// settings UI can capture per-axis zero / min / max. Writing 0 returns to
+// normal control. Ephemeral — not persisted to NVS. nullptr unregisters.
+using ServoRangeModeSink = void (*)(bool on);
+void set_servo_range_mode_sink(ServoRangeModeSink sink);
+
+// Current SCS present-position (raw step, 0..1023) of each axis. -1 = unknown
+// (servo absent / not yet read since entering range mode). Polled by the
+// settings UI to display live values while the user moves the head by hand.
+struct ServoPositionsView {
+    std::int16_t yaw_raw;
+    std::int16_t pitch_raw;
+};
+using ServoPositionsGetter = ServoPositionsView (*)();
+void set_servo_positions_getter(ServoPositionsGetter getter);
+
 } // namespace stackchan::config

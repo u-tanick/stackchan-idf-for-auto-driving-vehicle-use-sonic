@@ -181,4 +181,14 @@ void set_battery(int millivolts, int milliamps, int percent)
     http::set_battery(millivolts, milliamps, percent);
 }
 
+void set_servo_range_mode_sink(config::ServoRangeModeSink sink)
+{
+    http::set_servo_range_mode_sink(sink);
+}
+
+void set_servo_positions_getter(config::ServoPositionsGetter getter)
+{
+    http::set_servo_positions_getter(getter);
+}
+
 } // namespace stackchan::wifi_config

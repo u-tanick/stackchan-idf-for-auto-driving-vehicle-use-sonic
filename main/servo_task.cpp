@@ -80,8 +80,51 @@ void servo_task_entry(void* arg)
     bool last_enabled = true;
     std::uint32_t release_at = 0; // when to drop torque after the current move
 
+    // Range-setting mode: torque off (so the user moves the head by hand) and
+    // poll present-position every ~150 ms so the settings UIs can show / capture
+    // it. Cheaper than the 20 ms control loop (each Read is a UART round-trip
+    // ~3 ms; doing it at 20 ms eats half the bus and dwarfs anything else).
+    bool last_range_mode = false;
+    constexpr TickType_t kRangePollTicks = pdMS_TO_TICKS(150);
+    TickType_t next_range_poll = 0;
+
     TickType_t last_wake = xTaskGetTickCount();
     for (;;) {
+        const bool range_mode = args.state->servo_range_mode.load(std::memory_order_relaxed);
+        if (range_mode) {
+            if (torque_on || !last_range_mode) {
+                (void)yaw.enable_torque(false);
+                (void)pitch.enable_torque(false);
+                torque_on = false;
+            }
+            last_range_mode = true;
+            last_enabled = false; // force re-drive on exit
+            const TickType_t now = xTaskGetTickCount();
+            // Signed cast so the subtraction handles TickType_t wraparound
+            // ("now has passed next_range_poll" without a raw unsigned compare).
+            if (static_cast<std::int32_t>(now - next_range_poll) >= 0) {
+                next_range_poll = now + kRangePollTicks;
+                if (auto r = yaw.read_present_position()) {
+                    args.state->servo_yaw_raw.store(static_cast<std::int16_t>(*r),
+                                                    std::memory_order_relaxed);
+                }
+                if (auto r = pitch.read_present_position()) {
+                    args.state->servo_pitch_raw.store(static_cast<std::int16_t>(*r),
+                                                      std::memory_order_relaxed);
+                }
+            }
+            vTaskDelayUntil(&last_wake, kPeriodTicks);
+            continue;
+        }
+        if (last_range_mode) {
+            // Exited range mode: drop stale present-position so a stale read
+            // doesn't confuse the UI (re-publish on the next entry).
+            args.state->servo_yaw_raw.store(-1, std::memory_order_relaxed);
+            args.state->servo_pitch_raw.store(-1, std::memory_order_relaxed);
+            last_yaw_target = last_pitch_target = 0xFFFF; // re-drive
+            last_range_mode = false;
+        }
+
         const bool enabled = args.state->servo_enabled.load(std::memory_order_relaxed);
         if (!enabled) {
             if (torque_on) {

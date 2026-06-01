@@ -122,9 +122,9 @@ ScsBus::send(std::uint8_t id, std::uint8_t instruction, std::span<const std::uin
         return tl::unexpected{ScsError::Timeout};
     }
     if (echo_cancel_) {
-        // Half-duplex: our own transmission echoes back onto RX. Read and drop
-        // exactly the bytes we just sent so the caller (transact / next send)
-        // sees only the servo's response.
+        // Half-duplex single-wire: our own transmission echoes back onto RX.
+        // Read and drop exactly the bytes we just sent so the caller (transact
+        // / next send) sees only the servo's response.
         std::array<std::uint8_t, kMaxParams + 6> echo{};
         const int got = uart_read_bytes(uart_, echo.data(), total, pdMS_TO_TICKS(timeout_ms_));
         if (got != static_cast<int>(total)) {

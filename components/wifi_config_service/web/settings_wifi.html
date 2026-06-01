@@ -384,6 +384,25 @@
       <div><label for="sv-pitch-max">Pitch 最大 (°)</label>
         <input type="number" id="sv-pitch-max" min="-90" max="90" step="1" placeholder="25"></div>
     </div>
+    <div id="sv-range-area" style="margin-top:0.8rem;padding-top:0.6rem;border-top:1px dashed #555">
+      <p class="hint" style="margin-bottom:0.5rem">
+        範囲設定モードを ON にするとサーボの力が抜け、手で動かした位置を取り込めます。
+        中央位置で「Yaw 原点取込」、左端で「Yaw 最小取込」、右端で「Yaw 最大取込」を順にタップしてください。
+        取り込んだ値は上の入力欄に反映されます。最後に「保存 &amp; 再起動」で確定します。
+      </p>
+      <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap">
+        <button type="button" id="sv-range-mode">範囲設定モード: OFF</button>
+        <span class="hint" id="sv-live-pos">Yaw: -- (--°)   Pitch: -- (--°)</span>
+      </div>
+      <div style="margin-top:0.4rem;display:flex;flex-wrap:wrap;gap:0.3rem">
+        <button type="button" id="sv-cap-yaw-zero" disabled>Yaw 原点取込</button>
+        <button type="button" id="sv-cap-yaw-min"  disabled>Yaw 最小取込</button>
+        <button type="button" id="sv-cap-yaw-max"  disabled>Yaw 最大取込</button>
+        <button type="button" id="sv-cap-pitch-zero" disabled>Pitch 原点取込</button>
+        <button type="button" id="sv-cap-pitch-min"  disabled>Pitch 最小取込</button>
+        <button type="button" id="sv-cap-pitch-max"  disabled>Pitch 最大取込</button>
+      </div>
+    </div>
   </details>
 
   <details class="jtts-section" id="ota-section">
@@ -541,6 +560,78 @@ function servoLimitsJson() {
   });
 }
 
+// --- Servo range-setting mode (hand-driven calibration) ---
+// Same flow as the BLE settings page: toggle ON → device drops torque, user
+// moves head by hand, /api/status pushes live positions through, capture
+// buttons stash them into the form. 保存 & 再起動 persists the limits the
+// same way it always did.
+let svRangeOn = false;
+let svLiveYaw = -1, svLivePitch = -1;
+let svPosPollTimer = null;
+
+function rawDeltaToDeg(raw, zero) {
+  return Math.round((raw - zero) * 5 / 16);
+}
+function updateSvCaptureUi() {
+  const ok = svRangeOn;
+  for (const id of ['sv-cap-yaw-zero','sv-cap-yaw-min','sv-cap-yaw-max',
+                    'sv-cap-pitch-zero','sv-cap-pitch-min','sv-cap-pitch-max']) {
+    $(id).disabled = !ok;
+  }
+  $('sv-range-mode').textContent = '範囲設定モード: ' + (svRangeOn ? 'ON' : 'OFF');
+}
+async function refreshServoPositions() {
+  try {
+    const s = await fetchJSON('/api/status');
+    svLiveYaw = (typeof s.servo_yaw_raw === 'number') ? s.servo_yaw_raw : -1;
+    svLivePitch = (typeof s.servo_pitch_raw === 'number') ? s.servo_pitch_raw : -1;
+    const zy = parseInt($('sv-yaw-zero').value, 10) || SV_DEFAULTS.yaw_zero;
+    const zp = parseInt($('sv-pitch-zero').value, 10) || SV_DEFAULTS.pitch_zero;
+    const fmt = (raw, z) => raw >= 0
+      ? `${raw} (${rawDeltaToDeg(raw, z) >= 0 ? '+' : ''}${rawDeltaToDeg(raw, z)}°)`
+      : '--';
+    $('sv-live-pos').textContent = `Yaw: ${fmt(svLiveYaw, zy)}   Pitch: ${fmt(svLivePitch, zp)}`;
+  } catch (e) { /* transient */ }
+}
+async function setServoRangeMode(on) {
+  try {
+    await postText('/api/servo-range-mode', on ? '1' : '0');
+    svRangeOn = on;
+    updateSvCaptureUi();
+    clearInterval(svPosPollTimer); svPosPollTimer = null;
+    if (on) {
+      svPosPollTimer = setInterval(refreshServoPositions, 300);
+      log('範囲設定モード: ON (サーボの力が抜けます)', 'ok');
+      refreshServoPositions();
+    } else {
+      log('範囲設定モード: OFF');
+      svLiveYaw = svLivePitch = -1;
+      $('sv-live-pos').textContent = 'Yaw: -- (--°)   Pitch: -- (--°)';
+    }
+  } catch (e) {
+    log('範囲設定モード切替失敗: ' + e.message, 'err');
+  }
+}
+$('sv-range-mode').addEventListener('click', () => setServoRangeMode(!svRangeOn));
+function captureYaw(which) {
+  if (svLiveYaw < 0) { log('まだサーボ位置を取得できていません', 'err'); return; }
+  if (which === 'zero') { $('sv-yaw-zero').value = svLiveYaw; refreshServoPositions(); return; }
+  const z = parseInt($('sv-yaw-zero').value, 10) || SV_DEFAULTS.yaw_zero;
+  $(which === 'min' ? 'sv-yaw-min' : 'sv-yaw-max').value = rawDeltaToDeg(svLiveYaw, z);
+}
+function capturePitch(which) {
+  if (svLivePitch < 0) { log('まだサーボ位置を取得できていません', 'err'); return; }
+  if (which === 'zero') { $('sv-pitch-zero').value = svLivePitch; refreshServoPositions(); return; }
+  const z = parseInt($('sv-pitch-zero').value, 10) || SV_DEFAULTS.pitch_zero;
+  $(which === 'min' ? 'sv-pitch-min' : 'sv-pitch-max').value = rawDeltaToDeg(svLivePitch, z);
+}
+$('sv-cap-yaw-zero').addEventListener('click', () => captureYaw('zero'));
+$('sv-cap-yaw-min').addEventListener('click',  () => captureYaw('min'));
+$('sv-cap-yaw-max').addEventListener('click',  () => captureYaw('max'));
+$('sv-cap-pitch-zero').addEventListener('click', () => capturePitch('zero'));
+$('sv-cap-pitch-min').addEventListener('click',  () => capturePitch('min'));
+$('sv-cap-pitch-max').addEventListener('click',  () => capturePitch('max'));
+
 // --- Status refresh ---
 
 async function refresh() {
@@ -571,6 +662,14 @@ async function refresh() {
       `ffmpeg -re -i IN -ac 1 -ar 8000 -c:a pcm_mulaw -f rtp rtp://${h}:6970`;
     applyJttsToForm(s.jtts_config || '');
     applyServoLimitsToForm(s.servo_limits || '');
+    // If the device reports range mode active (e.g. another tab toggled it),
+    // sync our local toggle so the capture buttons enable.
+    if (typeof s.servo_range_mode === 'boolean' && s.servo_range_mode !== svRangeOn) {
+      svRangeOn = s.servo_range_mode;
+      updateSvCaptureUi();
+      clearInterval(svPosPollTimer); svPosPollTimer = null;
+      if (svRangeOn) svPosPollTimer = setInterval(refreshServoPositions, 300);
+    }
     $('xiaozhi-url').value = s.xiaozhi_url || '';
     $('system-prompt').value = s.system_prompt || '';
     $('system-prompt').dataset.initial = s.system_prompt || '';

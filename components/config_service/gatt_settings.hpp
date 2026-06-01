@@ -36,4 +36,10 @@ void set_audio_stream_sink(const AudioStreamSink* sink);
 // Register the live face-config callback. See config_service.hpp for the contract.
 void set_face_config_sink(FaceConfigSink sink);
 
+// Register the servo range-setting mode sink. See config_service.hpp.
+void set_servo_range_mode_sink(ServoRangeModeSink sink);
+
+// Register the live servo positions getter. See config_service.hpp.
+void set_servo_positions_getter(ServoPositionsGetter getter);
+
 } // namespace stackchan::config::gatt
