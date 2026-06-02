@@ -113,7 +113,7 @@ void record_and_playback(std::uint32_t seconds, const char* label)
     ESP_LOGI(kTag, "%s: done", label);
 }
 
-void demo_loop(const std::string& jtts_config_json, bool has_battery, bool is_atom_nyan, const stackchan::app::ServoLimits& limits)
+void demo_loop(const std::string& jtts_config_json, bool has_battery, bool is_atom_nyan, bool conversation_enabled, const stackchan::app::ServoLimits& limits)
 {
     using namespace stackchan;
 
@@ -275,7 +275,13 @@ void demo_loop(const std::string& jtts_config_json, bool has_battery, bool is_at
             // Mouth opens with the current speech envelope; closed while silent.
             g_state->mouth_open.store(speech.current_mouth_open(), std::memory_order_relaxed);
 
-            const bool wifi_ok = app::wifi_is_connected();
+            // The "Wi-Fi: 切断中" balloon and the babble suppression below only
+            // make sense when the assistant actually needs the network — i.e.
+            // when the conversation backend (OpenAI / Gemini / XiaoZhi) is on.
+            // With conversation disabled the demo is fully self-contained
+            // (local jtts babble), so we ignore Wi-Fi state entirely and let
+            // the idle behaviour run from boot without waiting for an AP.
+            const bool wifi_ok = !conversation_enabled || app::wifi_is_connected();
             if (!wifi_ok && !wifi_warning_active) {
                 speech.stop();
                 // hold_ms = UINT32_MAX so the balloon stays put until we clear it.
@@ -664,5 +670,6 @@ extern "C" void app_main()
     stackchan::app::start_conversation_task(*g_conversation_args);
 
     ESP_LOGI(kTag, "ready");
-    demo_loop(cfg.jtts_config_json, board.has_battery(), is_atom_nyan, servo_limits);
+    demo_loop(cfg.jtts_config_json, board.has_battery(), is_atom_nyan,
+              cfg.openai_enabled, servo_limits);
 }
