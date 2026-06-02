@@ -103,7 +103,7 @@ public:
     //   mode = 0: off, 1: solid, 2: breath (single-colour sine fade),
     //          3: gradient (rainbow cycle).
     //   brightness: 0..255 master gain applied after mode → strip.
-    std::atomic<std::uint8_t> led_mode{1};
+    std::atomic<std::uint8_t> led_mode{0}; // off until we trust the driver
     std::atomic<std::uint32_t> led_color{0x00404040u};
     std::atomic<std::uint8_t> led_brightness{96};
 

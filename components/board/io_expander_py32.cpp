@@ -4,6 +4,7 @@
 #include "board/io_expander_py32.hpp"
 
 #include <M5Unified.h>
+#include <esp_log.h>
 
 namespace stackchan::board {
 
@@ -71,32 +72,30 @@ tl::expected<void, Error> Py32Expander::digital_write(std::uint8_t pin, bool lev
 tl::expected<void, Error> Py32Expander::set_led_count(std::uint8_t count)
 {
     if (count > kMaxLeds) count = kMaxLeds;
-    // Preserve the refresh-trigger bit so we don't accidentally re-latch by
-    // clearing it. Reading back lets the PY32 stay authoritative if firmware
-    // ever extends the upper bits.
-    const std::uint8_t current = m5::In_I2C.readRegister8(address_, kRegLedCfg, kI2cFreq);
-    const std::uint8_t next = (current & ~kLedCfgCountMask) | (count & kLedCfgCountMask);
-    if (!m5::In_I2C.writeRegister8(address_, kRegLedCfg, next, kI2cFreq)) {
+    // Plain overwrite (matching upstream M5 BSP). The upper bits of REG_LED_CFG
+    // aren't documented; if they actually carry mode flags the PY32 firmware
+    // would reset them along with count, and we should too.
+    if (!m5::In_I2C.writeRegister8(address_, kRegLedCfg,
+                                   count & kLedCfgCountMask, kI2cFreq)) {
         return tl::unexpected{Error::ExpanderWrite};
     }
     return {};
 }
 
 tl::expected<void, Error>
-Py32Expander::write_led_colors(const std::uint16_t* colors565, std::size_t count)
+Py32Expander::write_led_colors(const std::uint8_t* data, std::size_t count)
 {
-    if (colors565 == nullptr || count == 0) return {};
+    if (data == nullptr || count == 0) return {};
     if (count > kMaxLeds) count = kMaxLeds;
-    // Pack as RGB565 LE byte pairs (the PY32 expects byte0 = low, byte1 = high
-    // per slot). Doing the burst in one I2C transaction avoids per-LED address
-    // setup overhead on the bus.
-    std::uint8_t buf[kMaxLeds * 2];
-    for (std::size_t i = 0; i < count; ++i) {
-        buf[i * 2]     = static_cast<std::uint8_t>(colors565[i] & 0xFF);
-        buf[i * 2 + 1] = static_cast<std::uint8_t>((colors565[i] >> 8) & 0xFF);
-    }
-    if (!m5::In_I2C.writeRegister(address_, kRegLedRamStart, buf,
-                                  count * 2, kI2cFreq)) {
+    // One burst write of count*3 bytes starting at REG_LED_RAM_START. The PY32
+    // auto-increments its internal pointer, so the bytes land at slots 0..count-1.
+    // Byte order per LED is GRB; see header comment.
+    if (!m5::In_I2C.writeRegister(address_, kRegLedRamStart, data,
+                                  count * 3, kI2cFreq)) {
+        static int s_warn_throttle = 0;
+        if ((s_warn_throttle++ & 31) == 0) {
+            ESP_LOGW("py32", "led RAM write failed (count=%u)", (unsigned)count);
+        }
         return tl::unexpected{Error::ExpanderWrite};
     }
     return {};
@@ -109,6 +108,10 @@ tl::expected<void, Error> Py32Expander::refresh_leds()
     const std::uint8_t current = m5::In_I2C.readRegister8(address_, kRegLedCfg, kI2cFreq);
     if (!m5::In_I2C.writeRegister8(address_, kRegLedCfg,
                                    current | kLedCfgRefreshBit, kI2cFreq)) {
+        static int s_warn_throttle = 0;
+        if ((s_warn_throttle++ & 31) == 0) {
+            ESP_LOGW("py32", "led refresh write failed");
+        }
         return tl::unexpected{Error::ExpanderWrite};
     }
     return {};

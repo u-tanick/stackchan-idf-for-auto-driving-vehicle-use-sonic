@@ -40,14 +40,11 @@ public:
     std::size_t size() const noexcept { return count_; }
 
 private:
-    static std::uint16_t pack565(std::uint8_t r, std::uint8_t g, std::uint8_t b) noexcept
-    {
-        return static_cast<std::uint16_t>(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
-    }
-
     Py32Expander* expander_;
     std::uint8_t count_;
-    std::array<std::uint16_t, Py32Expander::kMaxLeds> buf_{};
+    // 3 bytes per LED (R, G, B) — what the PY32 actually stores. The host-side
+    // pack-to-RGB565 the M5 BSP does is incorrect for this firmware.
+    std::array<std::uint8_t, Py32Expander::kMaxLeds * 3> buf_{};
 };
 
 } // namespace stackchan::board

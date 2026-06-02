@@ -623,13 +623,11 @@ extern "C" void app_main()
     stackchan::app::ui::init(*g_state);
     stackchan::app::start_render_task(*g_render_args);
     stackchan::app::start_servo_task(*g_servo_args);
-    // NeoPixel animation task — only runs on boards that expose a strip
-    // (M5 base, 12 × WS2812 driven by the PY32). Takao base returns nullptr
-    // and we skip starting the task entirely.
-    if (auto* led = board.led_strip()) {
-        g_led_args = new stackchan::app::LedTaskArgs{.state = g_state, .strip = led};
-        stackchan::app::start_led_task(*g_led_args);
-    }
+    // NeoPixel animation task disabled while we figure out the right PY32 LED
+    // register map — writes to the BSP-documented 0x24 / 0x30 area corrupted
+    // the LCD backlight on this firmware revision, so the task is intentionally
+    // not started until we can confirm the hardware contract.
+    (void)g_led_args;
     // The conversation task waits for Wi-Fi internally, then takes over the
     // I2S bus for always-on voice chat. Started after the boot-time mic test
     // so the two never contend for the bus.

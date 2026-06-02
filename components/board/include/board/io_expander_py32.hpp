@@ -35,14 +35,21 @@ public:
     // [5:0], preserving the refresh bit.
     tl::expected<void, Error> set_led_count(std::uint8_t count);
 
-    // Write the full strip in one I2C burst as RGB565 LE pairs. `colors565`
-    // must have `count` entries. Cheaper than per-LED writes when refreshing
-    // an animation frame.
+    // Write the full strip in one I2C burst as GRB byte triples (G, R, B —
+    // WS2812 wire order, not RGB). `data` is count*3 bytes; the call returns
+    // immediately after the I2C transaction — refresh_leds() must be called
+    // separately to latch the buffer onto the strip.
+    //
+    // (The upstream M5 BSP driver packs as 2-byte RGB565 and writes only 2
+    // bytes per LED; that turns out to be incorrect for this PY32 firmware,
+    // which stores 3 bytes per LED in the order the chip will clock out onto
+    // the WS2812 line. We confirmed empirically: sending {R=0xFF, G=0, B=0}
+    // as RGB-ordered bytes still came out green, so byte 0 is G.)
     tl::expected<void, Error>
-    write_led_colors(const std::uint16_t* colors565, std::size_t count);
+    write_led_colors(const std::uint8_t* data, std::size_t count);
 
     // Toggle the refresh bit so the PY32 latches the RAM contents out onto
-    // the NeoPixel wire. setLedCount / write_led_colors do not auto-refresh.
+    // the NeoPixel wire. set_led_count / write_led_colors do not auto-refresh.
     tl::expected<void, Error> refresh_leds();
 
     std::uint8_t address() const noexcept { return address_; }

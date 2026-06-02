@@ -93,18 +93,16 @@ tl::expected<Board, Error> Board::begin()
 
     Board board;
     board.impl_ = std::make_shared<Impl>(kind, std::move(expander), std::move(touch));
-    // Bring the NeoPixel strip up (M5 base only). Push count + an all-off
-    // frame so the strip starts blank instead of holding whatever colours the
-    // PY32 was last asked for — that's most visible at OTA-then-soft-reboot,
-    // when the PY32 keeps state across the ESP reset.
-    if (auto* led = board.impl_->led()) {
-        if (auto r = led->begin(); !r) {
-            ESP_LOGW(kTag, "LedStrip::begin failed: %d", static_cast<int>(r.error()));
-        }
-    }
+    // LED strip init is intentionally skipped right now: writes to what the
+    // upstream M5 BSP calls REG_LED_CFG (0x24) and REG_LED_RAM_START (0x30)
+    // turned out to brick the LCD backlight on this PY32 firmware revision —
+    // so either the chip at 0x6F isn't what BSP expects, or those registers
+    // do something else here. Until we have a verified register map we leave
+    // the LED hardware untouched. led_strip() still returns the instance for
+    // any explicit caller, but Board doesn't drive it.
     ESP_LOGI(kTag, "board initialized: kind=%s (servo power: OFF, leds: %s)",
              kind == BoardKind::M5Base ? "M5Base" : "TakaoBase",
-             board.impl_->led() ? "12 NeoPixels" : "none");
+             board.impl_->led() ? "present (driver disabled pending register confirmation)" : "none");
     return board;
 }
 
