@@ -358,6 +358,11 @@ void set_servo_positions_getter(ServoPositionsGetter getter)
     gatt::set_servo_positions_getter(getter);
 }
 
+void set_board_kind(std::uint8_t kind)
+{
+    gatt::set_board_kind(kind);
+}
+
 void notify_battery(int millivolts, int milliamps, int percent)
 {
     gatt::set_battery(millivolts, milliamps, percent);

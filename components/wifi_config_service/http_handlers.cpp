@@ -66,6 +66,9 @@ esp_timer_handle_t g_restart_timer = nullptr;
 config::ServoRangeModeSink g_servo_range_mode_sink = nullptr;
 config::ServoPositionsGetter g_servo_positions_getter = nullptr;
 bool g_servo_range_mode = false;
+// Board variant (mirrors board::BoardKind). Defaults to 0 = M5Base for
+// compat — overwritten by main at boot.
+std::uint8_t g_board_kind = 0;
 
 // Plaintext caps mirror the BLE chr limits so the same DeviceConfig.cpp
 // invariants hold whichever transport wrote the value.
@@ -240,7 +243,8 @@ esp_err_t handle_status_get(httpd_req_t* req)
     body += "\"battery_pct\":" + std::to_string(bat_pct) + ",";
     body += "\"servo_range_mode\":" + std::string(range_mode ? "true" : "false") + ",";
     body += "\"servo_yaw_raw\":" + std::to_string(pos.yaw_raw) + ",";
-    body += "\"servo_pitch_raw\":" + std::to_string(pos.pitch_raw);
+    body += "\"servo_pitch_raw\":" + std::to_string(pos.pitch_raw) + ",";
+    body += "\"board\":" + std::to_string(g_board_kind);
     body += "}";
     return send_json(req, body);
 }
@@ -557,6 +561,17 @@ void set_servo_positions_getter(config::ServoPositionsGetter getter)
     }
     xSemaphoreTake(g_mutex, portMAX_DELAY);
     g_servo_positions_getter = getter;
+    xSemaphoreGive(g_mutex);
+}
+
+void set_board_kind(std::uint8_t kind)
+{
+    if (g_mutex == nullptr) {
+        g_board_kind = kind;
+        return;
+    }
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_board_kind = kind;
     xSemaphoreGive(g_mutex);
 }
 

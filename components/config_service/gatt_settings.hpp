@@ -36,6 +36,10 @@ void set_audio_stream_sink(const AudioStreamSink* sink);
 // Register the live face-config callback. See config_service.hpp for the contract.
 void set_face_config_sink(FaceConfigSink sink);
 
+// Record the booted board kind (board::BoardKind cast to byte). Read by the
+// BoardKind READ characteristic. Set once at boot, before BLE comes online.
+void set_board_kind(std::uint8_t kind);
+
 // Register the servo range-setting mode sink. See config_service.hpp.
 void set_servo_range_mode_sink(ServoRangeModeSink sink);
 

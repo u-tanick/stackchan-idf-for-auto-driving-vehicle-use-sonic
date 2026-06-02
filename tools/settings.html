@@ -268,7 +268,7 @@
     <div class="row"><span class="key">Model</span><span class="val" id="dis-model">—</span></div>
     <div class="row"><span class="key">Manufacturer</span><span class="val" id="dis-mfr">—</span></div>
     <div class="row"><span class="key">Software</span><span class="val" id="dis-sw">—</span></div>
-    <div class="row"><span class="key">バッテリー</span><span class="val" id="dis-battery">—</span></div>
+    <div class="row" id="dis-battery-row"><span class="key">バッテリー</span><span class="val" id="dis-battery">—</span></div>
     <div class="row" id="dis-wifi-mac-row" hidden>
       <span class="key">Wi-Fi MAC (STA)</span>
       <span class="val" id="dis-wifi-mac">—</span>
@@ -575,6 +575,14 @@ const CHR_SERVO_RANGE_MODE = 'e3f0a019-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // ServoPositions — encrypted READ-only 4-byte snapshot of live raw positions
 // [yaw_raw i16 LE][pitch_raw i16 LE]. -1 = unknown. Polled while in range mode.
 const CHR_SERVO_POSITIONS = 'e3f0a01a-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+// BoardKind — encrypted READ-only 1-byte board variant indicator
+// (0=M5Base, 1=TakaoBase, 2=AtomNyan). Lets us hide controls that don't
+// apply on the current hardware (servos on Atom-nyan, battery where absent).
+const CHR_BOARD_KIND = 'e3f0a01b-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+const BOARD_M5_BASE = 0;
+const BOARD_TAKAO_BASE = 1;
+const BOARD_ATOM_NYAN = 2;
+const BOARD_LABELS = {0: 'CoreS3 + M5 base', 1: 'CoreS3 + Takao base', 2: 'AtomS3R + Atomic ECHO BASE'};
 const CHR_JTTS    = 'e3f0a008-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_OTA_CTRL = 'e3f0a009-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_OTA_DATA = 'e3f0a00a-7b1c-4d2a-9e6f-2c5a8d4b1f00';
@@ -620,7 +628,8 @@ const DIS_CHRS = {
 
 // --- State ---
 let bleDevice = null, bleServer = null, svc = null;
-let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrBatGauge = null, chrServoLimits = null, chrServoRangeMode = null, chrServoPositions = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null;
+let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrBatGauge = null, chrServoLimits = null, chrServoRangeMode = null, chrServoPositions = null, chrBoardKind = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null;
+let boardKind = null; // null = unknown (older firmware), else 0/1/2 from BOARD_*
 let batteryPollTimer = null;  // setInterval handle while connected
 let jttsInitialJson = '';  // last read JSON, used to detect Apply-time changes
 let servoLimitsInitial = ''; // last read servo-limits JSON (Apply-time change detection)
@@ -998,6 +1007,32 @@ function applyCapabilityGating() {
   document.getElementById('jtts-section').style.display = hasJtts ? '' : 'none';
   document.getElementById('ota-section').style.display = hasOta ? '' : 'none';
   document.getElementById('btn-apply').style.display = hasSettings ? '' : 'none';
+
+  // Per-board gating: Atom-nyan has no servos, no battery monitor, no LED
+  // strip. Older firmware that doesn't expose CHR_BOARD_KIND leaves
+  // boardKind = null → fall back to the historical M5-base assumption
+  // (everything visible) so we don't regress those installs.
+  const isAtom = (boardKind === BOARD_ATOM_NYAN);
+  document.getElementById('servo-section').style.display = isAtom ? 'none' : '';
+  // Battery row + battery-gauge toggle don't apply when there's no INA226.
+  // (M5 base = battery, Takao base + Atom-nyan = no battery.)
+  const noBattery = (boardKind === BOARD_TAKAO_BASE) || isAtom;
+  document.getElementById('dis-battery-row').style.display = noBattery ? 'none' : '';
+  if (noBattery) {
+    setVisible('label.toggle-label[for="bat-gauge-enabled"]', false);
+    setVisible('label.toggle-label[for="bat-gauge-enabled"] + p.hint', false);
+  }
+  // Surface the board name in the DIS Model row (the firmware's DIS
+  // model_number_string is the same "Stack-chan" string across all variants,
+  // so this overwrite turns it into something that actually distinguishes
+  // M5 base vs Takao vs Atom-nyan). Older firmware that doesn't expose
+  // BoardKind leaves boardKind == null → keep the original DIS value.
+  if (boardKind != null) {
+    const modelEl = document.getElementById('dis-model');
+    if (modelEl) {
+      modelEl.textContent = BOARD_LABELS[boardKind] || `kind ${boardKind}`;
+    }
+  }
 }
 
 // --- ZIP extraction (deflate-raw via DecompressionStream, no deps) ---
@@ -1575,6 +1610,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
       ['servoLimits',CHR_SERVO_LIMITS],
       ['servoRangeMode', CHR_SERVO_RANGE_MODE],
       ['servoPositions', CHR_SERVO_POSITIONS],
+      ['boardKind', CHR_BOARD_KIND],
       ['jtts',       CHR_JTTS],
       ['otaCtrl',    CHR_OTA_CTRL],
       ['otaData',    CHR_OTA_DATA],
@@ -1611,6 +1647,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
     chrServoLimits = found.servoLimits ?? null;
     chrServoRangeMode = found.servoRangeMode ?? null;
     chrServoPositions = found.servoPositions ?? null;
+    chrBoardKind = found.boardKind ?? null;
     chrJtts     = found.jtts     ?? null;
     chrOtaCtrl  = found.otaCtrl  ?? null;
     chrOtaData  = found.otaData  ?? null;
@@ -1690,6 +1727,20 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
         log(`RTP 音声受信: ${enabled ? '有効' : '無効'}`);
       } catch (e) {
         log(`RTP 有効状態の取得失敗: ${e.message}`, 'err');
+      }
+    }
+
+    // Read the board kind BEFORE applyCapabilityGating() runs (further down),
+    // so the per-board show/hide can take it into account on first paint.
+    if (chrBoardKind) {
+      try {
+        const bk = await readEncrypted(chrBoardKind);
+        if (bk.length > 0) {
+          boardKind = bk[0];
+          log(`基板: ${BOARD_LABELS[boardKind] || `kind ${boardKind}`}`);
+        }
+      } catch (e) {
+        log(`基板種別の取得失敗: ${e.message}`, 'err');
       }
     }
 
@@ -1802,7 +1853,8 @@ function onDisconnected() {
   clearInterval(svPosPollTimer); svPosPollTimer = null;
   svRangeOn = false;
   svLiveYaw = svLivePitch = -1;
-  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrXiaozhiUrl = chrXiaozhiToken = chrFaceConfig = chrBattery = chrBatGauge = chrServoLimits = chrServoRangeMode = chrServoPositions = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = null;
+  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrXiaozhiUrl = chrXiaozhiToken = chrFaceConfig = chrBattery = chrBatGauge = chrServoLimits = chrServoRangeMode = chrServoPositions = chrBoardKind = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = null;
+  boardKind = null;
   aesKey = null;
   clearDeviceInfo();
   delete document.getElementById('openai-enabled').dataset.initial;

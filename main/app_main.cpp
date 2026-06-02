@@ -544,6 +544,11 @@ extern "C" void app_main()
     stackchan::config::set_face_config_sink(&on_face_config);
     stackchan::config::set_servo_range_mode_sink(&on_servo_range_mode);
     stackchan::config::set_servo_positions_getter(&servo_positions);
+    // Tell the settings services which board we're on so the web UIs can hide
+    // sections that don't apply (e.g. servo config on Atom-nyan). Must happen
+    // before config::start / wifi_config setup so the first central read sees
+    // the right value.
+    stackchan::config::set_board_kind(static_cast<std::uint8_t>(board.kind()));
     // BLE audio streaming and the realtime voice conversation are mutually
     // exclusive — both saturate the radio/CPU and running them together
     // makes streaming playback choppy. Pass the conversation-enabled flag
@@ -562,6 +567,7 @@ extern "C" void app_main()
     // cached in static storage and applied once the handlers register).
     stackchan::wifi_config::set_servo_range_mode_sink(&on_servo_range_mode);
     stackchan::wifi_config::set_servo_positions_getter(&servo_positions);
+    stackchan::wifi_config::set_board_kind(static_cast<std::uint8_t>(board.kind()));
 
     // Wi-Fi live audio (RTP/L16 today). Like the BLE sink, mutually exclusive
     // with the conversation backend, so it self-disables when voice chat is on.

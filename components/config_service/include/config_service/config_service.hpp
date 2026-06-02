@@ -97,6 +97,13 @@ void notify_wifi_connected(bool connected);
 // millivolts / percent < 0 mean "unknown" (no INA226 / not yet read). Thread-safe.
 void notify_battery(int millivolts, int milliamps, int percent);
 
+// Tell the settings service which hardware variant we booted on. The byte
+// value mirrors board::BoardKind (0=M5Base, 1=TakaoBase, 2=AtomNyan) and is
+// surfaced via the BoardKind READ characteristic so the web UI can hide
+// sections that don't apply (e.g. servo configuration on Atom-nyan). Set
+// once at boot before BLE comes online.
+void set_board_kind(std::uint8_t kind);
+
 // True while a BLE central is connected. Thread-safe; for status display.
 bool ble_connected();
 

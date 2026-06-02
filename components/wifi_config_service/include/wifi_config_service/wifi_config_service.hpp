@@ -38,4 +38,10 @@ void set_battery(int millivolts, int milliamps, int percent);
 void set_servo_range_mode_sink(config::ServoRangeModeSink sink);
 void set_servo_positions_getter(config::ServoPositionsGetter getter);
 
+// Record the booted board kind (mirrors board::BoardKind cast to byte) so it
+// surfaces in /api/status under the "board" key. The web UI uses this to
+// hide controls that don't apply to the current hardware. See
+// config_service::set_board_kind for the byte values.
+void set_board_kind(std::uint8_t kind);
+
 } // namespace stackchan::wifi_config

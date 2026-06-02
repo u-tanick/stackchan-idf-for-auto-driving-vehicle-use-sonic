@@ -195,6 +195,13 @@ static const ble_uuid128_t kServoRangeModeUuid = BLE_UUID128_INIT(
 static const ble_uuid128_t kServoPositionsUuid = BLE_UUID128_INIT(
     0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
     0x2a, 0x4d, 0x1c, 0x7b, 0x1a, 0xa0, 0xf0, 0xe3);
+// BoardKind — encrypted READ-only 1-byte board variant indicator. Mirrors
+// board::BoardKind: 0 = M5Base, 1 = TakaoBase, 2 = AtomNyan. Lets the web UI
+// hide sections that don't apply on the current hardware (servo config on
+// Atom-nyan, battery gauge where there's no battery, etc.).
+static const ble_uuid128_t kBoardKindUuid = BLE_UUID128_INIT(
+    0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
+    0x2a, 0x4d, 0x1c, 0x7b, 0x1b, 0xa0, 0xf0, 0xe3);
 
 // --- Mutable state guarded by g_mutex ---
 static SemaphoreHandle_t g_mutex = nullptr;
@@ -232,6 +239,12 @@ static uint16_t g_bat_gauge_handle = 0;
 static uint16_t g_servo_limits_handle = 0;
 static uint16_t g_servo_range_mode_handle = 0;
 static uint16_t g_servo_positions_handle = 0;
+static uint16_t g_board_kind_handle = 0;
+// Board variant byte, set by main at boot before BLE comes online (so the
+// first central read sees the correct value). Default M5Base preserves the
+// pre-AtomS3R behaviour for any client connecting against firmware that
+// hasn't yet pushed a value.
+static std::uint8_t g_board_kind = 0;
 static uint16_t g_jtts_handle = 0;
 static uint16_t g_ota_ctrl_handle = 0;
 static uint16_t g_ota_data_handle = 0;
@@ -527,6 +540,17 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
                 static_cast<std::uint8_t>(p & 0xff),
                 static_cast<std::uint8_t>((p >> 8) & 0xff)};
             const bool ok = append_encrypted(ctxt->om, {payload.data(), payload.size()});
+            xSemaphoreGive(g_mutex);
+            return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
+        }
+        if (attr_handle == g_board_kind_handle) {
+            xSemaphoreTake(g_mutex, portMAX_DELAY);
+            if (!g_session.is_established()) {
+                xSemaphoreGive(g_mutex);
+                return BLE_ATT_ERR_UNLIKELY;
+            }
+            const std::uint8_t byte = g_board_kind;
+            const bool ok = append_encrypted(ctxt->om, {&byte, 1});
             xSemaphoreGive(g_mutex);
             return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
         }
@@ -943,6 +967,12 @@ static ble_gatt_chr_def kChrs[] = {
         .val_handle = &g_servo_positions_handle,
     },
     {
+        .uuid = &kBoardKindUuid.u,
+        .access_cb = gatt_access_cb,
+        .flags = BLE_GATT_CHR_F_READ,
+        .val_handle = &g_board_kind_handle,
+    },
+    {
         .uuid = &kJttsConfigUuid.u,
         .access_cb = gatt_access_cb,
         .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
@@ -1153,6 +1183,13 @@ void set_servo_range_mode_sink(ServoRangeModeSink sink)
 void set_servo_positions_getter(ServoPositionsGetter getter)
 {
     g_servo_positions_getter = getter;
+}
+
+void set_board_kind(std::uint8_t kind)
+{
+    // Plain write, like the other sink setters — called at boot before BLE
+    // serves any reads, so no mutex needed.
+    g_board_kind = kind;
 }
 
 void set_battery(int millivolts, int milliamps, int percent)

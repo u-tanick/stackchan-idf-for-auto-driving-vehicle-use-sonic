@@ -255,7 +255,8 @@
     <div class="row"><span class="key">Firmware</span><span class="val" id="dis-fw">—</span></div>
     <div class="row"><span class="key">ESP-IDF</span><span class="val" id="dis-idf">—</span></div>
     <div class="row"><span class="key">IP</span><span class="val" id="dis-ip">—</span></div>
-    <div class="row"><span class="key">バッテリー</span><span class="val" id="dis-battery">—</span></div>
+    <div class="row"><span class="key">基板</span><span class="val" id="dis-board">—</span></div>
+    <div class="row" id="dis-battery-row"><span class="key">バッテリー</span><span class="val" id="dis-battery">—</span></div>
   </div>
 
   <label for="ssid">Wi-Fi SSID</label>
@@ -634,12 +635,39 @@ $('sv-cap-pitch-max').addEventListener('click',  () => capturePitch('max'));
 
 // --- Status refresh ---
 
+// Per-board gating: Atom-nyan has no servos, no battery monitor. Older
+// firmware that doesn't report "board" in /api/status leaves this null, in
+// which case we keep everything visible (historical M5-base behaviour).
+const BOARD_M5_BASE = 0;
+const BOARD_TAKAO_BASE = 1;
+const BOARD_ATOM_NYAN = 2;
+const BOARD_LABELS = {0: 'CoreS3 + M5 base', 1: 'CoreS3 + Takao base', 2: 'AtomS3R + Atomic ECHO BASE'};
+
+function applyBoardGating(kind) {
+  const isAtom = (kind === BOARD_ATOM_NYAN);
+  const noBattery = (kind === BOARD_TAKAO_BASE) || isAtom;
+  const sv = document.getElementById('servo-section');
+  if (sv) sv.style.display = isAtom ? 'none' : '';
+  const batRow = document.getElementById('dis-battery-row');
+  if (batRow) batRow.style.display = noBattery ? 'none' : '';
+  const batToggle = document.querySelector('label.toggle-label[for="bat-gauge-enabled"]');
+  if (batToggle) batToggle.style.display = noBattery ? 'none' : '';
+  const batHint = batToggle ? batToggle.nextElementSibling : null;
+  if (batHint && batHint.tagName === 'P') batHint.style.display = noBattery ? 'none' : '';
+  const boardEl = document.getElementById('dis-board');
+  if (boardEl) {
+    boardEl.textContent = (kind == null) ? '(unknown)'
+                                         : (BOARD_LABELS[kind] || `kind ${kind}`);
+  }
+}
+
 async function refresh() {
   try {
     const s = await fetchJSON('/api/status');
     $('dis-fw').textContent = s.firmware || '—';
     $('dis-idf').textContent = s.idf || '—';
     $('dis-ip').textContent = s.ip || '—';
+    applyBoardGating(typeof s.board === 'number' ? s.board : null);
     $('dis-battery').textContent = (s.battery_mv == null || s.battery_mv < 0)
       ? '—'
       : ((s.battery_pct >= 0 ? s.battery_pct + '% ' : '')
