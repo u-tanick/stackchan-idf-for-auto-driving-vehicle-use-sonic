@@ -233,12 +233,20 @@
     text-align: right;
     word-break: break-all;
   }
-  #avatar-section .av-row { display:flex; align-items:center; gap:0.5rem; margin:0.35rem 0; }
+  #avatar-section .av-row { display:flex; flex-wrap:wrap; align-items:center; gap:0.5rem; margin:0.35rem 0; }
   #avatar-section .av-row label { flex:0 0 9rem; margin:0; font-size:0.85rem; }
-  #avatar-section .av-row input[type=range] { flex:1 1 auto; min-width:0; }
+  #avatar-section .av-row input[type=range] { flex:1 1 8rem; min-width:0; }
   #avatar-section .av-row .av-val {
     flex:0 0 3rem; text-align:right;
     font-family: ui-monospace, SFMono-Regular, monospace; font-size:0.8rem; color:#555;
+  }
+  /* Narrow viewports (typical phone portrait): put the label on its own line
+     above the slider so the slider gets the full row width to drag, instead of
+     the ~100 px it'd be left with squeezed between a 9 rem label and a 3 rem
+     value column. */
+  @media (max-width: 540px) {
+    #avatar-section .av-row label { flex: 1 0 100%; }
+    #avatar-section .av-row input[type=range] { flex: 1 1 auto; }
   }
 </style>
 </head>
