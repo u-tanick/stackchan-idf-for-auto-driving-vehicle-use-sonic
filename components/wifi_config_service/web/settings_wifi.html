@@ -467,7 +467,10 @@
     <div id="dsl-msg">DSL コンパイラ未起動</div>
     <div class="dsl-btnrow">
       <button type="button" class="primary" id="btn-dsl-send">コンパイル &amp; 送信</button>
-      <button type="button" class="secondary" id="btn-dsl-default">エディタをデフォルトに</button>
+      <select id="dsl-preset" class="secondary" title="プリセットを選ぶとソースを読込んで実機に送信"
+              style="flex:1 1 auto;padding:.45rem;font-size:.85rem;background:#e0e0e0;
+                     color:#333;border:1px solid #bbb;border-radius:6px;cursor:pointer">
+      </select>
       <button type="button" class="danger" id="btn-dsl-reset">実機をデフォルトに戻す</button>
     </div>
     <div class="dsl-btnrow">
@@ -514,9 +517,12 @@
      Placed BEFORE the main page script so window.AvatarDsl is defined when
      setupDslEditor() runs. -->
 <script>/*{{AVATAR_DSL_BUNDLE}}*/</script>
-<!-- Default DSL source text (assets/default_face.avdsl), inlined at build
-     time so the textarea is pre-populated without any extra HTTP round-trip. -->
+<!-- DSL source presets array [{name, source}, ...] inlined at build time
+     (see tools/avatar_dsl/inject.mjs). The first entry is the textarea's
+     initial value. AVATAR_DSL_DEFAULT_SOURCE is a back-compat alias for
+     the same source. -->
 <script>
+  window.AVATAR_DSL_PRESETS = "{{AVATAR_DSL_PRESETS}}";
   window.AVATAR_DSL_DEFAULT_SOURCE = "{{AVATAR_DSL_DEFAULT_SOURCE}}";
 </script>
 
@@ -945,7 +951,18 @@ async function startOta() {
     setMsg('DSL コンパイラ バンドルが読込み失敗 (firmware ビルド不一致の可能性)', 'err');
     return;
   }
-  srcEl.value = window.AVATAR_DSL_DEFAULT_SOURCE || '';
+  // Populate preset selector. First entry = initial textarea value.
+  const presetEl = $('dsl-preset');
+  const presets = Array.isArray(window.AVATAR_DSL_PRESETS) ? window.AVATAR_DSL_PRESETS : [];
+  const presetMap = {};
+  presets.forEach((p, idx) => {
+    presetMap[p.name] = p.source;
+    const opt = document.createElement('option');
+    opt.value = p.name;
+    opt.textContent = (idx === 0 ? '↻ ' : '✎ ') + p.name;
+    presetEl.appendChild(opt);
+  });
+  srcEl.value = (presets[0] && presets[0].source) || window.AVATAR_DSL_DEFAULT_SOURCE || '';
   setMsg('準備完了 — Ctrl/Cmd+Enter または「コンパイル & 送信」で反映');
 
   let lastBuf = null; // last successfully-compiled bytecode (for download)
@@ -1006,10 +1023,28 @@ async function startOta() {
     }
   });
 
-  $('btn-dsl-default').addEventListener('click', () => {
-    srcEl.value = window.AVATAR_DSL_DEFAULT_SOURCE || '';
+  // Preset selector: load source + send. For the first preset (which is the
+  // firmware-embedded default) we POST /api/avatar-dsl/reset instead of
+  // re-uploading the same bytecode — leaves the NVS slot empty so future
+  // boots use the embedded copy without any persisted override.
+  presetEl.addEventListener('change', async () => {
+    const name = presetEl.value;
+    const src = presetMap[name];
+    if (src == null) return;
+    srcEl.value = src;
     lastBuf = null;
-    setMsg('エディタをデフォルト ソースに戻しました (送信はされていません)');
+    if (presets[0] && name === presets[0].name) {
+      try {
+        const r = await fetch('/api/avatar-dsl/reset', { method: 'POST' });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        setMsg(`プリセット「${name}」を読込み — 実機を内蔵デフォルトに復帰`, 'ok');
+        log(`Avatar DSL プリセット ${name} (reset)`, 'ok');
+      } catch (e) {
+        setMsg('リセット失敗: ' + e.message, 'err');
+      }
+    } else {
+      await compileAndSend();
+    }
   });
 
   $('btn-dsl-reset').addEventListener('click', async () => {

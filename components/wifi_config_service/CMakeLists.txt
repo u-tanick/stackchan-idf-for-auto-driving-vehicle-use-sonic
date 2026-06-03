@@ -45,16 +45,26 @@ find_program(NODE_EXECUTABLE NAMES node REQUIRED
 set(_SETTINGS_SRC "${CMAKE_CURRENT_SOURCE_DIR}/web/settings_wifi.html")
 set(_SETTINGS_OUT "${CMAKE_CURRENT_BINARY_DIR}/settings_wifi.html")
 set(_DSL_INJECT "${PROJECT_DIR}/tools/avatar_dsl/inject.mjs")
-set(_DSL_SOURCE "${PROJECT_DIR}/assets/default_face.avdsl")
+# DSL presets shipped in the page selector. Order matters — the first preset
+# is the textarea's initial value. Keep aligned with wasm/build.sh so the
+# Wi-Fi page and the standalone preview offer the same lineup.
+set(_DSL_PRESETS
+    "default=${PROJECT_DIR}/assets/default_face.avdsl"
+    "omega=${PROJECT_DIR}/assets/omega_mouth.avdsl"
+)
+set(_DSL_PRESET_FILES
+    "${PROJECT_DIR}/assets/default_face.avdsl"
+    "${PROJECT_DIR}/assets/omega_mouth.avdsl"
+)
 # The inject script depends on every JS source file it bundles, so rebuilds
 # pick up edits to the compiler.
 file(GLOB _DSL_JS "${PROJECT_DIR}/tools/avatar_dsl/*.js" "${PROJECT_DIR}/tools/avatar_dsl/*.mjs")
 
 add_custom_command(
     OUTPUT "${_SETTINGS_OUT}"
-    COMMAND ${NODE_EXECUTABLE} "${_DSL_INJECT}" "${_SETTINGS_SRC}" "${_DSL_SOURCE}" "${_SETTINGS_OUT}"
-    DEPENDS "${_SETTINGS_SRC}" "${_DSL_SOURCE}" ${_DSL_JS}
-    COMMENT "[wifi_config_service] injecting avatar DSL compiler into settings_wifi.html"
+    COMMAND ${NODE_EXECUTABLE} "${_DSL_INJECT}" "${_SETTINGS_SRC}" "${_SETTINGS_OUT}" ${_DSL_PRESETS}
+    DEPENDS "${_SETTINGS_SRC}" ${_DSL_PRESET_FILES} ${_DSL_JS}
+    COMMENT "[wifi_config_service] injecting avatar DSL compiler + presets into settings_wifi.html"
     VERBATIM
 )
 add_custom_target(wifi_settings_html_processed DEPENDS "${_SETTINGS_OUT}")

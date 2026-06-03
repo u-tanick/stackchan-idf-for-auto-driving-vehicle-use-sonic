@@ -3,27 +3,49 @@
 // SPDX-License-Identifier: BSL-1.0
 //
 // Bundle the JS DSL compiler (lexer/parser/emitter/compile/opcodes) into a
-// single IIFE and inject it (+ the default DSL source text) into an HTML
-// template. Used by both wasm/build.sh (standalone preview shell) and the
-// firmware build (wifi_config settings page) so both stay in lockstep.
+// single IIFE and inject it (+ a set of named DSL source presets) into an
+// HTML template. Used by both wasm/build.sh (standalone preview shell) and
+// the firmware build (wifi_config settings page) so both stay in lockstep.
 //
 // Usage:
-//   node tools/avatar_dsl/inject.mjs <template.html> <dsl_source.avdsl> <output.html>
+//   node inject.mjs <template.html> <output.html> <name>=<path.avdsl> ...
 //
 // Placeholders in the template are replaced verbatim:
 //   /*{{AVATAR_DSL_BUNDLE}}*/        → IIFE bundle (assigns window.AvatarDsl)
-//   "{{AVATAR_DSL_DEFAULT_SOURCE}}"  → JSON-encoded DSL source string
+//   "{{AVATAR_DSL_PRESETS}}"         → JSON array
+//                                       [{name, source}, ...]
+//                                       (order = CLI argument order; the
+//                                        first entry is treated by the host
+//                                        page as the initial selection)
+//   "{{AVATAR_DSL_DEFAULT_SOURCE}}"  → JSON string of the first preset's
+//                                       source (backward-compatible alias).
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const args = process.argv.slice(2);
-if (args.length !== 3) {
-  process.stderr.write('usage: inject.mjs <template.html> <dsl_source.avdsl> <output.html>\n');
+if (args.length < 3) {
+  process.stderr.write(
+    'usage: inject.mjs <template.html> <output.html> <name>=<path.avdsl> [<name>=<path.avdsl> ...]\n');
   process.exit(1);
 }
-const [templatePath, dslSourcePath, outPath] = args;
+const [templatePath, outPath, ...presetArgs] = args;
+
+const presets = presetArgs.map((a) => {
+  const eq = a.indexOf('=');
+  if (eq < 0) {
+    process.stderr.write(`error: preset spec '${a}' missing '=' separator\n`);
+    process.exit(1);
+  }
+  const name = a.slice(0, eq).trim();
+  const path = a.slice(eq + 1).trim();
+  if (!name || !path) {
+    process.stderr.write(`error: preset spec '${a}' has empty name or path\n`);
+    process.exit(1);
+  }
+  return { name, source: readFileSync(path, 'utf8') };
+});
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 // Dependency-ordered concatenation. The keyword stripping is line-based and
@@ -46,22 +68,26 @@ function buildBundle() {
 }
 
 const bundle = buildBundle();
-const dslSource = readFileSync(dslSourcePath, 'utf8');
+const presetsJson = JSON.stringify(presets);
+const firstSourceJson = JSON.stringify(presets[0].source);
 
 let html = readFileSync(templatePath, 'utf8');
-let bundleHits = 0, srcHits = 0;
+let bundleHits = 0, presetsHits = 0, srcHits = 0;
 html = html.replace(/\/\*\{\{AVATAR_DSL_BUNDLE\}\}\*\//g,
   () => { ++bundleHits; return bundle; });
+html = html.replace(/"\{\{AVATAR_DSL_PRESETS\}\}"/g,
+  () => { ++presetsHits; return presetsJson; });
 html = html.replace(/"\{\{AVATAR_DSL_DEFAULT_SOURCE\}\}"/g,
-  () => { ++srcHits; return JSON.stringify(dslSource); });
+  () => { ++srcHits; return firstSourceJson; });
 
 if (bundleHits === 0) {
   process.stderr.write(`warning: ${templatePath}: no '/*{{AVATAR_DSL_BUNDLE}}*/' placeholder found\n`);
 }
-if (srcHits === 0) {
-  process.stderr.write(`warning: ${templatePath}: no '"{{AVATAR_DSL_DEFAULT_SOURCE}}"' placeholder found\n`);
+if (presetsHits === 0 && srcHits === 0) {
+  process.stderr.write(`warning: ${templatePath}: no preset / default-source placeholder found\n`);
 }
 
 writeFileSync(outPath, html);
-process.stdout.write(`[avatar_dsl] injected bundle (${bundle.length}B) + DSL source (${dslSource.length}B)` +
-  ` into ${templatePath} -> ${outPath}\n`);
+process.stdout.write(
+  `[avatar_dsl] injected bundle (${bundle.length}B) + ${presets.length} preset(s) ` +
+  `(${presets.map((p) => p.name).join(', ')}) into ${templatePath} -> ${outPath}\n`);

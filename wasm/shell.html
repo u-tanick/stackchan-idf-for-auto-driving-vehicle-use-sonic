@@ -267,7 +267,10 @@
       <div id="dsl-msg">DSL コンパイラ未起動</div>
       <div class="btns">
         <button type="button" id="dsl-apply">コンパイル &amp; 適用</button>
-        <button type="button" class="alt" id="dsl-default">デフォルトに戻す</button>
+        <select id="dsl-preset" title="プリセットを選ぶとソースを読込んで即時適用"
+                style="flex:1 1 auto;padding:.45rem;font-size:.85rem;
+                       background:#444b54;color:#fff;border:1px solid #3a4048;
+                       border-radius:6px;cursor:pointer"></select>
       </div>
       <div class="btns">
         <button type="button" class="alt" id="dsl-download">.avbc ダウンロード</button>
@@ -284,9 +287,12 @@
   <!-- Inlined JS DSL compiler bundle (lexer/parser/emitter/compile/opcodes,
        concatenated by wasm/build.sh, exposes window.AvatarDsl.compile()). -->
   <script>/*{{AVATAR_DSL_BUNDLE}}*/</script>
-  <!-- Default DSL source text (assets/default_face.avdsl), inlined at build
-       time so the textarea is pre-populated even in SINGLE_FILE mode. -->
+  <!-- DSL source presets array [{name, source}, ...] inlined at build time
+       (see tools/avatar_dsl/inject.mjs). The first entry is the textarea's
+       initial value. AVATAR_DSL_DEFAULT_SOURCE is the same source as a
+       convenience alias (matches the first preset). -->
   <script>
+    window.AVATAR_DSL_PRESETS = "{{AVATAR_DSL_PRESETS}}";
     window.AVATAR_DSL_DEFAULT_SOURCE = "{{AVATAR_DSL_DEFAULT_SOURCE}}";
   </script>
 
@@ -472,7 +478,19 @@
         setMsg('DSL コンパイラのバンドルが読み込めていません (build/avatar_web の再ビルドが必要)', 'err');
         return;
       }
-      srcEl.value = window.AVATAR_DSL_DEFAULT_SOURCE || '';
+      // Populate preset selector. The first preset's source is the textarea's
+      // initial value (matches AVATAR_DSL_DEFAULT_SOURCE).
+      var presetEl = $('dsl-preset');
+      var presets = Array.isArray(window.AVATAR_DSL_PRESETS) ? window.AVATAR_DSL_PRESETS : [];
+      var presetMap = {};
+      presets.forEach(function (p, idx) {
+        presetMap[p.name] = p.source;
+        var opt = document.createElement('option');
+        opt.value = p.name;
+        opt.textContent = (idx === 0 ? '↻ ' : '✎ ') + p.name;
+        presetEl.appendChild(opt);
+      });
+      srcEl.value = (presets[0] && presets[0].source) || window.AVATAR_DSL_DEFAULT_SOURCE || '';
       setMsg('準備完了 — Ctrl/Cmd+Enter または「コンパイル & 適用」で反映');
 
       // Apply compiled bytecode to the WASM avatar. Copies the bytes into the
@@ -517,11 +535,22 @@
         }
       });
 
-      $('dsl-default').addEventListener('click', function () {
-        srcEl.value = window.AVATAR_DSL_DEFAULT_SOURCE || '';
-        Module._avatar_reset_bytecode();
-        lastBuf = null;
-        setMsg('デフォルト顔に戻しました', 'ok');
+      // Preset selector: load source + auto-compile + apply on change. The
+      // first preset is treated as the firmware-embedded default and uses
+      // avatar_reset_bytecode (skips the compile path entirely); the others
+      // go through the JS compiler.
+      presetEl.addEventListener('change', function () {
+        var name = presetEl.value;
+        var src = presetMap[name];
+        if (src == null) return;
+        srcEl.value = src;
+        if (name === presets[0].name) {
+          Module._avatar_reset_bytecode();
+          lastBuf = null;
+          setMsg('プリセット「' + name + '」を読込み — 内蔵デフォルトに復帰', 'ok');
+        } else {
+          compileAndApply();
+        }
       });
 
       $('dsl-download').addEventListener('click', function () {
