@@ -1,0 +1,19 @@
+# Phase 1 only — Kconfig-supplied bearer token for the /mcp/* HTTP endpoints
+# (Claude Code Channel adapter target). Phase 2+ will move this to NVS so it's
+# configurable from the BLE / Wi-Fi settings pages without a re-flash; this
+# Kconfig knob then goes away.
+menu "Stack-chan Channel API (Claude Code)"
+
+    config MCP_API_TOKEN
+        string "Bearer token for /mcp/* endpoints (Phase 1)"
+        default ""
+        help
+            Static bearer token that the Channel adapter sends in the
+            `Authorization: Bearer <token>` header of every /mcp/* request.
+            Empty string disables the endpoints entirely (they return 404 so
+            Cloudflare Tunnel can be left wired without exposing a live API).
+            Put the real value in sdkconfig.defaults.local, NOT in the
+            committed sdkconfig.defaults — the token is the only thing
+            protecting the API from anyone who reaches the tunnel.
+
+endmenu

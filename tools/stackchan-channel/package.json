@@ -1,0 +1,12 @@
+{
+  "name": "stackchan-channel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Claude Code Channel adapter for Stack-chan. Bridges Claude's tools/call to the firmware's /mcp/* REST endpoints over HTTPS (typically via Cloudflare Tunnel).",
+  "license": "BSL-1.0",
+  "engines": { "bun": ">=1.0.0" },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

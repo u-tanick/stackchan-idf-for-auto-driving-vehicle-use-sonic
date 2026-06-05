@@ -36,8 +36,11 @@
 #include "servo_task.hpp"
 #include "shared_state.hpp"
 #include "speech.hpp"
+#include "utf8.hpp"
 #include "wifi_audio.hpp"
 #include "wifi_sta.hpp"
+
+#include <jtts/jtts.hpp>
 #ifdef CONFIG_TELEGRAM_PHASE1_ENABLED
 #include "telegram/telegram.hpp"
 #endif
@@ -632,6 +635,77 @@ extern "C" void app_main()
                 g_state->set_face_bytecode({data, len});
             }
             return true;
+        });
+
+    // Channel adapter (/mcp/*) sinks. Expression / balloon ride the existing
+    // SharedState pipelines (render_task picks them up next frame). `say`
+    // spawns a one-shot worker because synthesis + playback can take
+    // hundreds of ms, way too long to block the HTTP server task.
+    stackchan::wifi_config::set_mcp_expression_sink(
+        [](std::string_view name) {
+            if (g_state == nullptr) return;
+            // Map enum names to the Expression integer. Unknown names fall
+            // back to Neutral rather than rejecting — the HTTP handler has
+            // already accepted the request, so silent fallback is the kinder
+            // failure mode.
+            using E = stackchan::avatar::Expression;
+            int v = static_cast<int>(E::Neutral);
+            if (name == "happy")        v = static_cast<int>(E::Happy);
+            else if (name == "sad")     v = static_cast<int>(E::Sad);
+            else if (name == "angry")   v = static_cast<int>(E::Angry);
+            else if (name == "doubt")   v = static_cast<int>(E::Doubt);
+            else if (name == "sleepy")  v = static_cast<int>(E::Sleepy);
+            else if (name == "neutral") v = static_cast<int>(E::Neutral);
+            g_state->expression.store(v, std::memory_order_relaxed);
+        });
+
+    stackchan::wifi_config::set_mcp_balloon_sink(
+        [](std::string_view text, std::uint32_t hold_ms) {
+            if (g_state == nullptr) return;
+            g_state->set_balloon_text(text, hold_ms);
+        });
+
+    stackchan::wifi_config::set_mcp_say_kana_sink(
+        [](std::string_view kana_utf8) {
+            // Heap-copy the bytes — `kana_utf8` is owned by the HTTP request
+            // and won't survive the handler return. The task frees it.
+            auto* owned = new std::string{kana_utf8};
+            // 12 KiB stack: jtts working buffers + PCM vector + M5.Speaker
+            // playRaw enqueue. Empirically 10 KiB cuts it close on long
+            // utterances; 12 leaves comfortable headroom.
+            xTaskCreatePinnedToCore(
+                +[](void* arg) {
+                    std::unique_ptr<std::string> kana_text{static_cast<std::string*>(arg)};
+                    std::u32string kana = stackchan::app::decode_utf8(*kana_text);
+                    if (kana.empty()) {
+                        ESP_LOGW(kTag, "/mcp/say: empty / invalid utf8");
+                        vTaskDelete(nullptr);
+                        return;
+                    }
+                    constexpr std::uint32_t kRate = 16000;
+                    stackchan::jtts::Options opt;
+                    opt.voice = stackchan::jtts::Voice::Female;
+                    opt.sample_rate_hz = kRate;
+                    std::vector<std::int16_t> pcm;
+                    if (auto r = stackchan::jtts::synthesize(kana, pcm, opt); !r) {
+                        ESP_LOGW(kTag, "/mcp/say synth fail: %s",
+                                 stackchan::jtts::to_string(r.error()));
+                        vTaskDelete(nullptr);
+                        return;
+                    }
+                    if (pcm.empty()) {
+                        vTaskDelete(nullptr);
+                        return;
+                    }
+                    // Wait for any in-flight audio to finish so we don't
+                    // splice mid-utterance. playRaw queues internally so it
+                    // returns quickly, but we still wait here on the worker
+                    // to avoid two /mcp/say calls clobbering each other.
+                    while (M5.Speaker.isPlaying()) vTaskDelay(pdMS_TO_TICKS(20));
+                    M5.Speaker.playRaw(pcm.data(), pcm.size(), kRate, /*stereo=*/false);
+                    vTaskDelete(nullptr);
+                },
+                "mcp_say", 12 * 1024, owned, tskIDLE_PRIORITY + 2, nullptr, 1);
         });
 
     // Wi-Fi live audio (RTP/L16 today). Like the BLE sink, mutually exclusive

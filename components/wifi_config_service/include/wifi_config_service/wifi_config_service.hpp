@@ -55,4 +55,29 @@ void set_board_kind(std::uint8_t kind);
 using AvatarBytecodeSink = std::function<bool(const std::uint8_t* data, std::size_t len)>;
 void set_avatar_bytecode_sink(AvatarBytecodeSink sink);
 
+// --- Channel API sinks (POST /mcp/* endpoints) -------------------------
+//
+// All sinks are called from the HTTP server task (6 KiB stack). The sinks
+// must return quickly — long-running work (TTS synthesis, audio playback)
+// belongs in a separate task spawned by the sink itself, NOT in the
+// handler thread, because the next POST will block while we're synthesising.
+//
+// Empty `MCP_API_TOKEN` (Kconfig) disables the endpoints regardless of
+// whether sinks are registered.
+
+// `POST /mcp/say` — speak kana text. Implementation must enqueue or spawn
+// — returning means "scheduled", not "spoken".
+using McpSayKanaSink = std::function<void(std::string_view kana)>;
+void set_mcp_say_kana_sink(McpSayKanaSink sink);
+
+// `POST /mcp/expression` — set avatar face expression.
+//   name ∈ {"neutral","happy","sad","angry","doubt","sleepy"}
+using McpExpressionSink = std::function<void(std::string_view name)>;
+void set_mcp_expression_sink(McpExpressionSink sink);
+
+// `POST /mcp/balloon?hold_ms=N` — show text in the avatar balloon.
+// `hold_ms == 0` means "use balloon defaults" (Avatar::set_balloon_text).
+using McpBalloonSink = std::function<void(std::string_view text, std::uint32_t hold_ms)>;
+void set_mcp_balloon_sink(McpBalloonSink sink);
+
 } // namespace stackchan::wifi_config

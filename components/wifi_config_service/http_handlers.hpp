@@ -32,4 +32,9 @@ void set_board_kind(std::uint8_t kind);
 // payload has been validated and persisted). See wifi_config_service.hpp.
 void set_avatar_bytecode_sink(AvatarBytecodeSink sink);
 
+// /mcp/* endpoint sinks. See wifi_config_service.hpp for the contract.
+void set_mcp_say_kana_sink(McpSayKanaSink sink);
+void set_mcp_expression_sink(McpExpressionSink sink);
+void set_mcp_balloon_sink(McpBalloonSink sink);
+
 } // namespace stackchan::wifi_config::http

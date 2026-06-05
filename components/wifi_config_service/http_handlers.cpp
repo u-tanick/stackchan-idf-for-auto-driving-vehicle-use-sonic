@@ -67,6 +67,9 @@ esp_timer_handle_t g_restart_timer = nullptr;
 config::ServoRangeModeSink g_servo_range_mode_sink = nullptr;
 config::ServoPositionsGetter g_servo_positions_getter = nullptr;
 AvatarBytecodeSink g_avatar_bytecode_sink = nullptr;
+McpSayKanaSink g_mcp_say_sink = nullptr;
+McpExpressionSink g_mcp_expression_sink = nullptr;
+McpBalloonSink g_mcp_balloon_sink = nullptr;
 bool g_servo_range_mode = false;
 // Board variant (mirrors board::BoardKind). Defaults to 0 = M5Base for
 // compat — overwritten by main at boot.
@@ -522,6 +525,131 @@ esp_err_t handle_avatar_dsl_reset_post(httpd_req_t* req)
     return send_json(req, R"({"ok":true})");
 }
 
+// --- /mcp/* (Claude Code Channel adapter API, Bearer-auth) -------------
+//
+// Designed for exposure via Cloudflare Tunnel. Every request must carry
+// `Authorization: Bearer <CONFIG_MCP_API_TOKEN>`. An empty Kconfig token
+// disables the entire namespace (handlers respond 404), so the tunnel can
+// stay wired up while the firmware ships with no live endpoint.
+//
+// Body convention: POST endpoints take a plain UTF-8 body (the value IS the
+// body, no JSON wrapper — same pattern as the existing /api/* endpoints).
+// GET /mcp/state returns JSON.
+
+constexpr std::size_t kMaxMcpSayBytes = 1024;        // ~340 hiragana (UTF-8 3 B/char)
+constexpr std::size_t kMaxMcpExpressionBytes = 16;   // longest name is "sleepy"
+constexpr std::size_t kMaxMcpBalloonBytes = 1024;
+
+bool mcp_auth_ok(httpd_req_t* req)
+{
+    constexpr const char* expected = CONFIG_MCP_API_TOKEN;
+    if (expected[0] == '\0') return false;
+    char hdr[160];
+    if (httpd_req_get_hdr_value_str(req, "Authorization", hdr, sizeof(hdr)) != ESP_OK) {
+        return false;
+    }
+    constexpr const char* prefix = "Bearer ";
+    constexpr std::size_t plen = 7;
+    if (std::strncmp(hdr, prefix, plen) != 0) return false;
+    // Constant-time compare on the token tail.
+    const char* tok = hdr + plen;
+    const std::size_t expected_len = std::strlen(expected);
+    if (std::strlen(tok) != expected_len) return false;
+    unsigned diff = 0;
+    for (std::size_t i = 0; i < expected_len; ++i) {
+        diff |= static_cast<unsigned char>(tok[i] ^ expected[i]);
+    }
+    return diff == 0;
+}
+
+esp_err_t mcp_gate(httpd_req_t* req)
+{
+    // 404 (not 401) when the API is entirely disabled so the URL surface
+    // is indistinguishable from an unrelated path.
+    if (CONFIG_MCP_API_TOKEN[0] == '\0') {
+        return send_error(req, "404 Not Found");
+    }
+    if (!mcp_auth_ok(req)) {
+        httpd_resp_set_hdr(req, "WWW-Authenticate", "Bearer realm=\"stackchan\"");
+        return send_error(req, "401 Unauthorized");
+    }
+    return ESP_OK;
+}
+
+esp_err_t handle_mcp_say_post(httpd_req_t* req)
+{
+    if (mcp_gate(req) != ESP_OK) return ESP_OK;
+    std::string text;
+    if (read_body_str(req, text, kMaxMcpSayBytes) != ESP_OK) return ESP_OK;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    McpSayKanaSink sink = g_mcp_say_sink;
+    xSemaphoreGive(g_mutex);
+    if (!sink) return send_error(req, "503 Service Unavailable", "say sink not registered");
+    sink(text);
+    return send_json(req, R"({"ok":true})");
+}
+
+esp_err_t handle_mcp_expression_post(httpd_req_t* req)
+{
+    if (mcp_gate(req) != ESP_OK) return ESP_OK;
+    std::string name;
+    if (read_body_str(req, name, kMaxMcpExpressionBytes) != ESP_OK) return ESP_OK;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    McpExpressionSink sink = g_mcp_expression_sink;
+    xSemaphoreGive(g_mutex);
+    if (!sink) return send_error(req, "503 Service Unavailable", "expression sink not registered");
+    sink(name);
+    return send_json(req, R"({"ok":true})");
+}
+
+esp_err_t handle_mcp_balloon_post(httpd_req_t* req)
+{
+    if (mcp_gate(req) != ESP_OK) return ESP_OK;
+    std::string text;
+    if (read_body_str(req, text, kMaxMcpBalloonBytes) != ESP_OK) return ESP_OK;
+    // hold_ms is optional, in the query string: ?hold_ms=3000
+    std::uint32_t hold_ms = 0;
+    char q[64];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK) {
+        char val[16];
+        if (httpd_query_key_value(q, "hold_ms", val, sizeof(val)) == ESP_OK) {
+            hold_ms = static_cast<std::uint32_t>(std::strtoul(val, nullptr, 10));
+        }
+    }
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    McpBalloonSink sink = g_mcp_balloon_sink;
+    xSemaphoreGive(g_mutex);
+    if (!sink) return send_error(req, "503 Service Unavailable", "balloon sink not registered");
+    sink(text, hold_ms);
+    return send_json(req, R"({"ok":true})");
+}
+
+esp_err_t handle_mcp_state_get(httpd_req_t* req)
+{
+    if (mcp_gate(req) != ESP_OK) return ESP_OK;
+    // /api/status returns the full settings + runtime state for the web UI;
+    // /mcp/state is a Channel-oriented subset (no secrets, no chatbot
+    // provider fields). Mirrors the keys Claude is most likely to query.
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    const bool wifi_ok = g_wifi_connected;
+    const int bat_mv = g_battery_mv;
+    const int bat_pct = g_battery_pct;
+    const std::uint8_t board = g_board_kind;
+    xSemaphoreGive(g_mutex);
+
+    const esp_app_desc_t* desc = esp_app_get_description();
+    const std::string fw = desc ? desc->version : "unknown";
+    const std::string ip = current_wifi_ip();
+
+    char buf[256];
+    std::snprintf(buf, sizeof(buf),
+                  R"({"firmware":"%s","ip":"%s","wifi_connected":%s,"battery_mv":%d,"battery_pct":%d,"board":%u})",
+                  escape_json(fw).c_str(), escape_json(ip).c_str(),
+                  wifi_ok ? "true" : "false", bat_mv, bat_pct,
+                  static_cast<unsigned>(board));
+    return send_json(req, std::string{buf});
+}
+
 // --- Static root ---
 
 esp_err_t handle_root_get(httpd_req_t* req)
@@ -574,6 +702,12 @@ void register_handlers(httpd_handle_t server, const config::DeviceConfig& curren
     add(server, "/api/ota/data",        HTTP_POST, handle_ota_data_post);
     add(server, "/api/avatar-dsl",       HTTP_POST, handle_avatar_dsl_post);
     add(server, "/api/avatar-dsl/reset", HTTP_POST, handle_avatar_dsl_reset_post);
+    // Claude Code Channel adapter API (Bearer-gated). Empty
+    // CONFIG_MCP_API_TOKEN keeps these handlers registered but they 404.
+    add(server, "/mcp/say",              HTTP_POST, handle_mcp_say_post);
+    add(server, "/mcp/expression",       HTTP_POST, handle_mcp_expression_post);
+    add(server, "/mcp/balloon",          HTTP_POST, handle_mcp_balloon_post);
+    add(server, "/mcp/state",            HTTP_GET,  handle_mcp_state_get);
 }
 
 void set_wifi_connected(bool connected)
@@ -635,6 +769,28 @@ void set_avatar_bytecode_sink(AvatarBytecodeSink sink)
     }
     xSemaphoreTake(g_mutex, portMAX_DELAY);
     g_avatar_bytecode_sink = std::move(sink);
+    xSemaphoreGive(g_mutex);
+}
+
+void set_mcp_say_kana_sink(McpSayKanaSink sink)
+{
+    if (g_mutex == nullptr) { g_mcp_say_sink = std::move(sink); return; }
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_mcp_say_sink = std::move(sink);
+    xSemaphoreGive(g_mutex);
+}
+void set_mcp_expression_sink(McpExpressionSink sink)
+{
+    if (g_mutex == nullptr) { g_mcp_expression_sink = std::move(sink); return; }
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_mcp_expression_sink = std::move(sink);
+    xSemaphoreGive(g_mutex);
+}
+void set_mcp_balloon_sink(McpBalloonSink sink)
+{
+    if (g_mutex == nullptr) { g_mcp_balloon_sink = std::move(sink); return; }
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_mcp_balloon_sink = std::move(sink);
     xSemaphoreGive(g_mutex);
 }
 

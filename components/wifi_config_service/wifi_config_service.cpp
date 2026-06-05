@@ -97,7 +97,7 @@ tl::expected<httpd_handle_t, Error> start_http_server()
     cfg.server_port = 80;
     // Wide enough to hold all the /api/* routes (currently ~16) plus a few
     // for future growth without bumping again.
-    cfg.max_uri_handlers = 24;
+    cfg.max_uri_handlers = 32;
     // Stack MUST live in internal RAM: the OTA control handler calls
     // esp_ota_begin → esp_partition_mmap, which disables CPU cache while
     // remapping flash. PSRAM is cached, so a PSRAM-resident stack becomes
@@ -199,6 +199,19 @@ void set_board_kind(std::uint8_t kind)
 void set_avatar_bytecode_sink(AvatarBytecodeSink sink)
 {
     http::set_avatar_bytecode_sink(std::move(sink));
+}
+
+void set_mcp_say_kana_sink(McpSayKanaSink sink)
+{
+    http::set_mcp_say_kana_sink(std::move(sink));
+}
+void set_mcp_expression_sink(McpExpressionSink sink)
+{
+    http::set_mcp_expression_sink(std::move(sink));
+}
+void set_mcp_balloon_sink(McpBalloonSink sink)
+{
+    http::set_mcp_balloon_sink(std::move(sink));
 }
 
 } // namespace stackchan::wifi_config
