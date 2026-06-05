@@ -1,0 +1,25 @@
+# Phase 1 only: hardcoded bot token + chat-id via Kconfig. Replace with NVS-
+# backed runtime config (DeviceConfig::telegram_token / telegram_chat_id) in
+# Phase 4 — at which point this Kconfig surface goes away.
+menu "Telegram Bot (Stack-chan)"
+
+    config TELEGRAM_PHASE1_ENABLED
+        bool "Enable Phase 1 one-shot getUpdates probe"
+        default n
+        help
+            When enabled, app_main spawns a one-shot task that connects to
+            api.telegram.org over HTTPS and calls getUpdates once with a 5 s
+            timeout, then logs whatever JSON comes back. Used only during
+            initial bring-up. Set to "n" once the NVS-backed integration
+            (Phase 4) lands.
+
+    config TELEGRAM_PHASE1_BOT_TOKEN
+        string "Bot token (Phase 1 hard-coded)"
+        default ""
+        depends on TELEGRAM_PHASE1_ENABLED
+        help
+            Bot token issued by @BotFather, in the form "<digits>:<letters>".
+            Lives only in sdkconfig.defaults.local — never commit it. Empty
+            string disables the probe even if TELEGRAM_PHASE1_ENABLED is set.
+
+endmenu

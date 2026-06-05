@@ -38,6 +38,9 @@
 #include "speech.hpp"
 #include "wifi_audio.hpp"
 #include "wifi_sta.hpp"
+#ifdef CONFIG_TELEGRAM_PHASE1_ENABLED
+#include "telegram/telegram.hpp"
+#endif
 
 namespace {
 
@@ -575,6 +578,37 @@ extern "C" void app_main()
     stackchan::wifi_config::set_servo_range_mode_sink(&on_servo_range_mode);
     stackchan::wifi_config::set_servo_positions_getter(&servo_positions);
     stackchan::wifi_config::set_board_kind(static_cast<std::uint8_t>(board.kind()));
+
+#ifdef CONFIG_TELEGRAM_PHASE1_ENABLED
+    // Phase 1 throwaway: once Wi-Fi STA has an IP, fire ONE getUpdates request
+    // and log the result. Confirms HTTPS to api.telegram.org + token validity
+    // + JSON parse before we build the full polling loop in Phase 2. Token
+    // comes from sdkconfig.defaults.local (gitignored). 10 KiB stack — the
+    // request itself uses ~6 KiB for TLS + mbedtls scratch.
+    xTaskCreatePinnedToCore(
+        +[](void* /*arg*/) {
+            // Wait for STA connection. wifi_audio's reader does the same dance.
+            while (!stackchan::app::wifi_is_connected()) {
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
+            constexpr const char* token = CONFIG_TELEGRAM_PHASE1_BOT_TOKEN;
+            if (token[0] == '\0') {
+                ESP_LOGW(kTag, "telegram: CONFIG_TELEGRAM_PHASE1_BOT_TOKEN is empty, skipping probe");
+                vTaskDelete(nullptr);
+                return;
+            }
+            auto r = stackchan::telegram::get_updates_one_shot(token, /*offset=*/0, /*timeout_sec=*/5);
+            if (r) {
+                ESP_LOGI(kTag, "telegram phase1 probe OK (max_update_id=%lld)",
+                         static_cast<long long>(*r));
+            } else {
+                ESP_LOGE(kTag, "telegram phase1 probe FAILED: %s",
+                         stackchan::telegram::to_string(r.error()));
+            }
+            vTaskDelete(nullptr);
+        },
+        "tg_probe", 10240, nullptr, tskIDLE_PRIORITY + 2, nullptr, 1);
+#endif // CONFIG_TELEGRAM_PHASE1_ENABLED
 
     // Avatar face DSL bytecode: restore any user-uploaded override from NVS
     // (no-op when the slot is empty), then register the upload sink so

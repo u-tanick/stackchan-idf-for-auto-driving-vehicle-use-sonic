@@ -24,6 +24,7 @@ idf_component_register(
         config_service
         wifi_config_service
         jtts
+        telegram
         espressif__esp_audio_codec
         json
         M5Unified
