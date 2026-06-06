@@ -105,8 +105,12 @@ public:
     //   mode = 0: off, 1: solid, 2: breath (single-colour sine fade),
     //          3: gradient (rainbow cycle).
     //   brightness: 0..255 master gain applied after mode → strip.
-    std::atomic<std::uint8_t> led_mode{0}; // off until we trust the driver
-    std::atomic<std::uint32_t> led_color{0x00404040u};
+    // Boot in gradient (rainbow) mode so the strip cycles through colours
+    // continuously — also keeps the I2C path well-exercised, which is the
+    // ongoing soak test for the refresh_leds() RMW-elimination fix
+    // (docs/known_issues.md §1).
+    std::atomic<std::uint8_t> led_mode{3};       // 3 = kModeGradient (rainbow)
+    std::atomic<std::uint32_t> led_color{0x00404040u}; // ignored by gradient
     std::atomic<std::uint8_t> led_brightness{96};
 
     // Servo motion mask: true while audible speech output is in progress, so
