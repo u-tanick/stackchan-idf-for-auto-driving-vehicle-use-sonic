@@ -34,6 +34,7 @@
 #include <wifi_config_service/wifi_config_service.hpp>
 #include "conversation_task.hpp"
 #include "device_ui.hpp"
+#include "diag.hpp"
 #include "i2c_dump.hpp"
 #include "led_task.hpp"
 #include "render_task.hpp"
@@ -463,18 +464,29 @@ void demo_loop(const std::string& jtts_config_json, bool has_battery, bool is_at
 // memory"). Cheap to run; remove once the audio-tx refactor is settled.
 [[maybe_unused]] static void heap_monitor_task(void* /*arg*/)
 {
+    int tick = 0;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(10000));
         const std::size_t int_free  = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         const std::size_t int_big   = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+        const std::size_t dma_big   = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
         const std::size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
         const std::size_t psram_big  = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
         const std::size_t int_min   = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
         const std::size_t psram_min = heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM);
+        // DMA-largest is the gating metric for the esp-aes hardware path (TLS
+        // record bounce buffers) — INT-largest alone overstates what TLS can
+        // actually grab. See conversation_task.cpp's recover-wait gate.
         ESP_LOGI("heap",
-                 "INT free=%u (largest=%u, min=%u)  PSRAM free=%u (largest=%u, min=%u)",
+                 "INT free=%u (largest=%u, min=%u)  DMA largest=%u  PSRAM free=%u (largest=%u, min=%u)",
                  static_cast<unsigned>(int_free), static_cast<unsigned>(int_big), static_cast<unsigned>(int_min),
+                 static_cast<unsigned>(dma_big),
                  static_cast<unsigned>(psram_free), static_cast<unsigned>(psram_big), static_cast<unsigned>(psram_min));
+        // Every 60 s: per-task stack high-water marks, so stack budgets can be
+        // right-sized from measurement (guessed reductions broke boot twice).
+        if (++tick % 6 == 0) {
+            stackchan::app::diag_stack_hwm();
+        }
     }
 }
 
@@ -487,6 +499,11 @@ extern "C" void app_main()
     // monitor_log.py pulses DTR/RTS and shows up here as a USB/external reset,
     // so use `make monitor` (stays attached) to catch a *natural* crash reason.
     ESP_LOGW(kTag, "reset reason: %d", static_cast<int>(esp_reset_reason()));
+
+    // Log every failed heap alloc (size + caps + caller + remaining heap).
+    // This is how the esp-aes "Failed to allocate memory" finally gets a
+    // number attached — register before anything else can fail.
+    stackchan::app::diag_register_alloc_fail_hook();
 
     // Confirm the running image so the bootloader doesn't roll back on the
     // next reboot. CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y leaves freshly-OTA'd

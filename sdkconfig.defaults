@@ -16,8 +16,11 @@ CONFIG_COMPILER_OPTIMIZATION_PERF=y
 # Logging.
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 
-# Main task needs headroom for BLE provisioning (protocomm + TLS + NimBLE).
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
+# Main task (runs app_main → demo_loop forever, incl. jtts babble synthesis).
+# Measured peak use is ~3.9 KiB (diag_stack_hwm 2026-06-12: HWM=8432 of
+# 12288); 8 KiB leaves >4 KiB margin. The previous 12 KiB was budgeted for a
+# BLE-provisioning (protocomm) flow that no longer exists in this firmware.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 
 # Millisecond-granularity scheduling for the 33 ms / 20 ms task loops.
 CONFIG_FREERTOS_HZ=1000
@@ -156,3 +159,18 @@ CONFIG_ESP_WIFI_RX_BA_WIN=6
 #     it's mostly the DHM scratch, but every KiB helps the peak).
 CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=8192
 CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
+
+# SRAM-shortage diagnostics: enable uxTaskGetSystemState() so main/diag.cpp
+# can dump per-task stack high-water marks (the data the stack-size budget
+# decisions are based on — guessing sizes broke boot twice, see plan notes).
+# TCB cost is a few tens of bytes per task; ~10 tasks ≈ <1 KiB internal RAM.
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+
+# Wi-Fi static TX buffers are DMA-capable internal RAM, ~1.6 KiB each.
+# 16 was ~25.6 KiB of the exact pool conversation_task's seg_buf_ and the
+# TLS/esp-aes bounce buffers fight over at boot (measured: Wi-Fi bring-up
+# consumed ~39 KiB in the 2 s before conv-task init, leaving largest=7.6 KiB
+# and failing an 8 KiB alloc). Gemini Live keeps <6 frames in flight
+# (TX BA window = 6), so 10 buffers is still comfortable; failure mode if
+# exhausted is a TCP retransmit (latency, not loss).
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=10

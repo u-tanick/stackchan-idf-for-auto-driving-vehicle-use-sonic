@@ -7,6 +7,7 @@ idf_component_register(
         "audio_stream_sink.cpp"
         "conversation_task.cpp"
         "device_ui.cpp"
+        "diag.cpp"
         "face_config.cpp"
         "i2c_dump.cpp"
         "led_task.cpp"
