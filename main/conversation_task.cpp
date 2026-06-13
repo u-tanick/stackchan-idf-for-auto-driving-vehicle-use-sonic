@@ -53,8 +53,10 @@ constexpr std::uint32_t kEnvelopeStepMs = 16;
 // (choppy playback). So the reply is accumulated in PSRAM but played back in
 // segments copied into this small internal-RAM ring — the speaker only ever
 // reads from fast SRAM. 3 buffers: M5.Speaker holds 2, we always have 1 free.
-constexpr std::size_t kSegmentSamples = 4096;  // ~512 ms per segment at 8 kHz
-constexpr std::size_t kSegmentBuffers = 3;
+// The sizes live in conversation_task.hpp so app_main can pre-allocate the
+// ring at boot — see ConversationTaskArgs::seg_buf.
+constexpr std::size_t kSegmentSamples = kConversationSegmentSamples;
+constexpr std::size_t kSegmentBuffers = kConversationSegmentBuffers;
 constexpr int kSpeakerChannel = 0;
 
 // Streaming playback: start speaking once this many ms of reply audio has
@@ -182,13 +184,15 @@ class Coordinator {
 public:
     Coordinator(SharedState& state, const char* api_key, config::Provider provider,
                 board::Si12tTouch* touch, const char* xiaozhi_url, const char* xiaozhi_token,
-                const char* system_prompt, const char* extra_headers)
+                const char* system_prompt, const char* extra_headers,
+                const std::array<std::int16_t*, kSegmentBuffers>& seg_buf)
         : state_{state}, api_key_{api_key != nullptr ? api_key : ""},
           provider_{provider}, touch_{touch},
           xiaozhi_url_{xiaozhi_url != nullptr ? xiaozhi_url : ""},
           xiaozhi_token_{xiaozhi_token != nullptr ? xiaozhi_token : ""},
           system_prompt_{system_prompt != nullptr ? system_prompt : ""},
-          extra_headers_{extra_headers != nullptr ? extra_headers : ""}
+          extra_headers_{extra_headers != nullptr ? extra_headers : ""},
+          seg_buf_{seg_buf}
     {
         // Per-provider audio rates. The OpenAI client further compands its
         // 8 kHz PCM16 into µ-law on the wire; Gemini sends raw PCM16; XiaoZhi
@@ -228,13 +232,17 @@ public:
         mic_buf_[1].resize(mic_chunk_samples_);
 
         // Segment ring must live in internal RAM (see kSegmentSamples comment).
-        // The Coordinator object itself is heap-allocated and large enough to
-        // land in PSRAM, so these can't just be member arrays.
-        for (auto& buf : seg_buf_) {
-            buf = static_cast<std::int16_t*>(
-                heap_caps_malloc(kSegmentSamples * sizeof(std::int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        // Allocation now happens in app_main during the boot-time
+        // low-fragmentation window — see ConversationTaskArgs::seg_buf. If
+        // app_main couldn't reserve them (extremely tight internal RAM at
+        // boot), we get nullptr entries here and disable the task instead
+        // of trying to alloc late and failing harder.
+        for (auto* buf : seg_buf_) {
             if (buf == nullptr) {
-                ESP_LOGE(kTag, "failed to allocate internal-RAM segment buffer");
+                ESP_LOGE(kTag,
+                         "seg_buf not provided by app_main — conversation disabled "
+                         "(boot-time internal-RAM reservation failed)");
+                state_.conversation_status.store(ConvStatus::Error, std::memory_order_relaxed);
                 vTaskDelete(nullptr);
                 return;
             }
@@ -970,7 +978,7 @@ void conversation_task_entry(void* arg)
     auto& args = *static_cast<ConversationTaskArgs*>(arg);
     auto* coordinator = new Coordinator(*args.state, args.api_key, args.provider, args.touch,
                                         args.xiaozhi_url, args.xiaozhi_token, args.system_prompt,
-                                        args.extra_headers);
+                                        args.extra_headers, args.seg_buf);
     coordinator->run();
     // run() only returns by deleting the task; keep the object alive regardless.
     vTaskDelete(nullptr);

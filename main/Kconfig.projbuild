@@ -1,0 +1,22 @@
+# Project-build-level Kconfig for stackchan-idf main.
+#
+# Currently only the Phase 1+2 QR scanner test trigger lives here. Once Phase
+# 3 lands (device_ui タブから start_qr_scan を呼ぶ) this entry will be removed
+# — it's only a temporary boot-time switch for bring-up.
+
+menu "Stack-chan QR scanner (Phase 1+2 test)"
+
+    config STACKCHAN_QR_TEST_AT_BOOT
+        bool "Auto-start QR scan ~30 s after boot"
+        default n
+        depends on STACKCHAN_CAMERA_ENABLED
+        help
+            Phase 1/2 bring-up only. With this set, app_main spawns a
+            single-shot task that waits 30 s (so M5 init, Wi-Fi, BLE, the
+            speaker arpeggio, and demo_loop's babble can all stabilise),
+            then calls start_qr_scan(board). Decoded payloads end up in the
+            serial log under the "qr" tag. Once the Phase 3 device_ui tab
+            is in, this option goes away — the user will start/stop the
+            scanner from the touchscreen.
+
+endmenu

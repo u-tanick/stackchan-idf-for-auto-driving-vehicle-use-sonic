@@ -1,0 +1,74 @@
+# Board-level Kconfig: camera enablement + GC0308 DVP pin overrides.
+#
+# Camera support is OFF by default. Enable it only for board variants that
+# physically ship the GC0308 — currently the M5Stack CoreS3 main module. The
+# atoms3r firmware MUST leave this off so it can build without pulling in
+# the esp32-camera managed component.
+
+menu "Stack-chan board"
+
+    config STACKCHAN_CAMERA_ENABLED
+        bool "Enable GC0308 DVP camera driver (CoreS3 only)"
+        default n
+        help
+            Compile the components/board/camera_gc0308.cpp wrapper and link
+            espressif/esp32-camera. Set to "y" for CoreS3 builds (see
+            sdkconfig.defaults.cores3) and leave at "n" for AtomS3R — the
+            AtomS3R targets do not carry a GC0308 and trying to init the
+            sensor at boot would hang on a missing I2C ACK from 0x21.
+
+    if STACKCHAN_CAMERA_ENABLED
+
+        comment "GC0308 DVP pinmap (CoreS3 mainboard defaults)"
+
+        config STACKCHAN_CAMERA_PIN_PCLK
+            int "PCLK GPIO"
+            default 45
+
+        config STACKCHAN_CAMERA_PIN_VSYNC
+            int "VSYNC GPIO"
+            default 46
+
+        config STACKCHAN_CAMERA_PIN_HREF
+            int "HREF GPIO"
+            default 38
+
+        config STACKCHAN_CAMERA_PIN_SIOD
+            int "SIOD (SCCB SDA) GPIO"
+            default 12
+            help
+                Shared with the internal M5Unified I2C SDA — esp32-camera owns
+                SCCB independently of m5::In_I2C.
+
+        config STACKCHAN_CAMERA_PIN_SIOC
+            int "SIOC (SCCB SCL) GPIO"
+            default 11
+
+        config STACKCHAN_CAMERA_PIN_D0
+            int "D0 (Y2) GPIO"
+            default 39
+        config STACKCHAN_CAMERA_PIN_D1
+            int "D1 (Y3) GPIO"
+            default 40
+        config STACKCHAN_CAMERA_PIN_D2
+            int "D2 (Y4) GPIO"
+            default 41
+        config STACKCHAN_CAMERA_PIN_D3
+            int "D3 (Y5) GPIO"
+            default 42
+        config STACKCHAN_CAMERA_PIN_D4
+            int "D4 (Y6) GPIO"
+            default 15
+        config STACKCHAN_CAMERA_PIN_D5
+            int "D5 (Y7) GPIO"
+            default 16
+        config STACKCHAN_CAMERA_PIN_D6
+            int "D6 (Y8) GPIO"
+            default 48
+        config STACKCHAN_CAMERA_PIN_D7
+            int "D7 (Y9) GPIO"
+            default 47
+
+    endif # STACKCHAN_CAMERA_ENABLED
+
+endmenu

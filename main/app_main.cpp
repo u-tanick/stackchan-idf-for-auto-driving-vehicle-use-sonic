@@ -39,6 +39,7 @@
 #include "i2c_dump.hpp"
 #include "led_task.hpp"
 #include "lt_timer.hpp"
+#include "qr_task.hpp"
 #include "render_task.hpp"
 #include "servo_limits.hpp"
 #include "servo_task.hpp"
@@ -540,6 +541,42 @@ extern "C" void app_main()
     }
     auto& board = *board_result;
 
+    // Reserve the conversation task's internal-RAM speaker ring *now*, before
+    // anything else has a chance to chew up DRAM. The conversation task itself
+    // doesn't start until Wi-Fi associates (~12 s in), and by then other
+    // subsystems (camera link's IRAM overhead, mbedtls sessions, BLE pools,
+    // SSE monitor stack, …) have driven the largest contiguous internal-RAM
+    // block below the 8 KiB we need per segment, and the alloc fails. Doing it
+    // here (right after Board::begin(), largest ≈ 29 KiB) is the only stable
+    // window. Ownership lives here — conv-task only reads from these buffers
+    // and never frees them. nullptr on failure → conv-task disables itself
+    // cleanly, the rest of the firmware keeps running.
+    std::array<std::int16_t*, stackchan::app::kConversationSegmentBuffers> g_conv_seg_buf{};
+    {
+        bool all_ok = true;
+        for (auto& buf : g_conv_seg_buf) {
+            buf = static_cast<std::int16_t*>(heap_caps_malloc(
+                stackchan::app::kConversationSegmentSamples * sizeof(std::int16_t),
+                MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+            if (buf == nullptr) {
+                all_ok = false;
+            }
+        }
+        if (all_ok) {
+            const std::size_t largest =
+                heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+            ESP_LOGI(kTag,
+                     "seg_buf reserved early: %ux%u B internal (largest now=%u B)",
+                     static_cast<unsigned>(stackchan::app::kConversationSegmentBuffers),
+                     static_cast<unsigned>(stackchan::app::kConversationSegmentSamples *
+                                           sizeof(std::int16_t)),
+                     static_cast<unsigned>(largest));
+        } else {
+            ESP_LOGE(kTag,
+                     "failed to reserve seg_buf at boot — conversation will be disabled");
+        }
+    }
+
     // Diagnostic register dump of the internal-I2C chips (AXP2101 / AW9523 /
     // PY32). Read-only; needed for debugging the recurring "LCD backlight off
     // after LED init" issue — the dump captures whatever state the chips
@@ -903,7 +940,8 @@ extern "C" void app_main()
         .state = g_state, .api_key = api_key, .provider = cfg.provider, .touch = g_touch,
         .xiaozhi_url = xiaozhi_url, .xiaozhi_token = xiaozhi_token,
         .system_prompt = cfg.system_prompt.c_str(),
-        .extra_headers = cfg.conv_extra_headers.c_str()};
+        .extra_headers = cfg.conv_extra_headers.c_str(),
+        .seg_buf = g_conv_seg_buf};
 
     // On-device UI is per-board: CoreS3 gets the 5-tab touchscreen settings UI,
     // Atom-nyan gets the minimal status overlay toggled by USER_BUT. Only one
@@ -969,6 +1007,25 @@ extern "C" void app_main()
         tskIDLE_PRIORITY + 1, nullptr, 0);
 
     ESP_LOGI(kTag, "ready");
+
+#if CONFIG_STACKCHAN_QR_TEST_AT_BOOT
+    // Phase 1+2 bring-up trigger: spawn a one-shot waiter that defers the
+    // QR scanner spin-up until 30 s after `ready`, giving Wi-Fi STA, BLE
+    // advertising, mic test, conversation task, etc. time to settle so
+    // their internal-RAM allocations don't race the camera DMA descriptors.
+    // Replaced by a device_ui (Phase 3) start/stop button — remove this
+    // block when that lands.
+    xTaskCreatePinnedToCore(
+        +[](void* arg) {
+            auto* b = static_cast<stackchan::board::Board*>(arg);
+            vTaskDelay(pdMS_TO_TICKS(30000));
+            ESP_LOGI(kTag, "QR test: starting scanner (boot+30s)");
+            (void)stackchan::app::start_qr_scan(*b);
+            vTaskDelete(nullptr);
+        },
+        "qr_boot", 3072, &board, tskIDLE_PRIORITY + 1, nullptr, 0);
+#endif
+
     demo_loop(cfg.jtts_config_json, board.has_battery(), is_atom_nyan,
               cfg.openai_enabled, servo_limits);
 }

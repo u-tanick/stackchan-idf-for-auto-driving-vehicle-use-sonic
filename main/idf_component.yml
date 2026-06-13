@@ -1,2 +1,9 @@
 dependencies:
   espressif/esp_audio_codec: "^2.5.0"
+  # GC0308 DVP camera + QR decoder for the connpass-QR feature. Both are
+  # gated on the CONFIG_STACKCHAN_CAMERA_ENABLED Kconfig knob (see
+  # components/board/Kconfig) so the atoms3r profile, which has no GC0308,
+  # never compiles or links them — that's what the `rules:` block below is
+  # for in the IDF component manager manifest.
+  espressif/esp32-camera: "^2.0.15"
+  espressif/quirc: "^1.2.0"

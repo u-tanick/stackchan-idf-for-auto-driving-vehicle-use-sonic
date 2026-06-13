@@ -10,3 +10,42 @@ CONFIG_SPIRAM_SPEED_80M=y
 # 16 MB external SPI flash (W25Q128 footprint on the CoreS3 PCB).
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# GC0308 DVP camera (CoreS3 mainboard) — Phase 1+2 connpass-QR feature.
+# Pulls espressif/esp32-camera + espressif/quirc into the build and
+# unlocks components/board/camera_gc0308.cpp. Pin defaults live in
+# components/board/Kconfig and target the CoreS3 mainboard wiring.
+CONFIG_STACKCHAN_CAMERA_ENABLED=y
+# Put the per-frame DMA bounce in PSRAM so the QVGA grayscale buffer
+# (≈75 KiB) doesn't fight the steady ~10 KiB internal-RAM headroom that
+# TLS / esp-aes / NimBLE already lean on. ESP32-S3 specific knob in
+# esp32-camera — safe to set unconditionally here because the cores3 profile
+# is the only one that flips STACKCHAN_CAMERA_ENABLED to y.
+CONFIG_CAMERA_PSRAM_DMA=y
+
+# --- esp32-camera sensor selection ---
+# Disable every sensor driver except GC0308 (the only sensor on the CoreS3
+# mainboard).  Each disabled driver would otherwise contribute its register-
+# initialisation tables to .dram0.data / .dram1.* inside .dram0.data, eating
+# internal RAM that TLS / esp-aes / NimBLE need at Wi-Fi bring-up:
+#   hm1055  ≈ 2648 B, hm0360 ≈ 1864 B, nt99141 ≈ 1733 B,
+#   ov3660  ≈  991 B, ov5640  ≈  755 B, ov2640  ≈  654 B,
+#   ov7670  ≈  152 B, + smaller contributions from ov7725 / gc2145 / gc032a /
+#   bf3005 / bf20a6 / sc030iot / mega_ccm.
+# Total expected saving: ~9–10 KB of static DRAM, eliminating the heap-
+# corruption / esp_timer panic seen at Wi-Fi peak.
+CONFIG_OV7670_SUPPORT=n
+CONFIG_OV7725_SUPPORT=n
+CONFIG_NT99141_SUPPORT=n
+CONFIG_OV2640_SUPPORT=n
+CONFIG_OV3660_SUPPORT=n
+CONFIG_OV5640_SUPPORT=n
+CONFIG_GC2145_SUPPORT=n
+CONFIG_GC032A_SUPPORT=n
+CONFIG_GC0308_SUPPORT=y
+CONFIG_BF3005_SUPPORT=n
+CONFIG_BF20A6_SUPPORT=n
+CONFIG_SC030IOT_SUPPORT=n
+CONFIG_HM1055_SUPPORT=n
+CONFIG_HM0360_SUPPORT=n
+CONFIG_MEGA_CCM_SUPPORT=n

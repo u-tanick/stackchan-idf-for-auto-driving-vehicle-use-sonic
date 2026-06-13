@@ -1,0 +1,11 @@
+dependencies:
+  # GC0308 DVP camera driver. Gated at compile time by the
+  # CONFIG_STACKCHAN_CAMERA_ENABLED Kconfig knob; the manifest pulls the
+  # managed component in for both cores3 and atoms3r builds, but
+  # camera_gc0308.cpp #ifdefs out everything (esp_camera.h #include + every
+  # function body) when the knob is off, so atoms3r links cleanly without
+  # exercising the driver. Keeping the dep here is what makes the IDF
+  # component manager wire esp_camera.h into the board component's include
+  # path — the CMake PRIV_REQUIRES list alone is not enough when the
+  # component lives under managed_components.
+  espressif/esp32-camera: "^2.0.15"
