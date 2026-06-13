@@ -552,9 +552,11 @@ SPDX-License-Identifier: BSL-1.0
                 btnMonitorStart.disabled = true;
                 btnMonitorStop.disabled = false;
 
-                const monitor = { active: true, reader: null };
+                const monitor = { active: true, reader: null, donePromise: null };
                 state.monitor = monitor;
-                runMonitorLoop(monitor).catch((e) => {
+                // Track loop completion so stopMonitor can wait for the
+                // reader lock to actually release before closing the port.
+                monitor.donePromise = runMonitorLoop(monitor).catch((e) => {
                     logErr(`monitor ループ例外: ${e?.message ?? e}`);
                 });
             }
@@ -600,7 +602,20 @@ SPDX-License-Identifier: BSL-1.0
                 if (!m) return;
                 m.active = false;
                 try { await m.reader?.cancel(); } catch (_) {}
-                logInfo("Monitor 停止要求");
+                // Wait for runMonitorLoop's finally to releaseLock() the
+                // reader, otherwise port.close() throws because the readable
+                // stream is still locked.
+                if (m.donePromise) {
+                    try { await m.donePromise; } catch (_) {}
+                }
+                // Release the port itself. startMonitor opens it directly
+                // (not via esptool-js Transport), so without this the next
+                // flash's Transport.connect() hits "The port is already open".
+                if (state.port && (state.port.readable || state.port.writable)) {
+                    try { await state.port.close(); }
+                    catch (e) { logWarn(`port.close 失敗: ${e?.message ?? e}`); }
+                }
+                logInfo("Monitor 停止");
             }
 
             async function resetBoard() {
@@ -760,17 +775,21 @@ SPDX-License-Identifier: BSL-1.0
                     logErr(`flash_request id=${req.id} を拒否: シリアル ポート未選択`);
                     return;
                 }
-                // Monitor が動いていれば先に停止 — esptool-js Transport が
-                // port.readable を握り直せないと writeFlash が即失敗する。
-                if (state.monitor && state.monitor.active) {
-                    logInfo("flash のため Monitor を一時停止します。");
-                    stopMonitor();
-                }
                 state.pendingFlash = {
                     req,
                     sections: req.sections.map((s) => ({ meta: s, data: null })),
                     received: 0,
+                    // If a monitor session is in flight, kick off its
+                    // teardown now and let handleBinaryFrame await this
+                    // before runFlash kicks off syncChip. We don't await
+                    // here because binary frames may arrive on the WS
+                    // before stopMonitor finishes — they must be accepted.
+                    readyPromise: null,
                 };
+                if (state.monitor) {
+                    logInfo("flash のため Monitor を一時停止します。");
+                    state.pendingFlash.readyPromise = stopMonitor();
+                }
                 logInfo(`flash_request id=${req.id} sections=${req.sections.length} chip=${req.chip ?? chipInput.value}`);
             }
 
@@ -794,7 +813,15 @@ SPDX-License-Identifier: BSL-1.0
                 logInfo(`section ${pending.received}/${pending.sections.length} 受信: ${slot.meta.name ?? "?"} (${buf.byteLength} bytes)`);
 
                 if (pending.received === pending.sections.length) {
-                    runFlash(pending).catch((e) => {
+                    (async () => {
+                        // Make sure any in-flight monitor teardown finished
+                        // and released the port before syncChip tries to
+                        // open it through esptool-js Transport.
+                        if (pending.readyPromise) {
+                            try { await pending.readyPromise; } catch (_) {}
+                        }
+                        await runFlash(pending);
+                    })().catch((e) => {
                         logErr(`flash タスク例外: ${e?.message ?? e}`);
                     });
                 }
