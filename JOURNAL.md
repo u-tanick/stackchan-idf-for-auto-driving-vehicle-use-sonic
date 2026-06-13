@@ -9,6 +9,240 @@ stackchan-idf の機能追加・修正の記録。新しいエントリを上に
 
 ---
 
+## 2026-06 (中旬) — Claude Code Channel / LT / QR / remote flasher
+
+このシーズンは「外部連携」と「機能追加」が混在。MCP Channel での Claude
+からの遠隔操作、LT タイムキーパー、カメラ QR、VPN 越し flash 中継、と
+独立した 4 つの機能を立ち上げつつ、内部 SRAM の慢性的枯渇と何度か向き合った。
+
+### MCP (Claude Code Channel) adapter — Phase 1 〜 3 + 安定化
+
+コミット: `ec0b7d7` (Phase 1), `e854c8c` (Phase 2 SSE), `cee6a68` (Phase 3 token),
+`c849391` (Phase 2 hotfix), `fc23e8d` (WDT 対策)
+
+- **Phase 1**: firmware に `/mcp/say`, `/mcp/expression`, `/mcp/balloon`,
+  `/mcp/state` REST API (Bearer auth、`CONFIG_MCP_API_TOKEN`)。
+  `tools/stackchan-channel/` に Bun stdio MCP adapter (4 tool 公開)。
+- **Phase 2 (push events)**: firmware 側 `GET /mcp/events` を SSE
+  (`text/event-stream`) で実装。adapter 側で long-poll してイベント
+  (`boot` / `touch` / `say_done` / `conversation_state`) を MCP
+  `notifications/claude/channel/event` に転送。
+- **Phase 2 hotfix**: 当初 `/mcp/events` ハンドラがシリアル設計だったため
+  esp_http_server の worker thread が長期間ブロック → `/mcp/say` が
+  ~50s タイムアウト。`httpd_req_async_handler_begin` でリクエストを
+  別タスクへ移譲、httpd worker を解放。`mcp_say` worker stack の
+  `xTaskCreatePinnedToCoreWithCaps + MALLOC_CAP_SPIRAM` 化。
+- **Phase 3 (NVS-backed token)**: `DeviceConfig::mcp_api_token` + NVS
+  key `mcp_token`、BLE chr `0x1d` (write-only)、HTTP `POST /api/mcp-token`、
+  Web UI 両方 (settings.html / settings_wifi.html) にランダム生成/表示/
+  クリア ボタン。Kconfig 値はフォールバックとして残す。
+- **WDT 対策**: CPU 1 飽和で IDLE1 が 5 秒以上動けず task_wdt 発火 →
+  画面 touch も取りこぼし。`mcp_say` worker を CPU 0 へ移動、LED gradient
+  を 30Hz → 10Hz に。これで実用負荷でも task_wdt は出なくなった。
+- **MCP tunnels (Anthropic 公式)**: 調査の結果 Claude Code は非対応
+  (Managed Agents / Messages API のみ)。現状の Cloudflare Tunnel + 直
+  HTTP URL が Claude Code 向けには唯一の現実的選択肢。外部アクセスの
+  最終決定 (Cloudflare Tunnel か Tailscale か) は別途。
+
+### 内部 SRAM 削減 — 計装と sdkconfig 段階的削減
+
+コミット: `e1eb28f`
+
+- 過去 2 回「推測スタック縮小」が heap layout shift で boot を壊した
+  ので、まず計装を入れて実測ベースに切り替えた。
+- 新規 `main/diag.{hpp,cpp}` — `heap_caps_register_failed_alloc_callback`
+  で全 alloc 失敗を log (size + caps + 呼出元 + 残量)、`uxTaskGetSystem
+  State` で全タスク stack HWM を 60 秒ごと dump、`MALLOC_CAP_DMA largest`
+  (esp-aes が実際に依存する pool) を heap log に追加。
+- `CONFIG_FREERTOS_USE_TRACE_FACILITY=y` を defaults に。
+- `CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM` 16 → 10 (1 個 ~1.6 KB の
+  DMA-capable 内部 RAM、Gemini Live の in-flight TX < 6 frames なので
+  10 で十分): +9.6 KB
+- `CONFIG_ESP_MAIN_TASK_STACK_SIZE` 12288 → 8192 (HWM 実測 3.9 KB): +4 KB
+- 実測効果: boot 時 INT free 59.2 → 73.7 KB、steady free 24.4 → 33.7 KB、
+  **INT min (handshake 谷) 0.5 → 8.7 KB**。
+- 残: NimBLE msys / MBEDTLS_SSL_IN_CONTENT_LEN は Phase B 候補として保留。
+- 一度 plan α (mcp_say singleton + 小タスク縮小) を試したが、boot 時の
+  largest=29 KB の取り合いで seg_buf_ alloc を壊し全 revert。**「boot
+  時の largest 29 KB は conv-task の 3×8 KB seg_buf_ + WS task に既に
+  予約されている」が学び**。後の QR 実装でも同じ罠を踏み、最終的に
+  conv-task seg_buf を app_main で boot 直後に予約 (詳細は QR 節)。
+
+### NVS 永続 servo enable トグル
+
+コミット: `d08b6c5`
+
+- `DeviceConfig::servo_enabled` (NVS key `srv_en`、default true) + BLE
+  chr `0x1c` + HTTP `/api/servo-enabled` + 本体タッチ UI Settings タブ
+  に「サーボ (恒久)」行を追加 (kSettingsRowH=36 で 5 行収容)。
+- `kServoDisabledForDebug` constexpr を撤去、`cfg.servo_enabled` で
+  起動時 VM 電源 + servo_task spawn をゲート。
+- `SharedState::servo_enabled` (操作画面のランタイム脱力/復帰) とは別物
+  と明記。
+
+### LED デフォルト点灯を gradient (rainbow) に
+
+コミット: `dcb3ef4`
+
+- LED ドライバ動作確認が取れたので `shared_state.hpp` のデフォルトを
+  `kModeGradient` (6 秒で 1 周) に。I2C 書込みパスが継続的に exercise
+  されるので lgfx mutex race の soak test を兼ねる。
+
+### LED 動作復活 (RGB565 LE + refresh_leds の RMW 排除)
+
+コミット: `12eb3be`
+
+- `LedStrip` のバッファ形式を 3-byte RGB → 2-byte RGB565 LE に修正
+  (PY32 firmware が実際に期待する形式、docs/py32_ioexpander.md §6)。
+- `Py32Expander::refresh_leds()` を read-modify-write から
+  `last_count_ | bit6` の単一 write に。1 フレームの I2C トランザクション
+  3 → 2 で lgfx i2c mutex race (xTaskPriorityDisinherit) の発生率を抑制。
+- gemini-live セッション継続下で 1 時間連続稼働、リブート 0 を確認。
+
+### AXP2101 boot 破損調査ツール
+
+コミット: `07dc1c5`
+
+- `main/i2c_dump.{hpp,cpp}` — AXP2101 / AW9523 / PY32 のレジスタを xxd
+  形式で dump。HW 焼込み定数 (AXP2101 OTP=0x4A、AW9523 ID=0x23、PY32
+  FW=0x41) を sanity beacon として MATCH/MISMATCH 表示。2 連読みで `*`
+  揺らぎマーカー。
+- `tools/i2c_decode.py` — Saleae Logic 2 の I2C CSV を「論理レジスタ
+  アクセス 1 行」に畳み込む Python ツール。
+- 既知 issue ([docs/known_issues.md §2](docs/known_issues.md)): M5 base
+  接続時に AXP2101 内部レジスタが破損して LCD バックライト消灯。
+  異常 boot キャプチャ待ち。
+
+### LT (ライトニング トーク) タイムキーパー + Module Audio (ES8388) 対応
+
+コミット: `7191806`
+
+- **タイマー コア** (`main/lt_timer.{hpp,cpp}`): demo_loop が毎周期
+  tick。UI から `lt_command` (1=start, 2=stop) を exchange 消費。状態は
+  `lt_active` / `lt_remaining_s` (負値 = 超過カウントアップ)。通知は
+  `Speech::say()` (任意かな対応に新設) で発話 → 口パク追従、吹き出し
+  4 秒。設定 JSON: `{"total_s","warn_s","repeat_s","warn":{text,reading},
+  "over":{text,reading}}`、`repeat_s=0` で超過通知 1 回のみ。
+- **本体 UI**: 6 番目のタブ「LT」。大型 mm:ss 表示 (残り 1 分で黄色、
+  超過で赤 + マイナス)、3/5/10 分プリセット (実行中ロック)、スタート/
+  ストップ ボタン。
+- **設定 plumbing** (face_config と同じ live-apply パターン):
+  `DeviceConfig::lt_config_json` + NVS key `lt_cfg`、BLE chr `0x1e`
+  (暗号化 READ/WRITE)、HTTP `POST /api/lt-config`、`SharedState::set_lt_
+  config` + version カウンタを demo_loop が poll してホスト タスクの
+  スタックで JSON parse しない構造。settings.html / settings_wifi.html
+  両方に設定フォーム。
+- **Module Audio (M144 / ES8388)** 同梱: `components/board/audio_module_
+  es8388.{hpp,cpp}`。boot 時に I2C 0x10 を probe (バス スキャンはしない)、
+  検出時のみ ES8388 を I2S slave 16-bit DAC playback に init し、
+  M5.Speaker config に `pin_mck=GPIO0` (Config B ジャンパ位置) を追加。
+  AW9523 への盲書込みはしない (AXP2101 事故の教訓)。レジスタ列は
+  M5Unified の Tab5 ES8388 実装から移植。**モジュール未到着、検証保留**。
+- 実機確認: 残り通知 / 超過通知 / 30 秒繰り返し / プリセット / HTTP
+  live-apply (total_s=60 がタブ表示に即反映) を OK。
+
+### QR スキャナ (camera + quirc) — Phase 1 + 2 + メモリ構造修正
+
+コミット: `7c97d86`
+
+- `components/board/camera_gc0308.{hpp,cpp}`: M5CoreS3 上流の GC0308.cpp
+  と完全一致の camera_config_t (pin_xclk=-1 内蔵 OSC、SCCB 12/11、データ
+  39/40/41/42/15/16/48/47、VSYNC=46 HREF=38 PCLK=45)、QVGA grayscale、
+  fb_location=PSRAM。`begin()` は largest >= 12 KiB のフロアチェック →
+  `m5::In_I2C.release()` (lgfx I2C と SCCB が GPIO12/11 を共有) →
+  `esp_camera_init`。**AW9523 への盲書込みは行わない**。
+- `main/qr_task.{hpp,cpp}`: `start_qr_scan(Board&)` / `stop_qr_scan()`。
+  worker は **5 KiB 内部 RAM stack** (8 KiB だと largest=7424 で alloc 失敗
+  したので絞った。quirc 1.2 の flood_fill は explicit-stack で C-stack 再帰
+  なしと検証済)、CPU 0 prio idle+2、3 秒の同一ペイロード抑制。
+- `main/Kconfig.projbuild`: `STACKCHAN_QR_TEST_AT_BOOT` (default n) で
+  boot+30s に scan を 1 度起動するテスト パス。P3 で device_ui に移植予定。
+- **重大なメモリ再構成**: conversation_task の 3×8 KiB seg_buf_ を
+  「Wi-Fi up 時点 (largest=10 KiB)」に確保していたのを `app_main` が
+  Board::begin() 直後 (largest=29 KiB) に予約 → `ConversationTaskArgs::
+  seg_buf` で渡す方式へ。これで esp32-camera リンクで .dram0.data が
+  増えても conv-task が壊れない。失敗時は nullptr で conversation のみ
+  自動 disable。
+- **esp32-camera センサー絞り込み**: GC0308 以外 14 種 (OV7670/OV2640/
+  HM1055 等) のドライバを Kconfig で無効化、.dram0.data -8.8 KiB。
+- **未検証**: 実機での QR 提示 → `qr: decoded:` ログ確認は会話 OFF に
+  してから別途。前回の試行で「Wi-Fi bring-up のピークで内部 RAM が
+  枯渇 → coex の esp_timer 操作中に timer リスト破損で panic」という
+  連鎖を 2 回経験しているので、最終的な定常動作確認はまだ。
+- Phase 3 (device_ui タブ) / Phase 4 (BLE 通知) は P1+P2 検証後に着手。
+
+### Remote flasher — VPN 越しブラウザ経由で ESP を flash する中継
+
+コミット: `91acefc`
+
+- **背景**: 開発機が VPN の向こうにあり、ESP はホスト LAN にぶら下がっている
+  状況で「リモートの Claude Code / CI から idf.py flash したい」を解決。
+- **ホスト側 Bun サーバー** (`tools/remote-flasher/server/server.ts`):
+  単一ファイル、外部 npm 依存ゼロ。`POST /flash` (multipart、`meta` JSON
+  + 各セクションのファイル パート) を受けて SSE で progress / done を流す。
+  `GET /ws` でブラウザ クライアント 1 接続のみ (排他)。`POST /reset`、
+  15 秒 ping、5 分タイムアウト、ブラウザ未接続 → 503、flash 中 → 409。
+- **ブラウザ側 Web UI** (`tools/remote-flasher/web/`): index.html
+  単一ページ + esptool-js v0.5.7 を bun build で IIFE bundle (~182 KB)。
+  WebSerial で実機 port を選択 → ESPLoader.main() でチップ自動判別 →
+  WS 接続 → flash_request 受信 → ESPLoader.writeFlash → progress/done
+  を WS で返信。ダーク テーマ。WebSerial 非対応ブラウザは検出して無効化。
+- **プロトコル文書** (`tools/remote-flasher/PROTOCOL.md`): host→browser
+  は flash_request JSON 直後にバイナリ フレーム N 個を連送 (1 セクション
+  = 1 frame、宣言順)。browser→host は hello / progress / done / log /
+  pong。ライフサイクル図 + エラー処理 + SSE と HTTP ステータスの境界。
+- **統合テスト** (本セッション、WS スタブ): サーバー起動 → no-browser
+  /flash で 503 → WS スタブ接続 → multipart /flash (2 セクション 1KB+
+  2KB) → flash_request JSON + バイナリ フレーム 2 個 (順序・サイズ一致)
+  → スタブが progress×2 + done を返信 → /flash の SSE レスポンスに
+  正しく転送 → /reset → WS reset フレーム送信。**全パス**。
+- **実機確認は未** (本物の WebSerial + ESP32 chip)。次は curl ラッパ
+  スクリプト (`build-cores3/` から bootloader/partition/app を集めて
+  POST する `flash-current-build.sh` 的なもの) を追加する。
+
+### 持ち越し課題 (このセッション分)
+
+- **QR 実機テスト**: 会話 OFF にしてから boot+30s スキャン → QR 提示
+  → `qr: decoded:` 確認。前回 8 KiB stack で alloc 失敗 → 5 KiB に絞った
+  版を flash 済み (未テスト)。
+- **Module Audio (ES8388)** 実機検証: ハードウェア到着待ち。
+- **AXP2101 broken-boot キャプチャ**: 再発時に Saleae で取得 →
+  `tools/i2c_decode.py` で解析、の予定。
+- **SRAM Phase B** (NimBLE msys / MBEDTLS_SSL_IN_CONTENT_LEN): conv-task
+  再接続で esp-aes 失敗が再発したら手をつける。`min=8679` まで回復した
+  ので長時間運用しないと再発しないはず。
+- **Remote flasher curl ラッパ**: `tools/remote-flasher/flash-current-
+  build.sh` で `make build` 後のバイナリを POST するスクリプト。**次の
+  作業対象**。
+- **QR Phase 3 (device_ui タブ) + Phase 4 (BLE 通知)**: P1+P2 実機検証後。
+- **AtomS3R Phase 2**: スコープ未定。
+- **外部アクセス手段選定**: Cloudflare Tunnel か Tailscale か。
+
+### 今シーズンで学んだこと (次回への申し送り)
+
+1. **boot 時 largest=29 KiB の取り合い**: conv-task の 3×8 KiB seg_buf_
+   と WS task の 8 KiB が「Wi-Fi up 時点 (largest=10 KiB)」で確保されて
+   いるため、それまでに新しい内部 RAM 消費者を追加すると壊れる。新機能
+   の永続バッファ・タスク スタックは `app_main` 序盤に予約するか、
+   PSRAM に逃がすこと。
+2. **esp32-camera は managed component の Kconfig が罠**: 14 種の使わ
+   ないセンサー ドライバが .dram0.data に +8.8 KiB 乗ってくる。新しい
+   managed component を導入したら map ファイルで .dram0.data の増分を
+   確認 + 不要オプションを切る。
+3. **PSRAM スタック禁止ルール** (cache 汚染 + Speaker/Mic 6 との相性):
+   `mcp_say` は唯一の例外 (singleton 8 KiB internal を試したら seg_buf_
+   を奪って boot 壊した経緯あり)。
+4. **quirc 1.2 の flood_fill は explicit-stack** — タスク スタックを
+   ケチっても問題ない (5 KiB で動く)。
+5. **httpd 設計**: esp_http_server の worker は単一スレッドなので長期
+   接続 (SSE) は `httpd_req_async_handler_begin` で別タスクに移譲必須。
+   そうしないと他のリクエストが全部詰まる。
+6. **計装は先に入れる**: スタック サイズ縮小は HWM (`uxTaskGetSystemState`)
+   実測なし → 危険。alloc 失敗は `heap_caps_register_failed_alloc_
+   callback` で size + caps + caller を取れる。両方常時入れておくべき。
+
+---
+
 ## 2026-06 — Takao base / Atom-nyan / dual-firmware リリース (v0.3.0)
 
 このシーズンは「ハードウェア バリエーション対応」が主軸。CoreS3 単一前提の
