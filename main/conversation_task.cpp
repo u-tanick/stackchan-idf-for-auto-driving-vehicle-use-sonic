@@ -635,6 +635,7 @@ private:
         seg_pos_ = 0;
         seg_next_ = 0;
         playback_start_ms_ = now_ms();
+        playback_start_us_ = now_us();
         set_local(Local::Speaking);
         ESP_LOGI(kTag, "speaking (streaming)");
     }
@@ -675,10 +676,23 @@ private:
     {
         const auto count = recv_to_queued_ms_.count;
         const auto pcm_lag_max = pcm_lag_samples_.max();
+        // Effective dispatch rate: seg_pos_ counts samples handed to playRaw,
+        // which is queue-bound to <= 2 segments behind actual DMA output.
+        // Over a turn >>341 ms (typical), the playRaw rate ≈ the physical
+        // playback rate. If this comes out materially below speaker_sample_rate_
+        // (24000 for Gemini), the I2S clock divisor isn't producing the rate
+        // we asked for — which would explain monotonic buffer growth.
+        const std::int64_t elapsed_us = playback_start_us_ > 0
+                                            ? (now_us() - playback_start_us_)
+                                            : 0;
+        const double played_sps = elapsed_us > 0
+                                      ? static_cast<double>(seg_pos_) * 1.0e6 / static_cast<double>(elapsed_us)
+                                      : 0.0;
         ESP_LOGI(kTag,
                  "metrics(play): chunks=%u  recv_lag_us avg=%.0f min=%.0f max=%.0f  "
                  "recv_to_queued_ms avg=%.1f min=%.1f max=%.1f  "
-                 "spk_q avg=%.2f min=%.0f max=%.0f  pcm_lag_samples avg=%.0f max=%.0f",
+                 "spk_q avg=%.2f min=%.0f max=%.0f  pcm_lag_samples avg=%.0f max=%.0f  "
+                 "played_sps=%.1f (nominal=%u)",
                  static_cast<unsigned>(count),
                  recv_lag_us_.mean(), static_cast<double>(recv_lag_us_.min()),
                  static_cast<double>(recv_lag_us_.max()),
@@ -686,7 +700,8 @@ private:
                  static_cast<double>(recv_to_queued_ms_.max()),
                  spk_queue_.mean(), static_cast<double>(spk_queue_.min()),
                  static_cast<double>(spk_queue_.max()),
-                 pcm_lag_samples_.mean(), static_cast<double>(pcm_lag_max));
+                 pcm_lag_samples_.mean(), static_cast<double>(pcm_lag_max),
+                 played_sps, static_cast<unsigned>(speaker_sample_rate_));
         recv_lag_us_.reset();
         recv_to_queued_ms_.reset();
         spk_queue_.reset();
@@ -1031,6 +1046,7 @@ private:
     std::size_t seg_pos_{0};                           // next sample in assistant_pcm_ to play
     std::size_t seg_next_{0};                          // next ring slot to write
     std::uint32_t playback_start_ms_{0};
+    std::int64_t playback_start_us_{0};
     std::string assistant_text_;
 
     // --- audio-pipeline diagnostics ----------------------------------------
