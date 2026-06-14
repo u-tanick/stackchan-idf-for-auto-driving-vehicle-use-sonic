@@ -22,6 +22,7 @@
 #include <esp_heap_caps.h>
 
 #include "base64.hpp"
+#include "conversation/metrics.hpp"
 #include "psram_allocator.hpp"
 #include "ws_extra_headers.hpp"
 
@@ -300,7 +301,14 @@ private:
 
     void emit(const ConversationEvent& ev)
     {
-        if (event_callback_) event_callback_(ev);
+        if (event_callback_) {
+            // Stamp emit time so the conv-task can attribute pipeline latency
+            // to either the WS task (ev.emit_us - decode_start) or the queue
+            // hop (consumer's now - ev.emit_us).
+            ConversationEvent stamped = ev;
+            if (stamped.emit_us == 0) stamped.emit_us = esp_timer_get_time();
+            event_callback_(stamped);
+        }
     }
 
     void emit_error(ConversationError code, std::string message)
@@ -606,6 +614,11 @@ private:
                     const char* mime = json_str(inline_data, "mimeType");
                     const char* b64 = json_str(inline_data, "data");
                     if (b64 == nullptr) continue;
+                    // Time the base64 decode + memcpy as one "decode" measurement.
+                    // base64 dominates (PCM16 is 4:3 expanded on the wire), memcpy
+                    // is included so the metric tracks the full cost the conv-task
+                    // pays before AssistantAudioChunk leaves this client.
+                    const std::int64_t decode_t0 = esp_timer_get_time();
                     auto decoded = base64::decode(b64);
                     if (!decoded) {
                         emit_error(decoded.error(), "audio base64 decode failed");
@@ -615,6 +628,8 @@ private:
                         decoded->size() / sizeof(std::int16_t));
                     std::memcpy(pcm->data(), decoded->data(),
                                 pcm->size() * sizeof(std::int16_t));
+                    const std::int64_t decode_us = esp_timer_get_time() - decode_t0;
+                    decode_us_.record(static_cast<float>(decode_us));
                     if (state_.load(std::memory_order_relaxed) != ConversationState::Speaking) {
                         set_state(ConversationState::Speaking);
                         // Drop any mic chunks that were buffered between
@@ -650,6 +665,14 @@ private:
         // hot-path check (state != Listening → drop) is what kept us mute
         // after the first reply. Re-arm the SpeechStopped synthesiser too.
         if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(sc, "turnComplete"))) {
+            if (decode_us_.count > 0) {
+                ESP_LOGI(kTag,
+                         "metrics(decode): chunks=%u  us avg=%.0f min=%.0f max=%.0f",
+                         static_cast<unsigned>(decode_us_.count),
+                         decode_us_.mean(), static_cast<double>(decode_us_.min()),
+                         static_cast<double>(decode_us_.max()));
+                decode_us_.reset();
+            }
             ConversationEvent ev{};
             ev.type = ConversationEventType::ResponseDone;
             emit(ev);
@@ -799,6 +822,10 @@ private:
     bool turn_speech_stopped_emitted_{false};
     std::uint32_t audio_seq_{0};
     unsigned rx_log_count_{0};
+    // Per-turn rolling stats for base64 decode + memcpy in handle_serverContent.
+    // Logged + reset on turnComplete so the line shows up alongside the conv-task
+    // playback metrics for the same turn (correlatable by timestamp).
+    Stats<float> decode_us_;  // base64+memcpy time per inlineData chunk (us)
 
     // Resumption handle from goAway / sessionResumptionUpdate. Empty means
     // no prior session.

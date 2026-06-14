@@ -98,6 +98,10 @@ struct ConversationEvent {
     std::shared_ptr<const std::vector<std::int16_t>> audio;  // PCM16 mono chunk
     std::optional<ToolCall> tool_call;
     std::optional<ConversationError> error;
+    // `esp_timer_get_time()` at emit, in microseconds. Used by the conv-task
+    // to measure event-queue latency (`now_us() - emit_us`) when diagnosing
+    // audio pipeline stalls. 0 if the producer didn't set it.
+    std::int64_t emit_us{0};
 };
 
 class ConversationService {

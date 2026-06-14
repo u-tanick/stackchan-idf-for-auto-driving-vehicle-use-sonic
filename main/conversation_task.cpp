@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -23,6 +24,7 @@
 #include "avatar/expression.hpp"
 #include "board/si12t_touch.hpp"
 #include "conversation/gemini_live_client.hpp"
+#include "conversation/metrics.hpp"
 #include "conversation/openai_realtime_client.hpp"
 #include "conversation/xiaozhi_client.hpp"
 #include "utf8.hpp"
@@ -177,6 +179,11 @@ std::optional<avatar::Expression> parse_emotion(const char* name)
 std::uint32_t now_ms()
 {
     return static_cast<std::uint32_t>(esp_timer_get_time() / 1000);
+}
+
+std::int64_t now_us()
+{
+    return esp_timer_get_time();
 }
 
 // Owns the conversation; one instance per task.
@@ -531,6 +538,12 @@ private:
             return;
         }
 
+        // Sample buffer-occupancy + speaker queue depth once per service tick,
+        // before any topup decisions. spk_queue=2 = healthy steady, 0 = under-
+        // run risk; pcm_lag = unplayed samples already in assistant_pcm_.
+        spk_queue_.record(static_cast<float>(M5.Speaker.isPlaying(kSpeakerChannel)));
+        pcm_lag_samples_.record(static_cast<float>(assistant_pcm_.size() - seg_pos_));
+
         while (seg_pos_ < assistant_pcm_.size() &&
                M5.Speaker.isPlaying(kSpeakerChannel) < kSegmentBuffers - 1) {
             const std::size_t n = std::min(kSegmentSamples, assistant_pcm_.size() - seg_pos_);
@@ -539,6 +552,15 @@ private:
                                /*repeat=*/1, kSpeakerChannel, /*stop_current_sound=*/false);
             seg_pos_ += n;
             seg_next_ = (seg_next_ + 1) % kSegmentBuffers;
+            // Account for every chunk whose tail is now queued. A single
+            // playRaw can flush multiple chunks if they arrived faster than
+            // service_playback could drain them, hence the while-loop here.
+            while (!pending_chunks_.empty() &&
+                   pending_chunks_.front().end_sample_offset <= seg_pos_) {
+                recv_to_queued_ms_.record(
+                    static_cast<float>(now_us() - pending_chunks_.front().recv_us) / 1000.0f);
+                pending_chunks_.pop_front();
+            }
         }
 
         update_mouth();
@@ -559,6 +581,7 @@ private:
         M5.Speaker.stop();
         (void)client_->cancel_response();
         state_.set_balloon_text("はいはい？", /*hold_ms=*/1500);
+        log_playback_metrics();
         enter_listening();
     }
 
@@ -581,6 +604,11 @@ private:
         M5.Speaker.end();
         vTaskDelay(kI2sSettle);
         state_.mouth_open.store(0.0f, std::memory_order_relaxed);
+        // Safety net: log_playback_metrics already cleared these on
+        // finish_speaking / barge_in, but recover_after_error skips that
+        // path. Clear here so a stale pending entry from a half-finished
+        // turn doesn't corrupt the next turn's recv_to_queued_ms.
+        pending_chunks_.clear();
         assistant_pcm_.clear();
         // Reserve ahead so the streaming-playback inserts don't keep
         // reallocating the PSRAM buffer as the reply grows.
@@ -635,7 +663,35 @@ private:
         M5.Speaker.end();
         vTaskDelay(kI2sSettle);
         state_.mouth_open.store(0.0f, std::memory_order_relaxed);
+        log_playback_metrics();
         enter_listening();
+    }
+
+    // Single-line summary of the just-finished turn: queue latency, end-to-end
+    // delay, buffer health. Logged right before we drop back to Listening so
+    // each turn produces exactly one metric line, easy to grep / diff against
+    // earlier turns when chasing cross-turn degradation.
+    void log_playback_metrics()
+    {
+        const auto count = recv_to_queued_ms_.count;
+        const auto pcm_lag_max = pcm_lag_samples_.max();
+        ESP_LOGI(kTag,
+                 "metrics(play): chunks=%u  recv_lag_us avg=%.0f min=%.0f max=%.0f  "
+                 "recv_to_queued_ms avg=%.1f min=%.1f max=%.1f  "
+                 "spk_q avg=%.2f min=%.0f max=%.0f  pcm_lag_samples avg=%.0f max=%.0f",
+                 static_cast<unsigned>(count),
+                 recv_lag_us_.mean(), static_cast<double>(recv_lag_us_.min()),
+                 static_cast<double>(recv_lag_us_.max()),
+                 recv_to_queued_ms_.mean(), static_cast<double>(recv_to_queued_ms_.min()),
+                 static_cast<double>(recv_to_queued_ms_.max()),
+                 spk_queue_.mean(), static_cast<double>(spk_queue_.min()),
+                 static_cast<double>(spk_queue_.max()),
+                 pcm_lag_samples_.mean(), static_cast<double>(pcm_lag_max));
+        recv_lag_us_.reset();
+        recv_to_queued_ms_.reset();
+        spk_queue_.reset();
+        pcm_lag_samples_.reset();
+        pending_chunks_.clear();
     }
 
     // ---- event handling ----------------------------------------------------
@@ -690,7 +746,12 @@ private:
         case conv::ConversationEventType::AssistantAudioChunk:
             // Ignore late chunks for a turn we already abandoned (barge-in).
             if (ev.audio && (local_ == Local::Thinking || local_ == Local::Speaking)) {
+                const std::int64_t recv = now_us();
+                if (ev.emit_us > 0) {
+                    recv_lag_us_.record(static_cast<float>(recv - ev.emit_us));
+                }
                 assistant_pcm_.insert(assistant_pcm_.end(), ev.audio->begin(), ev.audio->end());
+                pending_chunks_.push_back({assistant_pcm_.size(), recv});
                 // Streaming: start playback as soon as the jitter buffer fills,
                 // rather than waiting for the whole reply.
                 if (local_ == Local::Thinking && assistant_pcm_.size() >= jitter_buffer_samples_) {
@@ -971,6 +1032,32 @@ private:
     std::size_t seg_next_{0};                          // next ring slot to write
     std::uint32_t playback_start_ms_{0};
     std::string assistant_text_;
+
+    // --- audio-pipeline diagnostics ----------------------------------------
+    // A chunk's identity is "the last sample offset in assistant_pcm_ at the
+    // time it was appended". When seg_pos_ advances past that offset, the
+    // chunk has been handed to M5.Speaker.playRaw — we measure recv→queued
+    // latency for each chunk this way and pop the entry off pending_.
+    struct PendingChunk {
+        std::size_t end_sample_offset; // assistant_pcm_.size() after append
+        std::int64_t recv_us;          // now_us() when we got the AssistantAudioChunk event
+    };
+    std::deque<PendingChunk> pending_chunks_;
+    // Recv lag (event-queue hop): receiver's now - producer's emit_us. Mostly
+    // measures FreeRTOS-queue + WS-task scheduling latency.
+    conv::Stats<float> recv_lag_us_;
+    // End-to-end queueing: now - recv_us at the moment seg_pos_ advances past
+    // this chunk's end_sample_offset. Captures how long a chunk sat in
+    // assistant_pcm_ before the playback loop grabbed it.
+    conv::Stats<float> recv_to_queued_ms_;
+    // Speaker queue depth (0..2) sampled each service_playback iteration.
+    // 0 = under-run risk, 2 = healthy steady state.
+    conv::Stats<float> spk_queue_;
+    // Samples already received but not yet handed to playRaw at each
+    // service_playback iteration. A growing lag means playback can't keep up
+    // with the arrival rate; a near-zero lag means the speaker is the
+    // bottleneck (or we're caught up).
+    conv::Stats<float> pcm_lag_samples_;
 };
 
 void conversation_task_entry(void* arg)
