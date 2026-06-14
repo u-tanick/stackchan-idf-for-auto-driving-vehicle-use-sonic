@@ -589,6 +589,34 @@
     </div>
   </details>
 
+  <details class="jtts-section" id="led-section">
+    <summary>ネコミミ LED</summary>
+    <p class="hint" style="margin-bottom:0.5rem">
+      ネコミミ部 NeoPixel (GPIO9 / 18 LED) のモード・色・明るさを設定します。
+      変更は即時反映 + 自動で NVS に保存されるので再起動後も復元されます。
+      gradient (虹) モードでは色は無視されます。
+    </p>
+    <div class="grid2">
+      <div>
+        <label for="led-mode">モード</label>
+        <select id="led-mode">
+          <option value="0">OFF</option>
+          <option value="1">単色 (solid)</option>
+          <option value="2">呼吸 (breath)</option>
+          <option value="3">虹 (gradient)</option>
+        </select>
+      </div>
+      <div>
+        <label for="led-color">色 (solid / breath)</label>
+        <input type="color" id="led-color" value="#404040" style="width:100%;height:2.2rem;padding:0;border:0">
+      </div>
+      <div style="grid-column:span 2">
+        <label for="led-brightness">明るさ <span id="led-brightness-value">26</span> / 255</label>
+        <input type="range" id="led-brightness" min="0" max="255" step="1" value="26" style="width:100%">
+      </div>
+    </div>
+  </details>
+
   <details class="jtts-section" id="audio-metrics-section">
     <summary>音声パイプライン診断</summary>
     <p class="hint" style="margin-bottom:0.5rem">
@@ -682,6 +710,11 @@ const CHR_LT_CONFIG = 'e3f0a01e-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // from the same settings page (no separate dashboard). Returns "{}" before
 // any turn completes. See main/conversation_task.cpp `log_playback_metrics`.
 const CHR_AUDIO_METRICS = 'e3f0a01f-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+// LED live state: encrypted RW. 5-byte payload [mode][R][G][B][brightness].
+// Drives the cat-ear (nekomimi) NeoPixel chain — see main/led_task.cpp +
+// components/board/nekomimi_led_strip.cpp. Persisted to NVS automatically
+// on every WRITE so settings survive reboot.
+const CHR_LED_STATE = 'e3f0a020-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const BOARD_M5_BASE = 0;
 const BOARD_TAKAO_BASE = 1;
 const BOARD_ATOM_NYAN = 2;
@@ -731,7 +764,7 @@ const DIS_CHRS = {
 
 // --- State ---
 let bleDevice = null, bleServer = null, svc = null;
-let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrBatGauge = null, chrServoEnabled = null, chrMcpToken = null, chrLtConfig = null, chrServoLimits = null, chrServoRangeMode = null, chrServoPositions = null, chrBoardKind = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null, chrAudioMetrics = null;
+let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrBatGauge = null, chrServoEnabled = null, chrMcpToken = null, chrLtConfig = null, chrServoLimits = null, chrServoRangeMode = null, chrServoPositions = null, chrBoardKind = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null, chrAudioMetrics = null, chrLedState = null;
 let boardKind = null; // null = unknown (older firmware), else 0/1/2 from BOARD_*
 let batteryPollTimer = null;  // setInterval handle while connected
 let jttsInitialJson = '';  // last read JSON, used to detect Apply-time changes
@@ -1117,6 +1150,11 @@ function applyCapabilityGating() {
   document.getElementById('ota-section').style.display = hasOta ? '' : 'none';
   document.getElementById('audio-metrics-section').style.display = chrAudioMetrics ? '' : 'none';
   document.getElementById('btn-audio-metrics-reload').disabled = !chrAudioMetrics || !aesKey;
+  document.getElementById('led-section').style.display = chrLedState ? '' : 'none';
+  for (const id of ['led-mode','led-color','led-brightness']) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !chrLedState || !aesKey;
+  }
   document.getElementById('btn-apply').style.display = hasSettings ? '' : 'none';
 
   // Per-board gating: Atom-nyan has no servos, no battery monitor, no LED
@@ -1744,6 +1782,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
       ['audioData',  CHR_AUDIO_DATA],
       ['audioCredit',CHR_AUDIO_CREDIT],
       ['audioMetrics', CHR_AUDIO_METRICS],
+      ['ledState',  CHR_LED_STATE],
     ];
     const settled = await Promise.allSettled(
       probes.map(([_, uuid]) => svc.getCharacteristic(uuid)));
@@ -1785,6 +1824,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
     chrAudioData= found.audioData?? null;
     chrAudioCredit = found.audioCredit ?? null;
     chrAudioMetrics = found.audioMetrics ?? null;
+    chrLedState = found.ledState ?? null;
     log(`Characteristics 取得完了 (missing: ${missing.length ? missing.join(', ') : 'none'})`,
         missing.length ? 'info' : 'ok');
 
@@ -1964,6 +2004,13 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
       }
     }
 
+    if (chrLedState) {
+      // Initial read populates the form without triggering write-back
+      // (loadLedState sets ledStateLoaded=false around the assignment so
+      // synthetic input/change events fired by the controls don't echo).
+      await loadLedState();
+    }
+
     // Subscribe to Status notifications — payloads are encrypted too.
     if (chrStatus) {
       await chrStatus.startNotifications();
@@ -2011,9 +2058,11 @@ function onDisconnected() {
   clearInterval(audioMetricsTimer); audioMetricsTimer = null;
   const autoEl = document.getElementById('audio-metrics-autorefresh');
   if (autoEl) autoEl.checked = false;
+  clearTimeout(ledWriteTimer); ledWriteTimer = null;
+  ledStateLoaded = false;
   svRangeOn = false;
   svLiveYaw = svLivePitch = -1;
-  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrXiaozhiUrl = chrXiaozhiToken = chrFaceConfig = chrBattery = chrBatGauge = chrServoEnabled = chrMcpToken = chrLtConfig = chrServoLimits = chrServoRangeMode = chrServoPositions = chrBoardKind = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = chrAudioMetrics = null;
+  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrXiaozhiUrl = chrXiaozhiToken = chrFaceConfig = chrBattery = chrBatGauge = chrServoEnabled = chrMcpToken = chrLtConfig = chrServoLimits = chrServoRangeMode = chrServoPositions = chrBoardKind = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = chrAudioMetrics = chrLedState = null;
   boardKind = null;
   aesKey = null;
   clearDeviceInfo();
@@ -2481,6 +2530,62 @@ function rawDeltaToDeg(raw, zero) {
   return Math.round(d);
 }
 
+// ===== LED state (BLE chr 0x20) ==============================================
+//
+// 5-byte payload [mode][R][G][B][brightness]. We read once on connect to seed
+// the form, then write on every input change (debounced ~150 ms so the slider
+// doesn't hammer NVS while being dragged). The device persists each write to
+// NVS, so the same UI re-opens with the last-applied values after a reboot.
+
+let ledWriteTimer = null;
+let ledStateLoaded = false; // true after the initial read so input events don't fire feedback writes during seeding
+
+function hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  if (!m) return { r: 0, g: 0, b: 0 };
+  return { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) };
+}
+function rgbToHex(r, g, b) {
+  const h = (v) => v.toString(16).padStart(2, '0');
+  return '#' + h(r & 0xff) + h(g & 0xff) + h(b & 0xff);
+}
+
+async function loadLedState() {
+  if (!chrLedState || !aesKey) return;
+  try {
+    const b = await readEncrypted(chrLedState);
+    if (b.length < 5) return;
+    const mode = b[0], r = b[1], g = b[2], bl = b[3], bright = b[4];
+    ledStateLoaded = false;
+    document.getElementById('led-mode').value = String(mode);
+    document.getElementById('led-color').value = rgbToHex(r, g, bl);
+    document.getElementById('led-brightness').value = String(bright);
+    document.getElementById('led-brightness-value').textContent = String(bright);
+    ledStateLoaded = true;
+  } catch (e) {
+    log(`LED state 読み出し失敗: ${e?.message ?? e}`, 'err');
+  }
+}
+
+async function writeLedState() {
+  if (!chrLedState || !aesKey) return;
+  const mode = parseInt(document.getElementById('led-mode').value, 10) || 0;
+  const { r, g, b } = hexToRgb(document.getElementById('led-color').value);
+  const bright = parseInt(document.getElementById('led-brightness').value, 10) || 0;
+  const payload = new Uint8Array([mode, r, g, b, bright]);
+  try {
+    await writeEncrypted(chrLedState, payload);
+  } catch (e) {
+    log(`LED state 書き込み失敗: ${e?.message ?? e}`, 'err');
+  }
+}
+
+function scheduleLedWrite() {
+  if (!ledStateLoaded) return; // skip the synthetic events fired while we seed the form
+  clearTimeout(ledWriteTimer);
+  ledWriteTimer = setTimeout(writeLedState, 150);
+}
+
 // ===== Audio pipeline metrics (BLE chr 0x1f) =================================
 //
 // One-shot read of the JSON snapshot left by the conversation task at the end
@@ -2632,6 +2737,14 @@ document.getElementById('sv-cap-pitch-max').addEventListener('click',  () => cap
 document.getElementById('btn-audio-metrics-reload').addEventListener('click', () => readAudioMetrics());
 document.getElementById('audio-metrics-autorefresh').addEventListener('change', (e) => {
   setAudioMetricsAutoRefresh(e.target.checked);
+});
+
+// LED state: change-event flushes a debounced write to BLE chr 0x20.
+document.getElementById('led-mode').addEventListener('change', scheduleLedWrite);
+document.getElementById('led-color').addEventListener('input', scheduleLedWrite);
+document.getElementById('led-brightness').addEventListener('input', (e) => {
+  document.getElementById('led-brightness-value').textContent = String(e.target.value);
+  scheduleLedWrite();
 });
 
 // MCP API token: random-generate / show / clear. The "clear" path sets a
