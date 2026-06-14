@@ -589,6 +589,36 @@
     </div>
   </details>
 
+  <details class="jtts-section" id="audio-metrics-section">
+    <summary>音声パイプライン診断</summary>
+    <p class="hint" style="margin-bottom:0.5rem">
+      直近の会話 1 ターンぶんの音声パイプライン統計 (BLE chr 0x1f / HTTP
+      <code>GET /api/metrics/audio</code> と同じデータ)。会話ターンが終わるたびに
+      ファーム側 (<code>conv-task: log_playback_metrics</code>) で更新されるので、
+      下の「読み込み」を押すと最新ターンの値が見えます。
+    </p>
+    <table id="audio-metrics-table" style="width:100%;border-collapse:collapse;font-size:0.92em">
+      <thead>
+        <tr style="text-align:left;border-bottom:1px solid #444">
+          <th style="padding:0.3rem 0.5rem">指標</th>
+          <th style="padding:0.3rem 0.5rem">avg</th>
+          <th style="padding:0.3rem 0.5rem">min</th>
+          <th style="padding:0.3rem 0.5rem">max</th>
+        </tr>
+      </thead>
+      <tbody id="audio-metrics-body">
+        <tr><td colspan="4" class="hint" style="padding:0.5rem">未取得</td></tr>
+      </tbody>
+    </table>
+    <p class="hint" id="audio-metrics-summary" style="margin-top:0.5rem">—</p>
+    <div class="actions" style="margin-top:0.5rem">
+      <button id="btn-audio-metrics-reload" disabled>読み込み</button>
+      <label style="margin-left:0.8rem;font-size:0.92em">
+        <input type="checkbox" id="audio-metrics-autorefresh"> 自動更新 (2 秒)
+      </label>
+    </div>
+  </details>
+
   <div class="actions">
     <button id="btn-connect">BLE 接続</button>
     <button id="btn-apply" disabled>保存 &amp; 再起動</button>
@@ -647,6 +677,11 @@ const CHR_MCP_TOKEN = 'e3f0a01d-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // warning threshold, repeat period, announcement words). WRITE applies live;
 // READ returns the active JSON. Persisted on Apply.
 const CHR_LT_CONFIG = 'e3f0a01e-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+// Audio pipeline metrics: encrypted READ-only JSON snapshot from the last
+// finished conversation turn. Useful for diagnosing playback latency / drift
+// from the same settings page (no separate dashboard). Returns "{}" before
+// any turn completes. See main/conversation_task.cpp `log_playback_metrics`.
+const CHR_AUDIO_METRICS = 'e3f0a01f-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const BOARD_M5_BASE = 0;
 const BOARD_TAKAO_BASE = 1;
 const BOARD_ATOM_NYAN = 2;
@@ -696,7 +731,7 @@ const DIS_CHRS = {
 
 // --- State ---
 let bleDevice = null, bleServer = null, svc = null;
-let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrBatGauge = null, chrServoEnabled = null, chrMcpToken = null, chrLtConfig = null, chrServoLimits = null, chrServoRangeMode = null, chrServoPositions = null, chrBoardKind = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null;
+let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrBatGauge = null, chrServoEnabled = null, chrMcpToken = null, chrLtConfig = null, chrServoLimits = null, chrServoRangeMode = null, chrServoPositions = null, chrBoardKind = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null, chrAudioMetrics = null;
 let boardKind = null; // null = unknown (older firmware), else 0/1/2 from BOARD_*
 let batteryPollTimer = null;  // setInterval handle while connected
 let jttsInitialJson = '';  // last read JSON, used to detect Apply-time changes
@@ -1080,6 +1115,8 @@ function applyCapabilityGating() {
   setVisible('#lt-section', !!chrLtConfig);
   document.getElementById('jtts-section').style.display = hasJtts ? '' : 'none';
   document.getElementById('ota-section').style.display = hasOta ? '' : 'none';
+  document.getElementById('audio-metrics-section').style.display = chrAudioMetrics ? '' : 'none';
+  document.getElementById('btn-audio-metrics-reload').disabled = !chrAudioMetrics || !aesKey;
   document.getElementById('btn-apply').style.display = hasSettings ? '' : 'none';
 
   // Per-board gating: Atom-nyan has no servos, no battery monitor, no LED
@@ -1706,6 +1743,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
       ['audioCtrl',  CHR_AUDIO_CTRL],
       ['audioData',  CHR_AUDIO_DATA],
       ['audioCredit',CHR_AUDIO_CREDIT],
+      ['audioMetrics', CHR_AUDIO_METRICS],
     ];
     const settled = await Promise.allSettled(
       probes.map(([_, uuid]) => svc.getCharacteristic(uuid)));
@@ -1746,6 +1784,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
     chrAudioCtrl= found.audioCtrl?? null;
     chrAudioData= found.audioData?? null;
     chrAudioCredit = found.audioCredit ?? null;
+    chrAudioMetrics = found.audioMetrics ?? null;
     log(`Characteristics 取得完了 (missing: ${missing.length ? missing.join(', ') : 'none'})`,
         missing.length ? 'info' : 'ok');
 
@@ -1969,9 +2008,12 @@ function onDisconnected() {
   setBleUi(false);
   clearInterval(batteryPollTimer); batteryPollTimer = null;
   clearInterval(svPosPollTimer); svPosPollTimer = null;
+  clearInterval(audioMetricsTimer); audioMetricsTimer = null;
+  const autoEl = document.getElementById('audio-metrics-autorefresh');
+  if (autoEl) autoEl.checked = false;
   svRangeOn = false;
   svLiveYaw = svLivePitch = -1;
-  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrXiaozhiUrl = chrXiaozhiToken = chrFaceConfig = chrBattery = chrBatGauge = chrServoEnabled = chrMcpToken = chrLtConfig = chrServoLimits = chrServoRangeMode = chrServoPositions = chrBoardKind = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = null;
+  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrXiaozhiUrl = chrXiaozhiToken = chrFaceConfig = chrBattery = chrBatGauge = chrServoEnabled = chrMcpToken = chrLtConfig = chrServoLimits = chrServoRangeMode = chrServoPositions = chrBoardKind = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = chrAudioMetrics = null;
   boardKind = null;
   aesKey = null;
   clearDeviceInfo();
@@ -2439,6 +2481,81 @@ function rawDeltaToDeg(raw, zero) {
   return Math.round(d);
 }
 
+// ===== Audio pipeline metrics (BLE chr 0x1f) =================================
+//
+// One-shot read of the JSON snapshot left by the conversation task at the end
+// of each turn (main/conversation_task.cpp::log_playback_metrics). Optionally
+// polled every 2 s so the panel reflects the most recent finished turn while
+// the user keeps the page open. Doesn't add CPU pressure to the device — the
+// snapshot is published from a mutex-protected struct, no recomputation.
+
+let audioMetricsTimer = null;
+
+function fmtUs(v) { return Number.isFinite(v) ? Math.round(v).toLocaleString() : '--'; }
+function fmtMs(v) { return Number.isFinite(v) ? v.toFixed(1) : '--'; }
+function fmtN(v, p=2) { return Number.isFinite(v) ? v.toFixed(p) : '--'; }
+function fmtInt(v) { return Number.isFinite(v) ? Math.round(v).toLocaleString() : '--'; }
+
+function renderAudioMetrics(j) {
+  const tbody = document.getElementById('audio-metrics-body');
+  const summary = document.getElementById('audio-metrics-summary');
+  if (!j || Object.keys(j).length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" class="hint" style="padding:0.5rem">直近の会話ターン未完了 (snapshot=空)</td></tr>';
+    summary.textContent = '—';
+    return;
+  }
+  const r = j.recv_lag_us || {};
+  const q = j.recv_to_queued_ms || {};
+  const s = j.spk_queue || {};
+  const p = j.pcm_lag_samples || {};
+  // played_sps と nominal の比 — 0.99 切ったら明示的にハイライト
+  const sps = j.played_sps;
+  const nom = j.speaker_sample_rate;
+  const ratio = (Number.isFinite(sps) && nom) ? (sps / nom) : null;
+  const ratioCol = (ratio != null && ratio < 0.99) ? 'color:#f88' : '';
+  const rows = [
+    ['recv_lag (event 渡し) μs', fmtUs(r.avg), fmtUs(r.min), fmtUs(r.max)],
+    ['recv→queued (再生投入) ms', fmtMs(q.avg), fmtMs(q.min), fmtMs(q.max)],
+    ['spk_queue 深度 (0..2)',    fmtN(s.avg, 2), fmtN(s.min, 0), fmtN(s.max, 0)],
+    ['pcm_lag 未再生 samples',   fmtInt(p.avg), '—',           fmtInt(p.max)],
+  ];
+  tbody.innerHTML = rows.map(([n,a,mn,mx]) => `
+    <tr style="border-bottom:1px solid #333">
+      <td style="padding:0.3rem 0.5rem">${n}</td>
+      <td style="padding:0.3rem 0.5rem">${a}</td>
+      <td style="padding:0.3rem 0.5rem">${mn}</td>
+      <td style="padding:0.3rem 0.5rem">${mx}</td>
+    </tr>`).join('');
+  const turnSec = (j.turn_at_ms / 1000).toFixed(1);
+  summary.innerHTML = `chunks=${j.chunks ?? '--'}, played_sps=<span style="${ratioCol}">${fmtN(sps, 1)}</span> / nominal ${nom ?? '--'} ` +
+    (ratio != null ? `(${(ratio*100).toFixed(2)}%)` : '') +
+    `, turn at boot+${turnSec}s`;
+}
+
+async function readAudioMetrics() {
+  if (!chrAudioMetrics || !aesKey) return;
+  try {
+    const b = await readEncrypted(chrAudioMetrics);
+    const txt = new TextDecoder('utf-8', { fatal: false }).decode(b).trim();
+    let j = {};
+    if (txt.length > 0) {
+      try { j = JSON.parse(txt); }
+      catch (e) { log(`audio metrics: JSON parse 失敗 (${e.message})`, 'err'); return; }
+    }
+    renderAudioMetrics(j);
+  } catch (e) {
+    // Transient read failure (session reset, brief disconnect, etc.) —
+    // leave the last rendering visible.
+  }
+}
+
+function setAudioMetricsAutoRefresh(on) {
+  clearInterval(audioMetricsTimer); audioMetricsTimer = null;
+  if (on && chrAudioMetrics && aesKey) {
+    audioMetricsTimer = setInterval(readAudioMetrics, 2000);
+  }
+}
+
 async function refreshServoPositions() {
   if (!chrServoPositions || !aesKey) return;
   try {
@@ -2510,6 +2627,12 @@ document.getElementById('sv-cap-yaw-max').addEventListener('click',  () => captu
 document.getElementById('sv-cap-pitch-zero').addEventListener('click', () => capturePitch('zero'));
 document.getElementById('sv-cap-pitch-min').addEventListener('click',  () => capturePitch('min'));
 document.getElementById('sv-cap-pitch-max').addEventListener('click',  () => capturePitch('max'));
+
+// Audio metrics: manual reload + optional 2-s auto-refresh.
+document.getElementById('btn-audio-metrics-reload').addEventListener('click', () => readAudioMetrics());
+document.getElementById('audio-metrics-autorefresh').addEventListener('change', (e) => {
+  setAudioMetricsAutoRefresh(e.target.checked);
+});
 
 // MCP API token: random-generate / show / clear. The "clear" path sets a
 // data-cleared marker so the apply path POSTs an empty body explicitly
