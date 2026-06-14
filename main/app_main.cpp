@@ -31,6 +31,7 @@
 #include "board/board.hpp"
 #include "board/si12t_touch.hpp"
 #include "config_service/config_service.hpp"
+#include "config_service/config_store.hpp"
 #include <wifi_config_service/mcp_events.hpp>
 #include <wifi_config_service/wifi_config_service.hpp>
 #include "conversation_task.hpp"
@@ -145,6 +146,14 @@ void apply_led_patch(const stackchan::config::LedStatePatch& p)
     if (p.brightness) {
         g_state->led_brightness.store(*p.brightness, std::memory_order_relaxed);
     }
+    // Persist immediately so a reboot replays the same look. The settings
+    // UI debounces writes ~150 ms so we don't write to NVS faster than the
+    // user can drag a slider; HTTP clients posting in a loop are on their
+    // own (no debounce here).
+    const std::uint8_t mode = g_state->led_mode.load(std::memory_order_relaxed);
+    const std::uint32_t color = g_state->led_color.load(std::memory_order_relaxed);
+    const std::uint8_t bright = g_state->led_brightness.load(std::memory_order_relaxed);
+    (void)stackchan::config::store::save_led_state(mode, color, bright);
 }
 
 // Render the last-turn audio metrics as JSON for BLE chr 0x1f + HTTP
@@ -757,6 +766,12 @@ extern "C" void app_main()
         g_state->set_lt_config(cfg.lt_config_json);
     }
     g_state->battery_gauge_enabled.store(cfg.battery_gauge_enabled, std::memory_order_relaxed);
+    // LED state: replay the persisted values so the strip lights up the same
+    // way it did before the reboot. NVS-missing → DeviceConfig's struct
+    // defaults (gradient @ ~10%) so a fresh-install device still glows.
+    g_state->led_mode.store(cfg.led_mode, std::memory_order_relaxed);
+    g_state->led_color.store(cfg.led_color, std::memory_order_relaxed);
+    g_state->led_brightness.store(cfg.led_brightness, std::memory_order_relaxed);
     stackchan::config::set_face_config_sink(&on_face_config);
     stackchan::config::set_lt_config_sink(+[](std::string_view json) {
         if (g_state != nullptr) g_state->set_lt_config(json);

@@ -34,6 +34,9 @@ constexpr const char* kKeyServoLimits = "srv_lim";
 constexpr const char* kKeyServoEnabled = "srv_en";
 constexpr const char* kKeyMcpToken = "mcp_token";
 constexpr const char* kKeyLtConfig = "lt_cfg";
+constexpr const char* kKeyLedMode = "led_mode";
+constexpr const char* kKeyLedColor = "led_color";
+constexpr const char* kKeyLedBright = "led_bright";
 
 std::string nvs_read_str(nvs_handle_t h, const char* key)
 {
@@ -120,6 +123,15 @@ DeviceConfig load()
     } else if (prov_err != ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGW(kTag, "nvs_get_u8(%s): %s", kKeyProvider, esp_err_to_name(prov_err));
     }
+    // LED defaults — keep the struct-initialised fallbacks if NVS doesn't
+    // have them yet so pre-LED installs come up in gradient/~10% rather than
+    // black.
+    std::uint8_t led_mode = cfg.led_mode;
+    if (nvs_get_u8(h, kKeyLedMode, &led_mode) == ESP_OK) cfg.led_mode = led_mode;
+    std::uint32_t led_color = cfg.led_color;
+    if (nvs_get_u32(h, kKeyLedColor, &led_color) == ESP_OK) cfg.led_color = led_color;
+    std::uint8_t led_bright = cfg.led_brightness;
+    if (nvs_get_u8(h, kKeyLedBright, &led_bright) == ESP_OK) cfg.led_brightness = led_bright;
     nvs_close(h);
     return cfg;
 }
@@ -192,10 +204,53 @@ tl::expected<void, Error> save(const DeviceConfig& cfg)
         return tl::unexpected(Error::NvsWrite);
     }
 
+    // LED live state. Written by the HTTP / BLE patch sink — not part of the
+    // staging-buffer "Apply" flow. Each individual write goes straight to
+    // NVS so the user's UI-driven changes survive reboot without an explicit
+    // save step.
+    err = nvs_set_u8(h, kKeyLedMode, cfg.led_mode);
+    if (err != ESP_OK) {
+        ESP_LOGE(kTag, "nvs_set_u8(%s): %s", kKeyLedMode, esp_err_to_name(err));
+        nvs_close(h);
+        return tl::unexpected(Error::NvsWrite);
+    }
+    err = nvs_set_u32(h, kKeyLedColor, cfg.led_color);
+    if (err != ESP_OK) {
+        ESP_LOGE(kTag, "nvs_set_u32(%s): %s", kKeyLedColor, esp_err_to_name(err));
+        nvs_close(h);
+        return tl::unexpected(Error::NvsWrite);
+    }
+    err = nvs_set_u8(h, kKeyLedBright, cfg.led_brightness);
+    if (err != ESP_OK) {
+        ESP_LOGE(kTag, "nvs_set_u8(%s): %s", kKeyLedBright, esp_err_to_name(err));
+        nvs_close(h);
+        return tl::unexpected(Error::NvsWrite);
+    }
+
     err = nvs_commit(h);
     nvs_close(h);
     if (err != ESP_OK) {
         ESP_LOGE(kTag, "nvs_commit: %s", esp_err_to_name(err));
+        return tl::unexpected(Error::NvsWrite);
+    }
+    return {};
+}
+
+tl::expected<void, Error> save_led_state(std::uint8_t mode, std::uint32_t color, std::uint8_t brightness)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(kNs, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        ESP_LOGE(kTag, "nvs_open(%s): %s", kNs, esp_err_to_name(err));
+        return tl::unexpected(Error::NvsWrite);
+    }
+    err = nvs_set_u8(h, kKeyLedMode, mode);
+    if (err == ESP_OK) err = nvs_set_u32(h, kKeyLedColor, color);
+    if (err == ESP_OK) err = nvs_set_u8(h, kKeyLedBright, brightness);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err != ESP_OK) {
+        ESP_LOGW(kTag, "save_led_state: %s", esp_err_to_name(err));
         return tl::unexpected(Error::NvsWrite);
     }
     return {};

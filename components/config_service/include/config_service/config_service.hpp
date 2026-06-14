@@ -86,6 +86,12 @@ struct DeviceConfig {
     // Takao base mounts the head differently so these are configurable + saved.
     // Takes effect after the Apply reboot. See main/servo_limits.hpp for the schema.
     std::string servo_limits_json;
+    // Nekomimi NeoPixel live state — applied to SharedState at boot and
+    // refreshed on every BLE chr 0x20 / HTTP POST write. Defaults mirror
+    // SharedState's fallbacks (gradient mode, ~10% brightness).
+    std::uint8_t led_mode = 3;          // 0=off, 1=solid, 2=breath, 3=gradient
+    std::uint32_t led_color = 0x00404040u;
+    std::uint8_t led_brightness = 26;
 };
 
 enum class Error {
