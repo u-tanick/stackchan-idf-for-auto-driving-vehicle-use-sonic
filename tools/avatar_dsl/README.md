@@ -85,6 +85,18 @@ end
 
 詳細な例は [assets/default_face.avdsl](../../assets/default_face.avdsl) を参照。
 
+### 同梱プリセット
+
+`assets/` に置かれた `.avdsl` ファイルが利用可能なプリセット。WASM
+プレビュー (`wasm/avatar.html`) のヘッダ ボタンから即時切替でき、ファーム
+には `POST /api/avatar-dsl` で .avbc を送ると差し替わる。
+
+| プリセット | ファイル | 概要 |
+|---|---|---|
+| `default` | [default_face.avdsl](../../assets/default_face.avdsl) | 旧 C++ `face.cpp` 等価。6 表情 + 眉 + 表情エフェクト (heart / anger / sweat / …) のフル セット |
+| `omega` | [omega_mouth.avdsl](../../assets/omega_mouth.avdsl) | `default` の口を ω 形 (リング マスク + 中央ピーク) に差し替えた例。「パーツ 1 つだけ差し替える」サンプル |
+| `aokko` | [aokko_face.avdsl](../../assets/aokko_face.avdsl) | aokko-face スタイル: 縦長 pill 形の目 + 3 本まつげ (open は ⌒-fan、close は ‖‖‖)、六芒星の頬、横長口。眉と表情エフェクトは無し |
+
 ## バイトコード ファイル形式 (`.avbc`)
 
 ```
