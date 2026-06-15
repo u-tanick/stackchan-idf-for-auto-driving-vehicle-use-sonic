@@ -90,6 +90,16 @@ tl::expected<Board, Error> Board::begin()
         board.impl_ = std::make_shared<Impl>(BoardKind::AtomNyan,
                                              std::optional<Py32Expander>{},
                                              std::optional<Si12tTouch>{});
+        // Initialise the nekomimi LED strip on this path too. The CoreS3
+        // branch below shares one led->begin() call; AtomNyan would otherwise
+        // skip it and the GPIO38 chain never lights up (the RMT channel /
+        // WS2812 encoder are allocated lazily on begin()).
+        if (LedStrip* led = board.impl_->led(); led != nullptr) {
+            if (auto r = led->begin(); !r) {
+                ESP_LOGW(kTag, "LED strip begin failed (AtomNyan): %d",
+                         static_cast<int>(r.error()));
+            }
+        }
         ESP_LOGI(kTag, "board initialized: kind=AtomNyan (AtomS3R + Atomic ECHO BASE)");
         return board;
     }
