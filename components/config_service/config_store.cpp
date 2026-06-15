@@ -207,34 +207,13 @@ tl::expected<void, Error> save(const DeviceConfig& cfg)
         return tl::unexpected(Error::NvsWrite);
     }
 
-    // LED live state. Written by the HTTP / BLE patch sink — not part of the
-    // staging-buffer "Apply" flow. Each individual write goes straight to
-    // NVS so the user's UI-driven changes survive reboot without an explicit
-    // save step.
-    err = nvs_set_u8(h, kKeyLedMode, cfg.led_mode);
-    if (err != ESP_OK) {
-        ESP_LOGE(kTag, "nvs_set_u8(%s): %s", kKeyLedMode, esp_err_to_name(err));
-        nvs_close(h);
-        return tl::unexpected(Error::NvsWrite);
-    }
-    err = nvs_set_u32(h, kKeyLedColor, cfg.led_color);
-    if (err != ESP_OK) {
-        ESP_LOGE(kTag, "nvs_set_u32(%s): %s", kKeyLedColor, esp_err_to_name(err));
-        nvs_close(h);
-        return tl::unexpected(Error::NvsWrite);
-    }
-    err = nvs_set_u8(h, kKeyLedBright, cfg.led_brightness);
-    if (err != ESP_OK) {
-        ESP_LOGE(kTag, "nvs_set_u8(%s): %s", kKeyLedBright, esp_err_to_name(err));
-        nvs_close(h);
-        return tl::unexpected(Error::NvsWrite);
-    }
-    err = nvs_set_u8(h, kKeyLedPeriod, cfg.led_gradient_period_ds);
-    if (err != ESP_OK) {
-        ESP_LOGE(kTag, "nvs_set_u8(%s): %s", kKeyLedPeriod, esp_err_to_name(err));
-        nvs_close(h);
-        return tl::unexpected(Error::NvsWrite);
-    }
+    // LED live state is NOT written here on purpose: the full save() runs
+    // from the Apply button, which merges DeviceConfig from g_active (the
+    // boot-time snapshot) + staging — and LED keys aren't in staging because
+    // apply_led_patch persists each change directly via save_led_state().
+    // If we also wrote LED here, every Apply would clobber the user's
+    // runtime LED changes with the stale boot value. The dedicated
+    // save_led_state() is the sole writer for those four NVS keys.
 
     err = nvs_commit(h);
     nvs_close(h);
