@@ -32,14 +32,18 @@ public:
          std::optional<Si12tTouch>&& touch) noexcept
         : kind_{kind}, expander_{std::move(expander)}, touch_{std::move(touch)}
     {
-        // Stack-chan ネコミミ NeoPixel (GPIO9, 18 LEDs) — present on every
-        // CoreS3 build regardless of base. We prefer it over the M5-base PY32
-        // ring (which is presently disabled, see JOURNAL: "M5 base 背面
-        // NeoPixel … 完全に無効化中"). If the PY32 path comes back, route via
-        // a separate accessor; today there's only one strip surface.
-        if (kind_ != BoardKind::AtomNyan) {
-            led_ = std::make_unique<NekomimiLedStrip>();
-        }
+        // Stack-chan ネコミミ NeoPixel (18 LEDs = 9 per ear) — present on
+        // every supported board, but the data line varies: CoreS3 uses
+        // GPIO9 (free pin near the M-BUS), AtomNyan uses GPIO38 (the
+        // available pin on Atomic ECHO BASE's headers). We prefer the
+        // nekomimi strip over the M5-base PY32 ring (currently disabled —
+        // JOURNAL: "M5 base 背面 NeoPixel … 完全に無効化中"); the PY32
+        // path can come back via a separate accessor without disturbing
+        // this one.
+        const int gpio = (kind_ == BoardKind::AtomNyan)
+                             ? NekomimiLedStrip::kDataGpioAtomNyan
+                             : NekomimiLedStrip::kDataGpioCoreS3;
+        led_ = std::make_unique<NekomimiLedStrip>(gpio);
     }
 
     BoardKind kind() const noexcept { return kind_; }

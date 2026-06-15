@@ -33,7 +33,7 @@ tl::expected<void, Error> NekomimiLedStrip::begin()
     if (handle_ != nullptr) return {}; // idempotent
 
     led_strip_config_t strip_cfg{};
-    strip_cfg.strip_gpio_num = kDataGpio;
+    strip_cfg.strip_gpio_num = data_gpio_;
     strip_cfg.max_leds = static_cast<std::uint32_t>(kCount);
     strip_cfg.led_model = LED_MODEL_WS2812;
     // WS2812 wire order is GRB; the driver writes set_pixel(r,g,b) for us so
