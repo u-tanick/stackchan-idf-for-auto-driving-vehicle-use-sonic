@@ -115,6 +115,11 @@ public:
     std::atomic<std::uint8_t> led_mode{3};       // 3 = kModeGradient (rainbow)
     std::atomic<std::uint32_t> led_color{0x00404040u}; // ignored by gradient
     std::atomic<std::uint8_t> led_brightness{26};
+    // Gradient (rainbow) revolution period in tenths of a second. 60 = 6.0 s
+    // (the historical hardcoded value). led_task uses (period_ds / 10) as
+    // the divisor on the hue ramp. Clamped to >= 1 on use so a stray zero
+    // doesn't divide-by-zero the animation.
+    std::atomic<std::uint8_t> led_gradient_period_ds{60};
 
     // LT timekeeper (main/lt_timer.cpp; ticked by demo_loop). The on-device
     // LT tab writes lt_command / lt_total_s and renders lt_active /

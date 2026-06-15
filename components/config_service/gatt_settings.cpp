@@ -629,7 +629,11 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
                 xSemaphoreGive(g_mutex);
                 return BLE_ATT_ERR_UNLIKELY;
             }
-            const std::array<std::uint8_t, 5> payload{s.mode, s.r, s.g, s.b, s.brightness};
+            // 6-byte payload [mode][R][G][B][bright][period_ds]. Older
+            // clients that read 5 bytes ignore the trailing period — newer
+            // ones (settings.html) pick it up.
+            const std::array<std::uint8_t, 6> payload{
+                s.mode, s.r, s.g, s.b, s.brightness, s.gradient_period_ds};
             const bool ok = append_encrypted(ctxt->om, {payload.data(), payload.size()});
             xSemaphoreGive(g_mutex);
             return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
@@ -980,19 +984,19 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             return 0;
         }
         if (attr_handle == g_led_state_handle) {
-            // 5-byte fixed payload [mode][R][G][B][brightness]. To keep the
-            // wire format compact we don't carry "leave as-is" sentinels — a
-            // client that just wants to change brightness must read first,
-            // then write back the full tuple with the new brightness. The
-            // HTTP endpoint exposes the per-field optional patch for browser
-            // UIs that prefer that ergonomics.
-            if (pt.size() != 5) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            // 5-byte legacy payload [mode][R][G][B][brightness], or 6-byte
+            // extended payload that also carries [period_ds] for the
+            // gradient revolution. Anything else is a malformed write. The
+            // 5-byte form keeps the existing period as-is (we just don't
+            // populate the optional in the patch).
+            if (pt.size() != 5 && pt.size() != 6) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
             LedStatePatch p{};
             p.mode = pt[0];
             p.r = pt[1];
             p.g = pt[2];
             p.b = pt[3];
             p.brightness = pt[4];
+            if (pt.size() == 6) p.gradient_period_ds = pt[5];
             LedStateSink sink = g_led_state_sink;
             if (sink != nullptr) sink(p);
             return 0;

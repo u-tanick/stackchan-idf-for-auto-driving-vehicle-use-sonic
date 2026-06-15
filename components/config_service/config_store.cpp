@@ -37,6 +37,7 @@ constexpr const char* kKeyLtConfig = "lt_cfg";
 constexpr const char* kKeyLedMode = "led_mode";
 constexpr const char* kKeyLedColor = "led_color";
 constexpr const char* kKeyLedBright = "led_bright";
+constexpr const char* kKeyLedPeriod = "led_period";  // gradient revolution period, deciseconds
 
 std::string nvs_read_str(nvs_handle_t h, const char* key)
 {
@@ -132,6 +133,8 @@ DeviceConfig load()
     if (nvs_get_u32(h, kKeyLedColor, &led_color) == ESP_OK) cfg.led_color = led_color;
     std::uint8_t led_bright = cfg.led_brightness;
     if (nvs_get_u8(h, kKeyLedBright, &led_bright) == ESP_OK) cfg.led_brightness = led_bright;
+    std::uint8_t led_period = cfg.led_gradient_period_ds;
+    if (nvs_get_u8(h, kKeyLedPeriod, &led_period) == ESP_OK) cfg.led_gradient_period_ds = led_period;
     nvs_close(h);
     return cfg;
 }
@@ -226,6 +229,12 @@ tl::expected<void, Error> save(const DeviceConfig& cfg)
         nvs_close(h);
         return tl::unexpected(Error::NvsWrite);
     }
+    err = nvs_set_u8(h, kKeyLedPeriod, cfg.led_gradient_period_ds);
+    if (err != ESP_OK) {
+        ESP_LOGE(kTag, "nvs_set_u8(%s): %s", kKeyLedPeriod, esp_err_to_name(err));
+        nvs_close(h);
+        return tl::unexpected(Error::NvsWrite);
+    }
 
     err = nvs_commit(h);
     nvs_close(h);
@@ -236,7 +245,9 @@ tl::expected<void, Error> save(const DeviceConfig& cfg)
     return {};
 }
 
-tl::expected<void, Error> save_led_state(std::uint8_t mode, std::uint32_t color, std::uint8_t brightness)
+tl::expected<void, Error> save_led_state(std::uint8_t mode, std::uint32_t color,
+                                         std::uint8_t brightness,
+                                         std::uint8_t gradient_period_ds)
 {
     nvs_handle_t h;
     esp_err_t err = nvs_open(kNs, NVS_READWRITE, &h);
@@ -247,6 +258,7 @@ tl::expected<void, Error> save_led_state(std::uint8_t mode, std::uint32_t color,
     err = nvs_set_u8(h, kKeyLedMode, mode);
     if (err == ESP_OK) err = nvs_set_u32(h, kKeyLedColor, color);
     if (err == ESP_OK) err = nvs_set_u8(h, kKeyLedBright, brightness);
+    if (err == ESP_OK) err = nvs_set_u8(h, kKeyLedPeriod, gradient_period_ds);
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     if (err != ESP_OK) {

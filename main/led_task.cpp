@@ -100,10 +100,15 @@ void led_task_entry(void* arg)
             break;
         }
         case kModeGradient: {
-            // Full-strip rainbow that scrolls one full revolution every 6 s.
-            // The colour stored in led_color is ignored in this mode (the hue
-            // is generated) — only brightness applies.
-            const float h0 = t / 6.0f;
+            // Full-strip rainbow that scrolls one full revolution every
+            // led_gradient_period_ds × 0.1 s. The colour stored in led_color
+            // is ignored in this mode (the hue is generated) — only
+            // brightness applies. Clamp the divisor so a runaway 0 doesn't
+            // blow up the float division.
+            const std::uint8_t period_ds = std::max<std::uint8_t>(
+                1, state.led_gradient_period_ds.load(std::memory_order_relaxed));
+            const float period_s = static_cast<float>(period_ds) * 0.1f;
+            const float h0 = t / period_s;
             for (std::size_t i = 0; i < n; ++i) {
                 std::uint8_t r, g, b;
                 hsv_to_rgb(h0 + static_cast<float>(i) / static_cast<float>(n), r, g, b);

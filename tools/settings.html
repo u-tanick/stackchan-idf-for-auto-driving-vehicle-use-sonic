@@ -614,6 +614,10 @@
         <label for="led-brightness">明るさ <span id="led-brightness-value">26</span> / 255</label>
         <input type="range" id="led-brightness" min="0" max="255" step="1" value="26" style="width:100%">
       </div>
+      <div style="grid-column:span 2">
+        <label for="led-period">虹 (gradient) 周期 <span id="led-period-value">6.0</span> 秒</label>
+        <input type="range" id="led-period" min="1" max="255" step="1" value="60" style="width:100%">
+      </div>
     </div>
   </details>
 
@@ -1151,7 +1155,7 @@ function applyCapabilityGating() {
   document.getElementById('audio-metrics-section').style.display = chrAudioMetrics ? '' : 'none';
   document.getElementById('btn-audio-metrics-reload').disabled = !chrAudioMetrics || !aesKey;
   document.getElementById('led-section').style.display = chrLedState ? '' : 'none';
-  for (const id of ['led-mode','led-color','led-brightness']) {
+  for (const id of ['led-mode','led-color','led-brightness','led-period']) {
     const el = document.getElementById(id);
     if (el) el.disabled = !chrLedState || !aesKey;
   }
@@ -2556,11 +2560,15 @@ async function loadLedState() {
     const b = await readEncrypted(chrLedState);
     if (b.length < 5) return;
     const mode = b[0], r = b[1], g = b[2], bl = b[3], bright = b[4];
+    // Period byte was added later; older firmwares return 5 bytes only.
+    const period = b.length >= 6 ? b[5] : 60;
     ledStateLoaded = false;
     document.getElementById('led-mode').value = String(mode);
     document.getElementById('led-color').value = rgbToHex(r, g, bl);
     document.getElementById('led-brightness').value = String(bright);
     document.getElementById('led-brightness-value').textContent = String(bright);
+    document.getElementById('led-period').value = String(period);
+    document.getElementById('led-period-value').textContent = (period / 10).toFixed(1);
     ledStateLoaded = true;
   } catch (e) {
     log(`LED state 読み出し失敗: ${e?.message ?? e}`, 'err');
@@ -2572,7 +2580,10 @@ async function writeLedState() {
   const mode = parseInt(document.getElementById('led-mode').value, 10) || 0;
   const { r, g, b } = hexToRgb(document.getElementById('led-color').value);
   const bright = parseInt(document.getElementById('led-brightness').value, 10) || 0;
-  const payload = new Uint8Array([mode, r, g, b, bright]);
+  const period = parseInt(document.getElementById('led-period').value, 10) || 60;
+  // Always write the 6-byte extended form; firmwares older than period
+  // support won't expose the chr at all (UI section is hidden).
+  const payload = new Uint8Array([mode, r, g, b, bright, period]);
   try {
     await writeEncrypted(chrLedState, payload);
   } catch (e) {
@@ -2744,6 +2755,10 @@ document.getElementById('led-mode').addEventListener('change', scheduleLedWrite)
 document.getElementById('led-color').addEventListener('input', scheduleLedWrite);
 document.getElementById('led-brightness').addEventListener('input', (e) => {
   document.getElementById('led-brightness-value').textContent = String(e.target.value);
+  scheduleLedWrite();
+});
+document.getElementById('led-period').addEventListener('input', (e) => {
+  document.getElementById('led-period-value').textContent = (parseInt(e.target.value, 10) / 10).toFixed(1);
   scheduleLedWrite();
 });
 

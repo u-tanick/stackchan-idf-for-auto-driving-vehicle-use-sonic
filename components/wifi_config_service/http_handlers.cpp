@@ -737,17 +737,18 @@ esp_err_t handle_audio_metrics_get(httpd_req_t* req)
 
 // --- LED live state ---
 
-// GET /api/led-state — current LED mode/colour/brightness.
+// GET /api/led-state — current LED mode/colour/brightness/gradient period.
 esp_err_t handle_led_state_get(httpd_req_t* req)
 {
     config::LedState s{};
     if (g_led_state_getter != nullptr) s = g_led_state_getter();
-    char buf[160];
+    char buf[192];
     std::snprintf(buf, sizeof(buf),
-                  R"({"mode":%u,"r":%u,"g":%u,"b":%u,"brightness":%u})",
+                  R"({"mode":%u,"r":%u,"g":%u,"b":%u,"brightness":%u,"period_ds":%u})",
                   static_cast<unsigned>(s.mode), static_cast<unsigned>(s.r),
                   static_cast<unsigned>(s.g), static_cast<unsigned>(s.b),
-                  static_cast<unsigned>(s.brightness));
+                  static_cast<unsigned>(s.brightness),
+                  static_cast<unsigned>(s.gradient_period_ds));
     return send_json(req, std::string{buf});
 }
 
@@ -780,6 +781,7 @@ esp_err_t handle_led_state_post(httpd_req_t* req)
     p.g = pick("g");
     p.b = pick("b");
     p.brightness = pick("brightness");
+    p.gradient_period_ds = pick("period_ds");
     cJSON_Delete(root);
     if (g_led_state_sink != nullptr) g_led_state_sink(p);
     return handle_led_state_get(req);

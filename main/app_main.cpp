@@ -115,6 +115,7 @@ stackchan::config::LedState read_led_state()
     s.g = static_cast<std::uint8_t>((color >>  8) & 0xFF);
     s.b = static_cast<std::uint8_t>( color        & 0xFF);
     s.brightness = g_state->led_brightness.load(std::memory_order_relaxed);
+    s.gradient_period_ds = g_state->led_gradient_period_ds.load(std::memory_order_relaxed);
     return s;
 }
 
@@ -146,6 +147,13 @@ void apply_led_patch(const stackchan::config::LedStatePatch& p)
     if (p.brightness) {
         g_state->led_brightness.store(*p.brightness, std::memory_order_relaxed);
     }
+    if (p.gradient_period_ds) {
+        // Clamp 0 → 1 so the divisor in led_task never hits zero. The wire
+        // protocol accepts the full u8 range; we just refuse the one
+        // pathological value here rather than sprinkle clamps on every read.
+        const std::uint8_t v = *p.gradient_period_ds == 0 ? 1 : *p.gradient_period_ds;
+        g_state->led_gradient_period_ds.store(v, std::memory_order_relaxed);
+    }
     // Persist immediately so a reboot replays the same look. The settings
     // UI debounces writes ~150 ms so we don't write to NVS faster than the
     // user can drag a slider; HTTP clients posting in a loop are on their
@@ -153,7 +161,8 @@ void apply_led_patch(const stackchan::config::LedStatePatch& p)
     const std::uint8_t mode = g_state->led_mode.load(std::memory_order_relaxed);
     const std::uint32_t color = g_state->led_color.load(std::memory_order_relaxed);
     const std::uint8_t bright = g_state->led_brightness.load(std::memory_order_relaxed);
-    (void)stackchan::config::store::save_led_state(mode, color, bright);
+    const std::uint8_t period_ds = g_state->led_gradient_period_ds.load(std::memory_order_relaxed);
+    (void)stackchan::config::store::save_led_state(mode, color, bright, period_ds);
 }
 
 // Render the last-turn audio metrics as JSON for BLE chr 0x1f + HTTP
@@ -772,6 +781,9 @@ extern "C" void app_main()
     g_state->led_mode.store(cfg.led_mode, std::memory_order_relaxed);
     g_state->led_color.store(cfg.led_color, std::memory_order_relaxed);
     g_state->led_brightness.store(cfg.led_brightness, std::memory_order_relaxed);
+    g_state->led_gradient_period_ds.store(
+        cfg.led_gradient_period_ds == 0 ? 1 : cfg.led_gradient_period_ds,
+        std::memory_order_relaxed);
     stackchan::config::set_face_config_sink(&on_face_config);
     stackchan::config::set_lt_config_sink(+[](std::string_view json) {
         if (g_state != nullptr) g_state->set_lt_config(json);

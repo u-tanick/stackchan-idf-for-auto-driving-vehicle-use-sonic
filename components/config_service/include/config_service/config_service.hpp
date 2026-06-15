@@ -92,6 +92,7 @@ struct DeviceConfig {
     std::uint8_t led_mode = 3;          // 0=off, 1=solid, 2=breath, 3=gradient
     std::uint32_t led_color = 0x00404040u;
     std::uint8_t led_brightness = 26;
+    std::uint8_t led_gradient_period_ds = 60;  // 6.0 s default (legacy hardcode)
 };
 
 enum class Error {
@@ -215,6 +216,9 @@ struct LedState {
     std::uint8_t mode;        // 0=off, 1=solid, 2=breath, 3=gradient
     std::uint8_t r, g, b;     // RGB components (ignored when mode=gradient)
     std::uint8_t brightness;  // 0..255 master gain
+    // Gradient revolution period in tenths of a second (1..255 → 0.1..25.5 s).
+    // Only meaningful in mode=gradient.
+    std::uint8_t gradient_period_ds;
 };
 // nullopt fields = "leave as-is". Apply order matters at the wire level so
 // the caller can update brightness alone without disturbing the mode/colour.
@@ -222,6 +226,7 @@ struct LedStatePatch {
     std::optional<std::uint8_t> mode;
     std::optional<std::uint8_t> r, g, b;
     std::optional<std::uint8_t> brightness;
+    std::optional<std::uint8_t> gradient_period_ds;
 };
 using LedStateGetter = LedState (*)();
 using LedStateSink = void (*)(const LedStatePatch& patch);
