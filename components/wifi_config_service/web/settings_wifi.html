@@ -252,6 +252,79 @@
     border-top: 1px solid #eee;
     padding-top: 0.75rem;
   }
+  /* Tab bar + tab-panel system. Mirrors tools/settings.html so the BLE and
+     Wi-Fi pages share the same navigation layout — see plan-md-lucky-dongarra.md.
+     Existing section IDs (#jtts-section, #servo-section, #avatar-dsl-section,
+     #ota-section, #lt-section, mcp-token etc.) are preserved so all JS event
+     wiring / form refresh / OTA upload keeps working with no rename. */
+  .tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    margin: 0.5rem 0 0;
+    border-bottom: 2px solid #ddd;
+  }
+  .tabs button {
+    flex: 1 1 auto;
+    background: transparent;
+    border: 1px solid transparent;
+    border-bottom: none;
+    padding: 0.5rem 0.7rem;
+    border-radius: 6px 6px 0 0;
+    cursor: pointer;
+    color: #555;
+    font-size: 0.9rem;
+    font-weight: 500;
+    transition: background 0.15s, color 0.15s;
+  }
+  .tabs button:hover { background: #f0f0f0; color: #222; }
+  .tabs button.active {
+    background: white;
+    border-color: #ddd;
+    color: #111;
+    font-weight: 600;
+    position: relative;
+    top: 2px;
+  }
+  .tab-panel { display: none; padding-top: 1rem; }
+  .tab-panel.active { display: block; }
+  .section-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: #333;
+    margin: 1.2rem 0 0.5rem;
+    padding-bottom: 0.25rem;
+    border-bottom: 1px solid #eee;
+  }
+  .section-title:first-child { margin-top: 0.25rem; }
+  .page-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1rem;
+    margin-bottom: 0.6rem;
+  }
+  .page-header .actions { margin: 0; }
+  #header-info {
+    font-size: 0.82rem;
+    color: #555;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  #header-info .key { color: #888; margin-right: 0.3rem; }
+  #header-info .val {
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    color: #222;
+  }
+  .instructions {
+    margin: 0.25rem 0 0.5rem;
+    padding: 0.5rem 0.75rem;
+    background: #f7f8fa;
+    border-left: 3px solid #2196f3;
+    border-radius: 4px;
+    font-size: 0.78rem;
+    color: #555;
+  }
   .device-info {
     margin-bottom: 1.5rem;
     padding: 0.6rem 0.9rem;
@@ -282,21 +355,46 @@
   <h1>🤖 Stack-chan 設定 (Wi-Fi)</h1>
   <p class="subtitle">HTTP 経由で Wi-Fi と API キーを設定します</p>
 
-  <div class="status-bar">
-    <span class="dot" id="http-dot"></span>
-    <span id="http-label">状態取得中…</span>
-    <span class="dot" id="wifi-dot" style="margin-left:0.75rem"></span>
-    <span id="wifi-label">Wi-Fi: —</span>
-    <span class="flags">
-      <span class="flag" id="flag-ssid" title="SSID 設定済み">S</span>
-      <span class="flag" id="flag-pass" title="Password 設定済み">P</span>
-      <span class="flag" id="flag-key"  title="OpenAI key 設定済み">K</span>
-      <span class="flag" id="flag-en"   title="OpenAI 有効">O</span>
-      <span class="flag" id="flag-gkey" title="Gemini key 設定済み">G</span>
-      <span class="flag" id="flag-prov" title="Provider = Gemini">P</span>
-    </span>
+  <div class="page-header">
+    <div class="status-bar" style="flex:1 1 auto;margin:0">
+      <span class="dot" id="http-dot"></span>
+      <span id="http-label">状態取得中…</span>
+      <span class="dot" id="wifi-dot" style="margin-left:0.75rem"></span>
+      <span id="wifi-label">Wi-Fi: —</span>
+      <span class="flags">
+        <span class="flag" id="flag-ssid" title="SSID 設定済み">S</span>
+        <span class="flag" id="flag-pass" title="Password 設定済み">P</span>
+        <span class="flag" id="flag-key"  title="OpenAI key 設定済み">K</span>
+        <span class="flag" id="flag-en"   title="OpenAI 有効">O</span>
+        <span class="flag" id="flag-gkey" title="Gemini key 設定済み">G</span>
+        <span class="flag" id="flag-prov" title="Provider = Gemini">P</span>
+      </span>
+    </div>
+    <div id="header-info">
+      <span class="key">FW</span><span class="val" id="hdr-fw">—</span>
+      <span class="key" style="margin-left:0.6rem">Board</span><span class="val" id="hdr-board">—</span>
+    </div>
+    <div class="actions">
+      <button id="btn-refresh" type="button">状態を再取得</button>
+      <button id="btn-apply" type="button">保存 &amp; 再起動</button>
+    </div>
   </div>
 
+  <p class="instructions">
+    ℹ️ タブを切り替えて設定 → <strong>保存 &amp; 再起動</strong> で確定。
+    接続後、即反映する項目 (アバター DSL / LT) は個別ボタンが付いています。
+  </p>
+
+  <nav class="tabs" role="tablist">
+    <button data-tab="conn"   class="active" role="tab">接続</button>
+    <button data-tab="avatar"             role="tab">アバター</button>
+    <button data-tab="audio"              role="tab">音声</button>
+    <button data-tab="device"             role="tab">デバイス</button>
+    <button data-tab="maint"              role="tab">メンテ</button>
+  </nav>
+
+  <!-- ===== 接続 ===== -->
+  <section class="tab-panel active" data-tab="conn">
   <div class="device-info" id="device-info">
     <div class="row"><span class="key">Firmware</span><span class="val" id="dis-fw">—</span></div>
     <div class="row"><span class="key">ESP-IDF</span><span class="val" id="dis-idf">—</span></div>
@@ -369,185 +467,195 @@
     <span>サーボを有効にする</span>
   </label>
   <p class="hint">無効にするとサーボ電源を入れず、サーボタスクも起動しません（保存後の再起動で反映）。操作画面の脱力/復帰トグルとは別物で、こちらは NVS に永続化されます。</p>
+  </section><!-- /tab-panel "conn" -->
 
-  <h3 style="margin-top:1.5rem">Claude Code Channel (MCP)</h3>
-  <p class="hint" id="mcp-token-status">トークン: <span id="mcp-token-state">—</span></p>
-  <label for="mcp-token">MCP API トークン (空欄なら変更しない / 値が入っているなら上書き、空文字列に揃えるには「クリア」)</label>
-  <input type="password" id="mcp-token" autocomplete="off" placeholder="(変更しないなら空欄)">
-  <div style="display:flex;gap:0.4rem;margin-top:0.3rem">
-    <button type="button" id="btn-mcp-token-gen">ランダム生成</button>
-    <button type="button" id="btn-mcp-token-show">表示</button>
-    <button type="button" id="btn-mcp-token-clear">クリア</button>
-  </div>
-  <p class="hint">設定されていれば <code>/mcp/*</code> が有効化（adapter から接続可）。空にすると <code>/mcp/*</code> は 404 を返します（保存後の再起動で反映）</p>
-
-  <details id="lt-section">
-    <summary>LT タイムキーパー</summary>
-    <p class="hint">本体の「LT」タブで開始/停止。ここでは既定時間と通知ワードを設定します（保存しなくても送信で即反映、保存で再起動後も保持）。読みはひらがな（jtts は漢字を読めません）</p>
-    <div class="grid2">
-      <div>
-        <label for="lt-total">発表時間 (秒)</label>
-        <input type="number" id="lt-total" min="30" max="3600" step="30" placeholder="300">
-      </div>
-      <div>
-        <label for="lt-warn">残り通知 (終了の何秒前)</label>
-        <input type="number" id="lt-warn" min="10" max="600" step="10" placeholder="60">
-      </div>
-    </div>
-    <div class="grid2">
-      <div>
-        <label for="lt-repeat">超過の繰返し間隔 (秒、0=1回のみ)</label>
-        <input type="number" id="lt-repeat" min="0" max="300" step="5" placeholder="30">
-      </div>
-    </div>
-    <label for="lt-warn-text">残り通知 表示テキスト</label>
-    <input id="lt-warn-text" placeholder="のこり1分です">
-    <label for="lt-warn-reading">残り通知 読み (ひらがな)</label>
-    <input id="lt-warn-reading" placeholder="のこり いっぷん です">
-    <label for="lt-over-text">超過 表示テキスト</label>
-    <input id="lt-over-text" placeholder="時間です!">
-    <label for="lt-over-reading">超過 読み (ひらがな)</label>
-    <input id="lt-over-reading" placeholder="おじかん です">
-    <button type="button" id="btn-lt-send" style="margin-top:0.5rem">LT 設定を送信 (即反映)</button>
-  </details>
-
-  <details class="jtts-section" id="jtts-section">
-    <summary>アイドル時の声 (jtts) を調整する</summary>
-    <p class="hint" style="margin-bottom:0.5rem">空欄や変更なしで「保存」を押すと現在の設定は維持されます。</p>
-
-    <label for="jtts-voice">声タイプ</label>
-    <select id="jtts-voice">
-      <option value="female">Female (子供っぽい)</option>
-      <option value="male">Male (低め)</option>
-    </select>
-
-    <div class="grid2">
-      <div>
-        <label for="jtts-f0">ピッチ F0 (Hz)</label>
-        <input type="number" id="jtts-f0" min="60" max="500" step="1" placeholder="280">
-      </div>
-      <div>
-        <label for="jtts-formant">フォルマント倍率</label>
-        <input type="number" id="jtts-formant" min="0.5" max="2.0" step="0.05" placeholder="1.30">
-      </div>
-      <div>
-        <label for="jtts-mora">モーラ長 (ms)</label>
-        <input type="number" id="jtts-mora" min="40" max="300" step="5" placeholder="120">
-      </div>
-      <div>
-        <label for="jtts-gain">音量 (gain)</label>
-        <input type="number" id="jtts-gain" min="0" max="2" step="0.05" placeholder="0.60">
-      </div>
-      <div>
-        <label for="jtts-breath">息成分 (breathiness)</label>
-        <input type="number" id="jtts-breath" min="0" max="1" step="0.05" placeholder="0.00">
-      </div>
-      <div>
-        <label for="jtts-vibrate">ビブラート rate (Hz)</label>
-        <input type="number" id="jtts-vibrate" min="0" max="10" step="0.1" placeholder="0">
-      </div>
-      <div>
-        <label for="jtts-vibratoc">ビブラート depth (cents)</label>
-        <input type="number" id="jtts-vibratoc" min="0" max="200" step="1" placeholder="0">
-      </div>
-    </div>
-
-    <label for="jtts-phrases" style="margin-top:0.75rem">アイドル時の発話フレーズ (一行 1 つ・ひらがな/カタカナのみ)</label>
-    <textarea id="jtts-phrases" rows="6" placeholder="こんにちわー&#10;おはよー&#10;..."></textarea>
-  </details>
-
-  <details class="jtts-section" id="servo-section">
-    <summary>サーボ原点・可動範囲 (Takao base 等の自作版向け)</summary>
-    <p class="hint" style="margin-bottom:0.5rem">
-      サーボの取り付け向きや可動範囲はベース基板で異なります。原点(0..1023)と可動範囲(度)を
-      設定して「保存して再起動」で反映してください。既定は M5 base の値です。
-    </p>
-    <div class="grid2">
-      <div><label for="sv-yaw-zero">Yaw 原点 (raw)</label>
-        <input type="number" id="sv-yaw-zero" min="0" max="1023" step="1" placeholder="460"></div>
-      <div></div>
-      <div><label for="sv-yaw-min">Yaw 最小 (°)</label>
-        <input type="number" id="sv-yaw-min" min="-90" max="90" step="1" placeholder="-40"></div>
-      <div><label for="sv-yaw-max">Yaw 最大 (°)</label>
-        <input type="number" id="sv-yaw-max" min="-90" max="90" step="1" placeholder="40"></div>
-      <div><label for="sv-pitch-zero">Pitch 原点 (raw)</label>
-        <input type="number" id="sv-pitch-zero" min="0" max="1023" step="1" placeholder="620"></div>
-      <div></div>
-      <div><label for="sv-pitch-min">Pitch 最小 (°)</label>
-        <input type="number" id="sv-pitch-min" min="-90" max="90" step="1" placeholder="-10"></div>
-      <div><label for="sv-pitch-max">Pitch 最大 (°)</label>
-        <input type="number" id="sv-pitch-max" min="-90" max="90" step="1" placeholder="25"></div>
-    </div>
-    <div id="sv-range-area" style="margin-top:0.8rem;padding-top:0.6rem;border-top:1px dashed #555">
+  <!-- ===== アバター ===== -->
+  <section class="tab-panel" data-tab="avatar">
+    <div id="avatar-dsl-section">
+      <h2 class="section-title">顔描画 DSL (Avatar)</h2>
       <p class="hint" style="margin-bottom:0.5rem">
-        範囲設定モードを ON にするとサーボの力が抜け、手で動かした位置を取り込めます。
-        中央位置で「Yaw 原点取込」、左端で「Yaw 最小取込」、右端で「Yaw 最大取込」を順にタップしてください。
-        取り込んだ値は上の入力欄に反映されます。最後に「保存 &amp; 再起動」で確定します。
+        アバターの顔の描画ロジックを Lua 風 DSL で書いて、ブラウザ内でバイトコード化
+        → 実機に送信して即時反映します。NVS に保存されるので再起動後も維持。
+        <a href="/avatar_dsl.html" target="_blank" rel="noopener" style="white-space:nowrap">文法ガイド</a>
+        ／
+        <a href="https://github.com/ciniml/stackchan-idf/blob/main/assets/default_face.avdsl"
+           target="_blank" rel="noopener" style="white-space:nowrap">デフォルト顔ソース</a>
       </p>
-      <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap">
-        <button type="button" id="sv-range-mode">範囲設定モード: OFF</button>
-        <span class="hint" id="sv-live-pos">Yaw: -- (--°)   Pitch: -- (--°)</span>
+      <textarea id="dsl-src" spellcheck="false" autocomplete="off"
+                autocapitalize="off" autocorrect="off"></textarea>
+      <div id="dsl-msg">DSL コンパイラ未起動</div>
+      <div class="dsl-btnrow">
+        <button type="button" class="primary" id="btn-dsl-send">コンパイル &amp; 送信</button>
+        <select id="dsl-preset" class="secondary" title="プリセットを選ぶとソースを読込んで実機に送信"
+                style="flex:1 1 auto;padding:.45rem;font-size:.85rem;background:#e0e0e0;
+                       color:#333;border:1px solid #bbb;border-radius:6px;cursor:pointer">
+        </select>
+        <button type="button" class="danger" id="btn-dsl-reset">実機をデフォルトに戻す</button>
       </div>
-      <div style="margin-top:0.4rem;display:flex;flex-wrap:wrap;gap:0.3rem">
-        <button type="button" id="sv-cap-yaw-zero" disabled>Yaw 原点取込</button>
-        <button type="button" id="sv-cap-yaw-min"  disabled>Yaw 最小取込</button>
-        <button type="button" id="sv-cap-yaw-max"  disabled>Yaw 最大取込</button>
-        <button type="button" id="sv-cap-pitch-zero" disabled>Pitch 原点取込</button>
-        <button type="button" id="sv-cap-pitch-min"  disabled>Pitch 最小取込</button>
-        <button type="button" id="sv-cap-pitch-max"  disabled>Pitch 最大取込</button>
+      <div class="dsl-btnrow">
+        <button type="button" class="secondary" id="btn-dsl-download">.avbc ダウンロード</button>
+        <button type="button" class="secondary" id="btn-dsl-download-src">.avdsl ダウンロード</button>
+        <label class="filebtn" for="dsl-load">.avdsl 読込</label>
+        <input type="file" id="dsl-load" accept=".avdsl,text/plain" style="display:none">
       </div>
     </div>
-  </details>
+  </section><!-- /tab-panel "avatar" -->
 
-  <details class="jtts-section" id="avatar-dsl-section">
-    <summary>顔描画 DSL (Avatar)</summary>
-    <p class="hint" style="margin-bottom:0.5rem">
-      アバターの顔の描画ロジックを Lua 風 DSL で書いて、ブラウザ内でバイトコード化
-      → 実機に送信して即時反映します。NVS に保存されるので再起動後も維持。
-      <a href="/avatar_dsl.html" target="_blank" rel="noopener" style="white-space:nowrap">文法ガイド</a>
-      ／
-      <a href="https://github.com/ciniml/stackchan-idf/blob/main/assets/default_face.avdsl"
-         target="_blank" rel="noopener" style="white-space:nowrap">デフォルト顔ソース</a>
-    </p>
-    <textarea id="dsl-src" spellcheck="false" autocomplete="off"
-              autocapitalize="off" autocorrect="off"></textarea>
-    <div id="dsl-msg">DSL コンパイラ未起動</div>
-    <div class="dsl-btnrow">
-      <button type="button" class="primary" id="btn-dsl-send">コンパイル &amp; 送信</button>
-      <select id="dsl-preset" class="secondary" title="プリセットを選ぶとソースを読込んで実機に送信"
-              style="flex:1 1 auto;padding:.45rem;font-size:.85rem;background:#e0e0e0;
-                     color:#333;border:1px solid #bbb;border-radius:6px;cursor:pointer">
+  <!-- ===== 音声 ===== -->
+  <section class="tab-panel" data-tab="audio">
+    <div id="jtts-section">
+      <h2 class="section-title">アイドル時の声 (jtts)</h2>
+      <p class="hint" style="margin-bottom:0.5rem">空欄や変更なしで「保存」を押すと現在の設定は維持されます。</p>
+
+      <label for="jtts-voice">声タイプ</label>
+      <select id="jtts-voice">
+        <option value="female">Female (子供っぽい)</option>
+        <option value="male">Male (低め)</option>
       </select>
-      <button type="button" class="danger" id="btn-dsl-reset">実機をデフォルトに戻す</button>
-    </div>
-    <div class="dsl-btnrow">
-      <button type="button" class="secondary" id="btn-dsl-download">.avbc ダウンロード</button>
-      <button type="button" class="secondary" id="btn-dsl-download-src">.avdsl ダウンロード</button>
-      <label class="filebtn" for="dsl-load">.avdsl 読込</label>
-      <input type="file" id="dsl-load" accept=".avdsl,text/plain" style="display:none">
-    </div>
-  </details>
 
-  <details class="jtts-section" id="ota-section">
-    <summary>ファームウェア更新 (OTA)</summary>
-    <p class="hint" style="margin-bottom:0.5rem">
-      ローカルの <code>firmware.bin</code> を選んで「書き込み」を押すと、新ファームを
-      別パーティションに書き込んで再起動します。Wi-Fi 経由は BLE より大幅に高速です。
-    </p>
-    <div class="ota-row">
-      <input type="file" id="ota-file" accept=".bin">
-      <button id="btn-ota" type="button" disabled>書き込み</button>
-    </div>
-    <div class="ota-status" id="ota-status">
-      <div class="ota-bar"><div class="ota-bar-fill" id="ota-bar-fill"></div></div>
-      <div class="ota-stats" id="ota-stats">未開始</div>
-    </div>
-  </details>
+      <div class="grid2">
+        <div>
+          <label for="jtts-f0">ピッチ F0 (Hz)</label>
+          <input type="number" id="jtts-f0" min="60" max="500" step="1" placeholder="280">
+        </div>
+        <div>
+          <label for="jtts-formant">フォルマント倍率</label>
+          <input type="number" id="jtts-formant" min="0.5" max="2.0" step="0.05" placeholder="1.30">
+        </div>
+        <div>
+          <label for="jtts-mora">モーラ長 (ms)</label>
+          <input type="number" id="jtts-mora" min="40" max="300" step="5" placeholder="120">
+        </div>
+        <div>
+          <label for="jtts-gain">音量 (gain)</label>
+          <input type="number" id="jtts-gain" min="0" max="2" step="0.05" placeholder="0.60">
+        </div>
+        <div>
+          <label for="jtts-breath">息成分 (breathiness)</label>
+          <input type="number" id="jtts-breath" min="0" max="1" step="0.05" placeholder="0.00">
+        </div>
+        <div>
+          <label for="jtts-vibrate">ビブラート rate (Hz)</label>
+          <input type="number" id="jtts-vibrate" min="0" max="10" step="0.1" placeholder="0">
+        </div>
+        <div>
+          <label for="jtts-vibratoc">ビブラート depth (cents)</label>
+          <input type="number" id="jtts-vibratoc" min="0" max="200" step="1" placeholder="0">
+        </div>
+      </div>
 
-  <div class="actions">
-    <button id="btn-refresh" type="button">状態を再取得</button>
-    <button id="btn-apply" type="button">保存 &amp; 再起動</button>
-  </div>
+      <label for="jtts-phrases" style="margin-top:0.75rem">アイドル時の発話フレーズ (一行 1 つ・ひらがな/カタカナのみ)</label>
+      <textarea id="jtts-phrases" rows="6" placeholder="こんにちわー&#10;おはよー&#10;..."></textarea>
+    </div>
+  </section><!-- /tab-panel "audio" -->
+
+  <!-- ===== デバイス ===== -->
+  <section class="tab-panel" data-tab="device">
+    <div id="servo-section">
+      <h2 class="section-title">サーボ原点・可動範囲 (Takao base 等の自作版向け)</h2>
+      <p class="hint" style="margin-bottom:0.5rem">
+        サーボの取り付け向きや可動範囲はベース基板で異なります。原点(0..1023)と可動範囲(度)を
+        設定して「保存して再起動」で反映してください。既定は M5 base の値です。
+      </p>
+      <div class="grid2">
+        <div><label for="sv-yaw-zero">Yaw 原点 (raw)</label>
+          <input type="number" id="sv-yaw-zero" min="0" max="1023" step="1" placeholder="460"></div>
+        <div></div>
+        <div><label for="sv-yaw-min">Yaw 最小 (°)</label>
+          <input type="number" id="sv-yaw-min" min="-90" max="90" step="1" placeholder="-40"></div>
+        <div><label for="sv-yaw-max">Yaw 最大 (°)</label>
+          <input type="number" id="sv-yaw-max" min="-90" max="90" step="1" placeholder="40"></div>
+        <div><label for="sv-pitch-zero">Pitch 原点 (raw)</label>
+          <input type="number" id="sv-pitch-zero" min="0" max="1023" step="1" placeholder="620"></div>
+        <div></div>
+        <div><label for="sv-pitch-min">Pitch 最小 (°)</label>
+          <input type="number" id="sv-pitch-min" min="-90" max="90" step="1" placeholder="-10"></div>
+        <div><label for="sv-pitch-max">Pitch 最大 (°)</label>
+          <input type="number" id="sv-pitch-max" min="-90" max="90" step="1" placeholder="25"></div>
+      </div>
+      <div id="sv-range-area" style="margin-top:0.8rem;padding-top:0.6rem;border-top:1px dashed #555">
+        <p class="hint" style="margin-bottom:0.5rem">
+          範囲設定モードを ON にするとサーボの力が抜け、手で動かした位置を取り込めます。
+          中央位置で「Yaw 原点取込」、左端で「Yaw 最小取込」、右端で「Yaw 最大取込」を順にタップしてください。
+          取り込んだ値は上の入力欄に反映されます。最後に「保存 &amp; 再起動」で確定します。
+        </p>
+        <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap">
+          <button type="button" id="sv-range-mode">範囲設定モード: OFF</button>
+          <span class="hint" id="sv-live-pos">Yaw: -- (--°)   Pitch: -- (--°)</span>
+        </div>
+        <div style="margin-top:0.4rem;display:flex;flex-wrap:wrap;gap:0.3rem">
+          <button type="button" id="sv-cap-yaw-zero" disabled>Yaw 原点取込</button>
+          <button type="button" id="sv-cap-yaw-min"  disabled>Yaw 最小取込</button>
+          <button type="button" id="sv-cap-yaw-max"  disabled>Yaw 最大取込</button>
+          <button type="button" id="sv-cap-pitch-zero" disabled>Pitch 原点取込</button>
+          <button type="button" id="sv-cap-pitch-min"  disabled>Pitch 最小取込</button>
+          <button type="button" id="sv-cap-pitch-max"  disabled>Pitch 最大取込</button>
+        </div>
+      </div>
+    </div>
+  </section><!-- /tab-panel "device" -->
+
+  <!-- ===== メンテ ===== -->
+  <section class="tab-panel" data-tab="maint">
+    <div id="mcp-section">
+      <h2 class="section-title">Claude Code Channel (MCP)</h2>
+      <p class="hint" id="mcp-token-status">トークン: <span id="mcp-token-state">—</span></p>
+      <label for="mcp-token">MCP API トークン (空欄なら変更しない / 値が入っているなら上書き、空文字列に揃えるには「クリア」)</label>
+      <input type="password" id="mcp-token" autocomplete="off" placeholder="(変更しないなら空欄)">
+      <div style="display:flex;gap:0.4rem;margin-top:0.3rem">
+        <button type="button" id="btn-mcp-token-gen">ランダム生成</button>
+        <button type="button" id="btn-mcp-token-show">表示</button>
+        <button type="button" id="btn-mcp-token-clear">クリア</button>
+      </div>
+      <p class="hint">設定されていれば <code>/mcp/*</code> が有効化（adapter から接続可）。空にすると <code>/mcp/*</code> は 404 を返します（保存後の再起動で反映）</p>
+    </div>
+
+    <div id="lt-section">
+      <h2 class="section-title">LT タイムキーパー</h2>
+      <p class="hint">本体の「LT」タブで開始/停止。ここでは既定時間と通知ワードを設定します（保存しなくても送信で即反映、保存で再起動後も保持）。読みはひらがな（jtts は漢字を読めません）</p>
+      <div class="grid2">
+        <div>
+          <label for="lt-total">発表時間 (秒)</label>
+          <input type="number" id="lt-total" min="30" max="3600" step="30" placeholder="300">
+        </div>
+        <div>
+          <label for="lt-warn">残り通知 (終了の何秒前)</label>
+          <input type="number" id="lt-warn" min="10" max="600" step="10" placeholder="60">
+        </div>
+      </div>
+      <div class="grid2">
+        <div>
+          <label for="lt-repeat">超過の繰返し間隔 (秒、0=1回のみ)</label>
+          <input type="number" id="lt-repeat" min="0" max="300" step="5" placeholder="30">
+        </div>
+      </div>
+      <label for="lt-warn-text">残り通知 表示テキスト</label>
+      <input id="lt-warn-text" placeholder="のこり1分です">
+      <label for="lt-warn-reading">残り通知 読み (ひらがな)</label>
+      <input id="lt-warn-reading" placeholder="のこり いっぷん です">
+      <label for="lt-over-text">超過 表示テキスト</label>
+      <input id="lt-over-text" placeholder="時間です!">
+      <label for="lt-over-reading">超過 読み (ひらがな)</label>
+      <input id="lt-over-reading" placeholder="おじかん です">
+      <button type="button" id="btn-lt-send" style="margin-top:0.5rem">LT 設定を送信 (即反映)</button>
+    </div>
+
+    <div id="ota-section">
+      <h2 class="section-title">ファームウェア更新 (OTA)</h2>
+      <p class="hint" style="margin-bottom:0.5rem">
+        ローカルの <code>firmware.bin</code> を選んで「書き込み」を押すと、新ファームを
+        別パーティションに書き込んで再起動します。Wi-Fi 経由は BLE より大幅に高速です。
+      </p>
+      <div class="ota-row">
+        <input type="file" id="ota-file" accept=".bin">
+        <button id="btn-ota" type="button" disabled>書き込み</button>
+      </div>
+      <div class="ota-status" id="ota-status">
+        <div class="ota-bar"><div class="ota-bar-fill" id="ota-bar-fill"></div></div>
+        <div class="ota-stats" id="ota-stats">未開始</div>
+      </div>
+    </div>
+  </section><!-- /tab-panel "maint" -->
 
   <div class="log" id="log"></div>
 
@@ -883,6 +991,13 @@ async function refresh() {
     $('dis-idf').textContent = s.idf || '—';
     $('dis-ip').textContent = s.ip || '—';
     applyBoardGating(typeof s.board === 'number' ? s.board : null);
+    // Mirror FW + board into the compact page header. Board label is filled
+    // by applyBoardGating into #dis-board; copy whichever value is now there.
+    const hdrFw = document.getElementById('hdr-fw');
+    if (hdrFw) hdrFw.textContent = s.firmware || '—';
+    const hdrBoard = document.getElementById('hdr-board');
+    const boardLbl = document.getElementById('dis-board');
+    if (hdrBoard && boardLbl) hdrBoard.textContent = boardLbl.textContent || '—';
     $('dis-battery').textContent = (s.battery_mv == null || s.battery_mv < 0)
       ? '—'
       : ((s.battery_pct >= 0 ? s.battery_pct + '% ' : '')
@@ -1244,6 +1359,33 @@ $('btn-apply').addEventListener('click', apply);
 $('btn-ota').addEventListener('click', startOta);
 
 refresh();
+
+// ===== Tab switching ========================================================
+// Activates a `.tab-panel` by its data-tab name and persists the choice to
+// localStorage so a reload returns to the same tab. Same pattern as
+// tools/settings.html (BLE) — see plan-md-lucky-dongarra.md. All existing
+// section IDs (#jtts-section, #servo-section etc.) live inside their panels
+// so no JS wiring needs to be touched.
+(function setupTabs() {
+  const tabs = document.querySelectorAll('.tabs button[data-tab]');
+  const panels = document.querySelectorAll('.tab-panel[data-tab]');
+  const LS_KEY = 'stackchan.settings.wifi.activeTab';
+  function activate(name) {
+    let found = false;
+    tabs.forEach(b => {
+      const on = b.dataset.tab === name;
+      b.classList.toggle('active', on);
+      if (on) found = true;
+    });
+    if (!found) return;
+    panels.forEach(p => p.classList.toggle('active', p.dataset.tab === name));
+    try { localStorage.setItem(LS_KEY, name); } catch {}
+  }
+  tabs.forEach(b => b.addEventListener('click', () => activate(b.dataset.tab)));
+  let saved = null;
+  try { saved = localStorage.getItem(LS_KEY); } catch {}
+  if (saved) activate(saved);
+})();
 </script>
 </body>
 </html>
