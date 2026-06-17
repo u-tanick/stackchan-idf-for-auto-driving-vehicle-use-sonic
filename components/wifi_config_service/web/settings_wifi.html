@@ -94,24 +94,13 @@
     accent-color: #1976d2;
     cursor: pointer;
   }
-  .jtts-section {
-    margin-top: 1.25rem;
-    padding: 0.6rem 0.9rem;
-    background: #fafafa;
-    border: 1px solid #eee;
-    border-radius: 8px;
-  }
-  .jtts-section summary {
-    cursor: pointer;
-    font-weight: 600;
-    font-size: 0.9rem;
-    color: #444;
-    user-select: none;
-  }
-  .jtts-section[open] summary { margin-bottom: 0.5rem; }
-  .jtts-section select,
-  .jtts-section input[type=number],
-  .jtts-section textarea {
+  /* Inputs / selects / textareas inside any tab panel get full-width styling.
+     Originally scoped to `.jtts-section` (when these were `<details>`); the
+     5-tab refactor dropped the class wrapper so the selector now targets
+     `.tab-panel` directly. */
+  .tab-panel select,
+  .tab-panel input[type=number],
+  .tab-panel textarea {
     width: 100%;
     padding: 0.4rem 0.6rem;
     border: 1px solid #ccc;
@@ -121,7 +110,7 @@
     background: white;
     transition: border-color 0.2s;
   }
-  .jtts-section textarea {
+  .tab-panel textarea {
     font-family: ui-monospace, SFMono-Regular, monospace;
     resize: vertical;
     line-height: 1.5;
