@@ -408,6 +408,7 @@
     <button data-tab="conn"   class="active" role="tab">接続</button>
     <button data-tab="avatar"             role="tab">アバター</button>
     <button data-tab="audio"              role="tab">音声</button>
+    <button data-tab="chat"               role="tab">会話</button>
     <button data-tab="device"             role="tab">デバイス</button>
     <button data-tab="maint"              role="tab">メンテ</button>
   </nav>
@@ -445,50 +446,6 @@
 
   <label for="password">Wi-Fi パスワード</label>
   <input type="password" id="password" maxlength="64" placeholder="（変更しない場合は空欄）">
-
-  <label for="provider">会話プロバイダ</label>
-  <select id="provider">
-    <option value="0">OpenAI Realtime</option>
-    <option value="1">Google Gemini Live</option>
-    <option value="2">XiaoZhi サーバー</option>
-  </select>
-  <p class="hint">どの会話バックエンドを使うかを切り替えます。キー / 設定は下記すべてに保存できます。</p>
-
-  <label for="apikey">OpenAI API キー</label>
-  <input type="password" id="apikey" maxlength="256" placeholder="sk-… （変更しない場合は空欄）">
-
-  <label for="gemini-apikey">Gemini API キー</label>
-  <input type="password" id="gemini-apikey" maxlength="256" placeholder="AIza… （変更しない場合は空欄）">
-
-  <label for="xiaozhi-url">XiaoZhi サーバー URL</label>
-  <input type="text" id="xiaozhi-url" maxlength="256" placeholder="ws://192.168.1.10:8000/xiaozhi/v1/ （変更しない場合は空欄）">
-
-  <label for="xiaozhi-token">XiaoZhi トークン</label>
-  <input type="password" id="xiaozhi-token" maxlength="256" placeholder="（任意 / 変更しない場合は空欄）">
-
-  <label class="toggle-label" for="openai-enabled" style="margin-top:1rem">
-    <input type="checkbox" id="openai-enabled" checked>
-    <span>会話機能を有効にする</span>
-  </label>
-  <p class="hint">オフにすると API キーは残したまま会話タスクを起動しません</p>
-
-  <label class="toggle-label" for="rtp-enabled" style="margin-top:1rem">
-    <input type="checkbox" id="rtp-enabled" checked>
-    <span>RTP 音声受信を有効にする</span>
-  </label>
-  <p class="hint">Wi-Fi 経由の RTP 音声受信(L16/μ-law=udp/6970, AAC=udp/6972)。会話機能オン時は自動的に無効です</p>
-
-  <label class="toggle-label" for="bat-gauge-enabled" style="margin-top:1rem">
-    <input type="checkbox" id="bat-gauge-enabled" checked>
-    <span>バッテリー残量ゲージを表示する</span>
-  </label>
-  <p class="hint">アバター画面の左上に残量ゲージを表示します（保存後の再起動で反映）</p>
-
-  <label class="toggle-label" for="servo-enabled" style="margin-top:1rem">
-    <input type="checkbox" id="servo-enabled" checked>
-    <span>サーボを有効にする</span>
-  </label>
-  <p class="hint">無効にするとサーボ電源を入れず、サーボタスクも起動しません（保存後の再起動で反映）。操作画面の脱力/復帰トグルとは別物で、こちらは NVS に永続化されます。</p>
   </section><!-- /tab-panel "conn" -->
 
   <!-- ===== アバター ===== -->
@@ -580,6 +537,15 @@
 
   <!-- ===== 音声 ===== -->
   <section class="tab-panel" data-tab="audio">
+    <div id="rtp-section">
+      <h2 class="section-title">Wi-Fi RTP 音声受信</h2>
+      <label class="toggle-label" for="rtp-enabled">
+        <input type="checkbox" id="rtp-enabled" checked>
+        <span>RTP 音声受信を有効にする</span>
+      </label>
+      <p class="hint">Wi-Fi 経由の RTP 音声受信(L16/μ-law=udp/6970, AAC=udp/6972)。会話機能オン時は自動的に無効です</p>
+    </div>
+
     <div id="jtts-section">
       <h2 class="section-title">アイドル時の声 (jtts)</h2>
       <p class="hint" style="margin-bottom:0.5rem">空欄や変更なしで「保存」を押すと現在の設定は維持されます。</p>
@@ -681,10 +647,86 @@
         </label>
       </div>
     </div>
+
+    <div id="lt-section">
+      <h2 class="section-title">LT タイムキーパー</h2>
+      <p class="hint">本体の「LT」タブで開始/停止。ここでは既定時間と通知ワードを設定（書込で即反映、保存で再起動後も保持）。読みはひらがな（jtts は漢字を読めません）</p>
+      <div class="grid2">
+        <div>
+          <label for="lt-total">発表時間 (秒)</label>
+          <input type="number" id="lt-total" min="30" max="3600" step="30" placeholder="300">
+        </div>
+        <div>
+          <label for="lt-warn">残り通知 (秒前)</label>
+          <input type="number" id="lt-warn" min="10" max="600" step="10" placeholder="60">
+        </div>
+      </div>
+      <div class="grid2">
+        <div>
+          <label for="lt-repeat">超過繰返し (秒、0=1回)</label>
+          <input type="number" id="lt-repeat" min="0" max="300" step="5" placeholder="30">
+        </div>
+      </div>
+      <label for="lt-warn-text">残り通知 表示テキスト</label>
+      <input id="lt-warn-text" placeholder="のこり1分です">
+      <label for="lt-warn-reading">残り通知 読み (ひらがな)</label>
+      <input id="lt-warn-reading" placeholder="のこり いっぷん です">
+      <label for="lt-over-text">超過 表示テキスト</label>
+      <input id="lt-over-text" placeholder="時間です!">
+      <label for="lt-over-reading">超過 読み (ひらがな)</label>
+      <input id="lt-over-reading" placeholder="おじかん です">
+    </div>
   </section><!-- /tab-panel "audio" -->
+
+  <!-- ===== 会話 ===== -->
+  <section class="tab-panel" data-tab="chat">
+    <div id="chat-section">
+      <h2 class="section-title">会話プロバイダ・API キー</h2>
+      <label for="provider">会話プロバイダ</label>
+      <select id="provider">
+        <option value="0">OpenAI Realtime</option>
+        <option value="1">Google Gemini Live</option>
+        <option value="2">XiaoZhi サーバー</option>
+      </select>
+      <p class="hint">どの会話バックエンドを使うかを切り替えます。キー / 設定は下記すべてに保存できます。</p>
+
+      <label for="apikey">OpenAI API キー</label>
+      <input type="password" id="apikey" maxlength="256" placeholder="sk-… （変更しない場合は空欄）">
+
+      <label for="gemini-apikey">Gemini API キー</label>
+      <input type="password" id="gemini-apikey" maxlength="256" placeholder="AIza… （変更しない場合は空欄）">
+
+      <label for="xiaozhi-url">XiaoZhi サーバー URL</label>
+      <input type="text" id="xiaozhi-url" maxlength="256" placeholder="ws://192.168.1.10:8000/xiaozhi/v1/ （変更しない場合は空欄）">
+
+      <label for="xiaozhi-token">XiaoZhi トークン</label>
+      <input type="password" id="xiaozhi-token" maxlength="256" placeholder="（任意 / 変更しない場合は空欄）">
+
+      <label class="toggle-label" for="openai-enabled" style="margin-top:1rem">
+        <input type="checkbox" id="openai-enabled" checked>
+        <span>会話機能を有効にする</span>
+      </label>
+      <p class="hint">オフにすると API キーは残したまま会話タスクを起動しません</p>
+    </div>
+  </section><!-- /tab-panel "chat" -->
 
   <!-- ===== デバイス ===== -->
   <section class="tab-panel" data-tab="device">
+    <div id="device-toggles-section">
+      <h2 class="section-title">デバイス機能の有効/無効</h2>
+      <label class="toggle-label" for="bat-gauge-enabled">
+        <input type="checkbox" id="bat-gauge-enabled" checked>
+        <span>バッテリー残量ゲージを表示する</span>
+      </label>
+      <p class="hint">アバター画面の左上に残量ゲージを表示します（保存後の再起動で反映）</p>
+
+      <label class="toggle-label" for="servo-enabled" style="margin-top:1rem">
+        <input type="checkbox" id="servo-enabled" checked>
+        <span>サーボを有効にする</span>
+      </label>
+      <p class="hint">無効にするとサーボ電源を入れず、サーボタスクも起動しません（保存後の再起動で反映）。操作画面の脱力/復帰トグルとは別物で、こちらは NVS に永続化されます。</p>
+    </div>
+
     <div id="servo-section">
       <h2 class="section-title">サーボ原点・可動範囲 (Takao base 等の自作版向け)</h2>
       <p class="hint" style="margin-bottom:0.5rem">
@@ -785,35 +827,6 @@
         <button type="button" id="btn-mcp-token-show">表示</button>
         <button type="button" id="btn-mcp-token-clear">クリア</button>
       </div>
-    </div>
-
-    <div id="lt-section">
-      <h2 class="section-title">LT タイムキーパー</h2>
-      <p class="hint">本体の「LT」タブで開始/停止。ここでは既定時間と通知ワードを設定（書込で即反映、保存で再起動後も保持）。読みはひらがな（jtts は漢字を読めません）</p>
-      <div class="grid2">
-        <div>
-          <label for="lt-total">発表時間 (秒)</label>
-          <input type="number" id="lt-total" min="30" max="3600" step="30" placeholder="300">
-        </div>
-        <div>
-          <label for="lt-warn">残り通知 (秒前)</label>
-          <input type="number" id="lt-warn" min="10" max="600" step="10" placeholder="60">
-        </div>
-      </div>
-      <div class="grid2">
-        <div>
-          <label for="lt-repeat">超過繰返し (秒、0=1回)</label>
-          <input type="number" id="lt-repeat" min="0" max="300" step="5" placeholder="30">
-        </div>
-      </div>
-      <label for="lt-warn-text">残り通知 表示テキスト</label>
-      <input id="lt-warn-text" placeholder="のこり1分です">
-      <label for="lt-warn-reading">残り通知 読み (ひらがな)</label>
-      <input id="lt-warn-reading" placeholder="のこり いっぷん です">
-      <label for="lt-over-text">超過 表示テキスト</label>
-      <input id="lt-over-text" placeholder="時間です!">
-      <label for="lt-over-reading">超過 読み (ひらがな)</label>
-      <input id="lt-over-reading" placeholder="おじかん です">
     </div>
 
     <div id="ota-section">
