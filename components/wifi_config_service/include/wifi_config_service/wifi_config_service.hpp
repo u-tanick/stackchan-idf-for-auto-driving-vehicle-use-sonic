@@ -54,6 +54,11 @@ void set_audio_metrics_getter(config::AudioMetricsJsonGetter getter);
 void set_led_state_getter(config::LedStateGetter getter);
 void set_led_state_sink(config::LedStateSink sink);
 
+// Mic lip-sync gain getter/sink — `GET/POST /api/mic-lip-gain`. Same shape as
+// LED above; same closures are also wired into BLE chr 0x23 via config_service.
+void set_mic_lip_gain_getter(config::MicLipGainGetter getter);
+void set_mic_lip_gain_sink(config::MicLipGainSink sink);
+
 // Record the booted board kind (mirrors board::BoardKind cast to byte) so it
 // surfaces in /api/status under the "board" key. The web UI uses this to
 // hide controls that don't apply to the current hardware. See

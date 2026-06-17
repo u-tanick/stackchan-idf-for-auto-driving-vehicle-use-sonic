@@ -39,6 +39,8 @@ constexpr const char* kKeyLedMode = "led_mode";
 constexpr const char* kKeyLedColor = "led_color";
 constexpr const char* kKeyLedBright = "led_bright";
 constexpr const char* kKeyLedPeriod = "led_period";  // gradient revolution period, deciseconds
+constexpr const char* kKeyMicLipIn  = "mic_lip_in";  // mic input gain percent (u16)
+constexpr const char* kKeyMicLipOut = "mic_lip_out"; // mouth output gain percent (u16)
 
 std::string nvs_read_str(nvs_handle_t h, const char* key)
 {
@@ -143,6 +145,10 @@ DeviceConfig load()
     if (nvs_get_u8(h, kKeyLedBright, &led_bright) == ESP_OK) cfg.led_brightness = led_bright;
     std::uint8_t led_period = cfg.led_gradient_period_ds;
     if (nvs_get_u8(h, kKeyLedPeriod, &led_period) == ESP_OK) cfg.led_gradient_period_ds = led_period;
+    std::uint16_t mic_in = cfg.mic_lip_input_gain_pct;
+    if (nvs_get_u16(h, kKeyMicLipIn, &mic_in) == ESP_OK) cfg.mic_lip_input_gain_pct = mic_in;
+    std::uint16_t mic_out = cfg.mic_lip_output_gain_pct;
+    if (nvs_get_u16(h, kKeyMicLipOut, &mic_out) == ESP_OK) cfg.mic_lip_output_gain_pct = mic_out;
     nvs_close(h);
     return cfg;
 }
@@ -257,6 +263,26 @@ tl::expected<void, Error> save_led_state(std::uint8_t mode, std::uint32_t color,
     nvs_close(h);
     if (err != ESP_OK) {
         ESP_LOGW(kTag, "save_led_state: %s", esp_err_to_name(err));
+        return tl::unexpected(Error::NvsWrite);
+    }
+    return {};
+}
+
+tl::expected<void, Error> save_mic_lip_gain(std::uint16_t input_pct,
+                                            std::uint16_t output_pct)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(kNs, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        ESP_LOGE(kTag, "nvs_open(%s): %s", kNs, esp_err_to_name(err));
+        return tl::unexpected(Error::NvsWrite);
+    }
+    err = nvs_set_u16(h, kKeyMicLipIn, input_pct);
+    if (err == ESP_OK) err = nvs_set_u16(h, kKeyMicLipOut, output_pct);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err != ESP_OK) {
+        ESP_LOGW(kTag, "save_mic_lip_gain: %s", esp_err_to_name(err));
         return tl::unexpected(Error::NvsWrite);
     }
     return {};

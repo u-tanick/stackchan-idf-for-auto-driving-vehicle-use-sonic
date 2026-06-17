@@ -75,6 +75,8 @@ config::ServoPositionsGetter g_servo_positions_getter = nullptr;
 config::AudioMetricsJsonGetter g_audio_metrics_getter = nullptr;
 config::LedStateGetter g_led_state_getter = nullptr;
 config::LedStateSink g_led_state_sink = nullptr;
+config::MicLipGainGetter g_mic_lip_gain_getter = nullptr;
+config::MicLipGainSink g_mic_lip_gain_sink = nullptr;
 AvatarBytecodeSink g_avatar_bytecode_sink = nullptr;
 McpSayKanaSink g_mcp_say_sink = nullptr;
 LtConfigSink g_lt_config_sink = nullptr;
@@ -801,6 +803,52 @@ esp_err_t handle_led_state_post(httpd_req_t* req)
     return handle_led_state_get(req);
 }
 
+// --- Mic lip-sync calibration ---
+
+// GET /api/mic-lip-gain — current input / output gain percentages.
+esp_err_t handle_mic_lip_gain_get(httpd_req_t* req)
+{
+    config::MicLipGain g{100, 100};
+    if (g_mic_lip_gain_getter != nullptr) g = g_mic_lip_gain_getter();
+    char buf[64];
+    std::snprintf(buf, sizeof(buf),
+                  R"({"input_pct":%u,"output_pct":%u})",
+                  static_cast<unsigned>(g.input_pct),
+                  static_cast<unsigned>(g.output_pct));
+    return send_json(req, std::string{buf});
+}
+
+// POST /api/mic-lip-gain — body is JSON `{"input_pct":..., "output_pct":...}`.
+// Missing fields fall back to the current value. Sink clamps to 10..1000.
+esp_err_t handle_mic_lip_gain_post(httpd_req_t* req)
+{
+    std::string body;
+    if (read_body_str(req, body, 128) != ESP_OK) return ESP_OK;
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (root == nullptr) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return send_json(req, R"({"error":"bad json"})");
+    }
+    config::MicLipGain cur{100, 100};
+    if (g_mic_lip_gain_getter != nullptr) cur = g_mic_lip_gain_getter();
+    auto pick = [root, &cur](const char* key, std::uint16_t fallback) -> std::uint16_t {
+        const cJSON* n = cJSON_GetObjectItemCaseSensitive(root, key);
+        if (cJSON_IsNumber(n)) {
+            const int v = n->valueint;
+            if (v < 0) return 0;
+            if (v > 65535) return 65535;
+            return static_cast<std::uint16_t>(v);
+        }
+        return fallback;
+    };
+    config::MicLipGain g{};
+    g.input_pct  = pick("input_pct",  cur.input_pct);
+    g.output_pct = pick("output_pct", cur.output_pct);
+    cJSON_Delete(root);
+    if (g_mic_lip_gain_sink != nullptr) g_mic_lip_gain_sink(g);
+    return handle_mic_lip_gain_get(req);
+}
+
 // --- Static root ---
 
 esp_err_t handle_root_get(httpd_req_t* req)
@@ -875,6 +923,8 @@ void register_handlers(httpd_handle_t server, const config::DeviceConfig& curren
     add(server, "/api/metrics/audio",    HTTP_GET,  handle_audio_metrics_get);
     add(server, "/api/led-state",        HTTP_GET,  handle_led_state_get);
     add(server, "/api/led-state",        HTTP_POST, handle_led_state_post);
+    add(server, "/api/mic-lip-gain",     HTTP_GET,  handle_mic_lip_gain_get);
+    add(server, "/api/mic-lip-gain",     HTTP_POST, handle_mic_lip_gain_post);
     // Claude Code Channel adapter API (Bearer-gated). Empty
     // CONFIG_MCP_API_TOKEN keeps these handlers registered but they 404.
     add(server, "/mcp/say",              HTTP_POST, handle_mcp_say_post);
@@ -949,6 +999,22 @@ void set_led_state_sink(config::LedStateSink sink)
     if (g_mutex == nullptr) { g_led_state_sink = sink; return; }
     xSemaphoreTake(g_mutex, portMAX_DELAY);
     g_led_state_sink = sink;
+    xSemaphoreGive(g_mutex);
+}
+
+void set_mic_lip_gain_getter(config::MicLipGainGetter getter)
+{
+    if (g_mutex == nullptr) { g_mic_lip_gain_getter = getter; return; }
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_mic_lip_gain_getter = getter;
+    xSemaphoreGive(g_mutex);
+}
+
+void set_mic_lip_gain_sink(config::MicLipGainSink sink)
+{
+    if (g_mutex == nullptr) { g_mic_lip_gain_sink = sink; return; }
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_mic_lip_gain_sink = sink;
     xSemaphoreGive(g_mutex);
 }
 

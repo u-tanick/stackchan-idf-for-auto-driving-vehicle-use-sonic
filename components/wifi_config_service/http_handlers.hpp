@@ -36,6 +36,10 @@ void set_audio_metrics_getter(config::AudioMetricsJsonGetter getter);
 void set_led_state_getter(config::LedStateGetter getter);
 void set_led_state_sink(config::LedStateSink sink);
 
+// Mic lip-sync gain getter/sink — see wifi_config_service.hpp.
+void set_mic_lip_gain_getter(config::MicLipGainGetter getter);
+void set_mic_lip_gain_sink(config::MicLipGainSink sink);
+
 // Record the booted board kind for /api/status. See wifi_config_service.hpp.
 void set_board_kind(std::uint8_t kind);
 

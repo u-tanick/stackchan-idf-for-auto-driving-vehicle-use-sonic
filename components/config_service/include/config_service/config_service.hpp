@@ -101,6 +101,16 @@ struct DeviceConfig {
     std::uint32_t led_color = 0x00404040u;
     std::uint8_t led_brightness = 26;
     std::uint8_t led_gradient_period_ds = 60;  // 6.0 s default (legacy hardcode)
+    // Mic-driven lip sync calibration. Both as integer percent (10..1000) so
+    // the wire format is plain u16 LE — easier to surface on a slider than a
+    // float. Input gain multiplies the RMS amplitude before normalisation
+    // (higher → more sensitive mic, useful on CoreS3 whose internal mic is
+    // quieter than the AtomEcho's external one). Output gain scales the
+    // final 0..1 mouth-open value (higher → wider mouth swings, clamped at
+    // 1.0). Both default to "boost" so CoreS3 out-of-box gives a visible
+    // mouth response; users can dial down on noisier boards.
+    std::uint16_t mic_lip_input_gain_pct = 200;
+    std::uint16_t mic_lip_output_gain_pct = 100;
 };
 
 enum class Error {
@@ -240,6 +250,20 @@ using LedStateGetter = LedState (*)();
 using LedStateSink = void (*)(const LedStatePatch& patch);
 void set_led_state_getter(LedStateGetter getter);
 void set_led_state_sink(LedStateSink sink);
+
+// Mic-driven lip-sync calibration: 2 × u16 integer-percent (10..1000 sane
+// range, 100 = 1.0x). Wired through BLE chr 0x23 + HTTP /api/mic-lip-gain.
+// READ returns the live SharedState atomics via the getter; WRITE applies
+// through the sink which forwards into SharedState AND persists via
+// save_mic_lip_gain (single-writer, no clobber from full save()).
+struct MicLipGain {
+    std::uint16_t input_pct;   // multiplier on mic RMS
+    std::uint16_t output_pct;  // multiplier on final mouth-open value (clamped to 1.0)
+};
+using MicLipGainGetter = MicLipGain (*)();
+using MicLipGainSink = void (*)(const MicLipGain& gain);
+void set_mic_lip_gain_getter(MicLipGainGetter getter);
+void set_mic_lip_gain_sink(MicLipGainSink sink);
 
 // Avatar face bytecode live-apply sink — fires after a complete `.avbc` has
 // arrived over BLE chr 0x21 (op=commit) and has been validated + persisted

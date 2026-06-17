@@ -383,6 +383,16 @@ void set_avatar_bytecode_sink(AvatarBytecodeSink sink)
     gatt::set_avatar_bytecode_sink(sink);
 }
 
+void set_mic_lip_gain_getter(MicLipGainGetter getter)
+{
+    gatt::set_mic_lip_gain_getter(getter);
+}
+
+void set_mic_lip_gain_sink(MicLipGainSink sink)
+{
+    gatt::set_mic_lip_gain_sink(sink);
+}
+
 void set_board_kind(std::uint8_t kind)
 {
     gatt::set_board_kind(kind);

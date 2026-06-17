@@ -57,4 +57,8 @@ void set_led_state_sink(LedStateSink sink);
 // Avatar bytecode commit sink (BLE chr 0x21). See config_service.hpp.
 void set_avatar_bytecode_sink(AvatarBytecodeSink sink);
 
+// Mic-driven lip-sync gain getter/sink (BLE chr 0x23).
+void set_mic_lip_gain_getter(MicLipGainGetter getter);
+void set_mic_lip_gain_sink(MicLipGainSink sink);
+
 } // namespace stackchan::config::gatt

@@ -121,6 +121,16 @@ public:
     // doesn't divide-by-zero the animation.
     std::atomic<std::uint8_t> led_gradient_period_ds{60};
 
+    // Mic-driven lip-sync calibration (only meaningful when the lip-sync task
+    // is active — see main/mic_lip_sync_task.cpp). Both as integer percent so
+    // sliders / BLE chr write u16 directly. Input gain multiplies the mic RMS
+    // before normalisation (higher → more sensitive); output gain scales the
+    // final 0..1 mouth-open value (higher → wider mouth swings, clamped at
+    // 1.0). 100 = 1.0x. The mic task reads these every iteration so changes
+    // take effect on the next ~16 ms tick without a reboot.
+    std::atomic<std::uint16_t> mic_lip_input_gain_pct{200};
+    std::atomic<std::uint16_t> mic_lip_output_gain_pct{100};
+
     // LT timekeeper (main/lt_timer.cpp; ticked by demo_loop). The on-device
     // LT tab writes lt_command / lt_total_s and renders lt_active /
     // lt_remaining_s. Command is exchange()d to 0 by the timer so each press

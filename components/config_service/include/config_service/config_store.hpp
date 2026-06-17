@@ -18,4 +18,11 @@ tl::expected<void, Error> save_led_state(std::uint8_t mode, std::uint32_t color,
                                          std::uint8_t brightness,
                                          std::uint8_t gradient_period_ds);
 
+// Persist just the mic-lip-sync gain pair (input gain pct / output gain pct).
+// Same single-writer pattern as save_led_state — calibration sliders push
+// updates here directly rather than going through the full save() Apply
+// path so they take effect immediately and don't clobber other staging.
+tl::expected<void, Error> save_mic_lip_gain(std::uint16_t input_pct,
+                                            std::uint16_t output_pct);
+
 } // namespace stackchan::config::store

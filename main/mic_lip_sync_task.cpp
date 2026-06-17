@@ -35,8 +35,10 @@ constexpr float kAttack = 0.55f;
 constexpr float kRelease = 0.20f;
 // Min/max RMS bounds for normalisation, in i16 units. Below kMinRms we treat
 // the mic as silent (mouth closed); above kMaxRms the mouth is fully open.
-// Tuned so room-ambient hiss stays at 0 and normal speaking distance peaks
-// near 1.0 without the user having to shout.
+// CoreS3's internal mic is noticeably quieter than the AtomEcho's external
+// one — kMaxRms is tuned for the noisier baseline; the user-visible "input
+// gain" slider effectively brings it down for sensitive mics by multiplying
+// the measured RMS before this band.
 constexpr float kMinRms = 200.0f;
 constexpr float kMaxRms = 5000.0f;
 
@@ -112,12 +114,27 @@ void mic_lip_sync_task_entry(void* arg)
             vTaskDelay(pdMS_TO_TICKS(2));
         }
 
-        const float rms = rms_amplitude(buf.data(), buf.size());
-        // Normalise to [0, 1] across the configured RMS window. The window
-        // is wide enough to handle normal indoor speaking + room ambience.
+        const float rms_raw = rms_amplitude(buf.data(), buf.size());
+        // Pull the calibration sliders. Both are integer percent (100 = 1.0x).
+        // Clamp to a sane range so a corrupted NVS slot can't divide-by-zero
+        // or send the mouth to NaN.
+        const std::uint16_t in_pct  = state->mic_lip_input_gain_pct.load(
+            std::memory_order_relaxed);
+        const std::uint16_t out_pct = state->mic_lip_output_gain_pct.load(
+            std::memory_order_relaxed);
+        const float in_gain  = static_cast<float>(in_pct  ? in_pct  : 100) / 100.0f;
+        const float out_gain = static_cast<float>(out_pct ? out_pct : 100) / 100.0f;
+
+        // Apply input gain to RMS, then normalise to [0, 1] across the
+        // configured RMS window. Output gain then scales the result before
+        // the final clamp — a value above 1.0 means small-but-not-tiny
+        // inputs saturate the mouth fully open.
+        const float rms = rms_raw * in_gain;
         float level = (rms - kMinRms) / (kMaxRms - kMinRms);
         if (level < 0.0f) level = 0.0f;
+        level *= out_gain;
         if (level > 1.0f) level = 1.0f;
+        if (level < 0.0f) level = 0.0f;
 
         // Attack/release smoothing so the mouth doesn't pop between every
         // sample window. Rising edges use the faster coefficient.

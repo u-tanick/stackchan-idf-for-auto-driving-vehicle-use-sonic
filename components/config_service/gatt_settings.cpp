@@ -268,6 +268,13 @@ static const ble_uuid128_t kJttsIdleEnabledUuid = BLE_UUID128_INIT(
 static const ble_uuid128_t kAvatarBytecodeUuid = BLE_UUID128_INIT(
     0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
     0x2a, 0x4d, 0x1c, 0x7b, 0x21, 0xa0, 0xf0, 0xe3);
+// MicLipGain — encrypted R/W. 4-byte payload [input_pct LE u16][output_pct
+// LE u16]. Calibrates the mic-driven lip-sync task (main/mic_lip_sync_task.cpp)
+// live without a reboot. Persisted via save_mic_lip_gain so the next boot
+// replays the same calibration.
+static const ble_uuid128_t kMicLipGainUuid = BLE_UUID128_INIT(
+    0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
+    0x2a, 0x4d, 0x1c, 0x7b, 0x23, 0xa0, 0xf0, 0xe3);
 
 // --- Mutable state guarded by g_mutex ---
 static SemaphoreHandle_t g_mutex = nullptr;
@@ -318,6 +325,9 @@ static AudioMetricsJsonGetter g_audio_metrics_getter = nullptr;
 static uint16_t g_led_state_handle = 0;
 static LedStateGetter g_led_state_getter = nullptr;
 static LedStateSink g_led_state_sink = nullptr;
+static uint16_t g_mic_lip_gain_handle = 0;
+static MicLipGainGetter g_mic_lip_gain_getter = nullptr;
+static MicLipGainSink g_mic_lip_gain_sink = nullptr;
 static uint16_t g_avatar_bc_handle = 0;
 static AvatarBytecodeSink g_avatar_bc_sink = nullptr;
 
@@ -711,6 +721,25 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             xSemaphoreGive(g_mutex);
             return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
         }
+        if (attr_handle == g_mic_lip_gain_handle) {
+            MicLipGain g{100, 100};
+            MicLipGainGetter getter = g_mic_lip_gain_getter;
+            if (getter != nullptr) g = getter();
+            xSemaphoreTake(g_mutex, portMAX_DELAY);
+            if (!g_session.is_established()) {
+                xSemaphoreGive(g_mutex);
+                return BLE_ATT_ERR_UNLIKELY;
+            }
+            // 4-byte payload [input_pct LE u16][output_pct LE u16].
+            const std::array<std::uint8_t, 4> payload{
+                static_cast<std::uint8_t>(g.input_pct & 0xff),
+                static_cast<std::uint8_t>((g.input_pct >> 8) & 0xff),
+                static_cast<std::uint8_t>(g.output_pct & 0xff),
+                static_cast<std::uint8_t>((g.output_pct >> 8) & 0xff)};
+            const bool ok = append_encrypted(ctxt->om, {payload.data(), payload.size()});
+            xSemaphoreGive(g_mutex);
+            return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
+        }
         if (attr_handle == g_avatar_bc_handle) {
             xSemaphoreTake(g_mutex, portMAX_DELAY);
             if (!g_session.is_established()) {
@@ -1094,6 +1123,20 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             if (sink != nullptr) sink(p);
             return 0;
         }
+        if (attr_handle == g_mic_lip_gain_handle) {
+            // 4-byte payload [input_pct LE u16][output_pct LE u16]. Anything
+            // else is a malformed write. Sink applies live (SharedState
+            // atomics) + persists via save_mic_lip_gain.
+            if (pt.size() != 4) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            MicLipGain g{};
+            g.input_pct = static_cast<std::uint16_t>(pt[0]) |
+                          (static_cast<std::uint16_t>(pt[1]) << 8);
+            g.output_pct = static_cast<std::uint16_t>(pt[2]) |
+                           (static_cast<std::uint16_t>(pt[3]) << 8);
+            MicLipGainSink sink = g_mic_lip_gain_sink;
+            if (sink != nullptr) sink(g);
+            return 0;
+        }
         if (attr_handle == g_avatar_bc_handle) {
             // Avatar bytecode chunked upload. Wire framing: [op:u8][...].
             if (pt.empty()) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
@@ -1379,6 +1422,13 @@ static ble_gatt_chr_def kChrs[] = {
         .val_handle = &g_avatar_bc_handle,
     },
     {
+        .uuid = &kMicLipGainUuid.u,
+        .access_cb = gatt_access_cb,
+        // R = [input_pct LE u16][output_pct LE u16]; W = same. Live apply.
+        .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+        .val_handle = &g_mic_lip_gain_handle,
+    },
+    {
         .uuid = &kBoardKindUuid.u,
         .access_cb = gatt_access_cb,
         .flags = BLE_GATT_CHR_F_READ,
@@ -1629,6 +1679,16 @@ void set_led_state_sink(LedStateSink sink)
 void set_avatar_bytecode_sink(AvatarBytecodeSink sink)
 {
     g_avatar_bc_sink = sink;
+}
+
+void set_mic_lip_gain_getter(MicLipGainGetter getter)
+{
+    g_mic_lip_gain_getter = getter;
+}
+
+void set_mic_lip_gain_sink(MicLipGainSink sink)
+{
+    g_mic_lip_gain_sink = sink;
 }
 
 void set_board_kind(std::uint8_t kind)

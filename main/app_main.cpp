@@ -174,6 +174,38 @@ void apply_led_patch(const stackchan::config::LedStatePatch& p)
     (void)stackchan::config::store::save_led_state(mode, color, bright, period_ds);
 }
 
+// Mic lip-sync calibration — read live atomic values for BLE chr 0x23 / HTTP
+// GET /api/mic-lip-gain. Falls back to 100 (= 1.0x) on any 0 read so a stray
+// uninitialised slot can't drive the mic task into divide-by-zero.
+stackchan::config::MicLipGain read_mic_lip_gain()
+{
+    stackchan::config::MicLipGain g{100, 100};
+    if (g_state == nullptr) return g;
+    const std::uint16_t in_pct = g_state->mic_lip_input_gain_pct.load(std::memory_order_relaxed);
+    const std::uint16_t out_pct = g_state->mic_lip_output_gain_pct.load(std::memory_order_relaxed);
+    g.input_pct = in_pct ? in_pct : 100;
+    g.output_pct = out_pct ? out_pct : 100;
+    return g;
+}
+
+// Mic lip-sync calibration sink. Clamps to 10..1000 % to keep the math sane,
+// writes the atomics for live apply, then persists via single-writer
+// save_mic_lip_gain so the values survive reboot.
+void apply_mic_lip_gain(const stackchan::config::MicLipGain& g)
+{
+    if (g_state == nullptr) return;
+    auto clamp = [](std::uint16_t v) -> std::uint16_t {
+        if (v < 10) return 10;
+        if (v > 1000) return 1000;
+        return v;
+    };
+    const std::uint16_t in_pct  = clamp(g.input_pct);
+    const std::uint16_t out_pct = clamp(g.output_pct);
+    g_state->mic_lip_input_gain_pct.store(in_pct, std::memory_order_relaxed);
+    g_state->mic_lip_output_gain_pct.store(out_pct, std::memory_order_relaxed);
+    (void)stackchan::config::store::save_mic_lip_gain(in_pct, out_pct);
+}
+
 // Render the last-turn audio metrics as JSON for BLE chr 0x1f + HTTP
 // `GET /api/metrics/audio`. Same getter is wired to both transports so
 // clients see the same payload regardless of how they connect. Returns
@@ -821,6 +853,14 @@ extern "C" void app_main()
     g_state->led_gradient_period_ds.store(
         cfg.led_gradient_period_ds == 0 ? 1 : cfg.led_gradient_period_ds,
         std::memory_order_relaxed);
+    // Mic lip-sync calibration: seed atomics from NVS. The mic task reads
+    // them every loop iteration so slider changes take effect immediately.
+    g_state->mic_lip_input_gain_pct.store(
+        cfg.mic_lip_input_gain_pct ? cfg.mic_lip_input_gain_pct : 100,
+        std::memory_order_relaxed);
+    g_state->mic_lip_output_gain_pct.store(
+        cfg.mic_lip_output_gain_pct ? cfg.mic_lip_output_gain_pct : 100,
+        std::memory_order_relaxed);
     stackchan::config::set_face_config_sink(&on_face_config);
     stackchan::config::set_lt_config_sink(+[](std::string_view json) {
         if (g_state != nullptr) g_state->set_lt_config(json);
@@ -830,6 +870,8 @@ extern "C" void app_main()
     stackchan::config::set_audio_metrics_getter(&audio_metrics_json);
     stackchan::config::set_led_state_getter(&read_led_state);
     stackchan::config::set_led_state_sink(&apply_led_patch);
+    stackchan::config::set_mic_lip_gain_getter(&read_mic_lip_gain);
+    stackchan::config::set_mic_lip_gain_sink(&apply_mic_lip_gain);
     // Tell the settings services which board we're on so the web UIs can hide
     // sections that don't apply (e.g. servo config on Atom-nyan). Must happen
     // before config::start / wifi_config setup so the first central read sees
@@ -860,6 +902,8 @@ extern "C" void app_main()
     stackchan::wifi_config::set_audio_metrics_getter(&audio_metrics_json);
     stackchan::wifi_config::set_led_state_getter(&read_led_state);
     stackchan::wifi_config::set_led_state_sink(&apply_led_patch);
+    stackchan::wifi_config::set_mic_lip_gain_getter(&read_mic_lip_gain);
+    stackchan::wifi_config::set_mic_lip_gain_sink(&apply_mic_lip_gain);
     stackchan::wifi_config::set_board_kind(static_cast<std::uint8_t>(board.kind()));
     // (Channel /mcp/events bring-up happens AFTER start_conversation_task so
     //  the conv-task gets first dibs on contiguous internal RAM for its 3 ×

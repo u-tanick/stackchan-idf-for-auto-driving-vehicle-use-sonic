@@ -213,6 +213,16 @@ void set_led_state_sink(config::LedStateSink sink)
     http::set_led_state_sink(sink);
 }
 
+void set_mic_lip_gain_getter(config::MicLipGainGetter getter)
+{
+    http::set_mic_lip_gain_getter(getter);
+}
+
+void set_mic_lip_gain_sink(config::MicLipGainSink sink)
+{
+    http::set_mic_lip_gain_sink(sink);
+}
+
 void set_board_kind(std::uint8_t kind)
 {
     http::set_board_kind(kind);
