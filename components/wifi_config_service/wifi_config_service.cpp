@@ -95,9 +95,12 @@ tl::expected<httpd_handle_t, Error> start_http_server()
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port = 80;
-    // Wide enough to hold all the /api/* routes (currently ~16) plus a few
-    // for future growth without bumping again.
-    cfg.max_uri_handlers = 32;
+    // Wide enough to hold all the /api/* + /mcp/* routes (currently ~38)
+    // plus headroom for future growth. esp_http_server allocates the slot
+    // table at httpd_start, so going wider just consumes a few hundred
+    // bytes of internal RAM; the runtime cost is the slot count we actually
+    // register, not the cap.
+    cfg.max_uri_handlers = 48;
     // Stack MUST live in internal RAM: the OTA control handler calls
     // esp_ota_begin → esp_partition_mmap, which disables CPU cache while
     // remapping flash. PSRAM is cached, so a PSRAM-resident stack becomes
