@@ -42,6 +42,7 @@ constexpr const char* kKeyLedPeriod = "led_period";  // gradient revolution peri
 constexpr const char* kKeyMicLipIn  = "mic_lip_in";  // mic input gain percent (u16)
 constexpr const char* kKeyMicLipOut = "mic_lip_out"; // mouth output gain percent (u16)
 constexpr const char* kKeyLedMouthSync = "led_msync"; // u8 bool
+constexpr const char* kKeyOperationMode = "op_mode";  // u8 OperationMode
 
 std::string nvs_read_str(nvs_handle_t h, const char* key)
 {
@@ -154,6 +155,23 @@ DeviceConfig load()
     if (nvs_get_u8(h, kKeyLedMouthSync, &led_msync) == ESP_OK) {
         cfg.led_mouth_sync_enabled = (led_msync != 0);
     }
+    // operation_mode load with migration: when the key is missing (older
+    // firmware), synthesise a sensible mode from the legacy openai_enabled
+    // / jtts_idle_enabled toggles so the device boots into the same
+    // behaviour the user had before upgrading.
+    std::uint8_t op_mode = 0;
+    esp_err_t op_err = nvs_get_u8(h, kKeyOperationMode, &op_mode);
+    if (op_err == ESP_OK) {
+        if (op_mode <= static_cast<std::uint8_t>(OperationMode::Conversation)) {
+            cfg.operation_mode = static_cast<OperationMode>(op_mode);
+        }
+    } else if (op_err == ESP_ERR_NVS_NOT_FOUND) {
+        if (cfg.openai_enabled)         cfg.operation_mode = OperationMode::Conversation;
+        else if (cfg.jtts_idle_enabled) cfg.operation_mode = OperationMode::JttsRandom;
+        else                            cfg.operation_mode = OperationMode::MicLipSync;
+    } else {
+        ESP_LOGW(kTag, "nvs_get_u8(%s): %s", kKeyOperationMode, esp_err_to_name(op_err));
+    }
     nvs_close(h);
     return cfg;
 }
@@ -229,6 +247,13 @@ tl::expected<void, Error> save(const DeviceConfig& cfg)
     err = nvs_set_u8(h, kKeyLedMouthSync, cfg.led_mouth_sync_enabled ? 1 : 0);
     if (err != ESP_OK) {
         ESP_LOGE(kTag, "nvs_set_u8(%s): %s", kKeyLedMouthSync, esp_err_to_name(err));
+        nvs_close(h);
+        return tl::unexpected(Error::NvsWrite);
+    }
+
+    err = nvs_set_u8(h, kKeyOperationMode, static_cast<std::uint8_t>(cfg.operation_mode));
+    if (err != ESP_OK) {
+        ESP_LOGE(kTag, "nvs_set_u8(%s): %s", kKeyOperationMode, esp_err_to_name(err));
         nvs_close(h);
         return tl::unexpected(Error::NvsWrite);
     }

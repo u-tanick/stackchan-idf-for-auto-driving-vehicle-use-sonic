@@ -19,6 +19,21 @@ enum class Provider : std::uint8_t {
     XiaoZhi = 2,  // XiaoZhi AI server (ws://<host>:8000/xiaozhi/v1/)
 };
 
+// Avatar's primary "what is the robot doing right now?" mode. Replaces the
+// older pair of openai_enabled / jtts_idle_enabled toggles that gave the
+// user 4 possible combinations (only 3 of which made sense). One enum, three
+// mutually-exclusive modes:
+//   MicLipSync   ‐ mic input drives the mouth; no jtts babble, no conversation
+//   JttsRandom   ‐ random jtts phrases at idle; no conversation
+//   Conversation ‐ realtime AI conversation (OpenAI / Gemini / XiaoZhi)
+// app_main derives the legacy openai_enabled / jtts_idle_enabled gates from
+// this at boot so the rest of the code path stays unchanged.
+enum class OperationMode : std::uint8_t {
+    MicLipSync   = 0,
+    JttsRandom   = 1,
+    Conversation = 2,
+};
+
 struct DeviceConfig {
     std::string wifi_ssid;
     std::string wifi_password;
@@ -117,6 +132,12 @@ struct DeviceConfig {
     // opt-in to keep the default look conservative. Implemented in
     // main/led_task.cpp: brightness = base + (max - base) * mouth_open.
     bool led_mouth_sync_enabled = false;
+    // Primary operation mode. See OperationMode above. Defaults to
+    // Conversation so a fresh install keeps the historical behaviour
+    // (the legacy openai_enabled / jtts_idle_enabled toggles also default
+    // to true, and the migration path in config_store::load preserves any
+    // explicit override the user already saved before this field existed).
+    OperationMode operation_mode = OperationMode::Conversation;
 };
 
 enum class Error {

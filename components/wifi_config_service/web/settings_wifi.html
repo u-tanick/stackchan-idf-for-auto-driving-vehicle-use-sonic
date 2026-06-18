@@ -393,6 +393,19 @@
     <div class="row" id="dis-battery-row"><span class="key">バッテリー</span><span class="val" id="dis-battery">—</span></div>
   </div>
 
+  <h2 class="section-title" style="margin-top:0.5rem">動作モード</h2>
+  <p class="hint" style="margin-bottom:0.5rem">
+    Stack-chan の主な振る舞いを 3 つから選びます。「会話応答」は OpenAI / Gemini /
+    XiaoZhi のいずれかで会話、「JTTS ランダム発話」は音声のアイドル発話のみ、
+    「マイクでリップシンク」はマイク入力に合わせて口だけ動かします。
+    保存後の再起動で切替わります。
+  </p>
+  <select id="operation-mode">
+    <option value="2">会話応答 (Conversation)</option>
+    <option value="1">JTTS ランダム発話 (JttsRandom)</option>
+    <option value="0">マイクでリップシンク (MicLipSync)</option>
+  </select>
+
   <label for="ssid">Wi-Fi SSID</label>
   <input type="text" id="ssid" maxlength="32" placeholder="MyNetwork">
   <p class="hint">空欄のままにすると現在の値を変更しません</p>
@@ -448,11 +461,12 @@
 
     <div id="jtts-section">
       <h2 class="section-title">アイドル時の声 (jtts)</h2>
-      <label class="toggle-label" for="jtts-idle-enabled">
+      <!-- Hidden legacy toggle — operation_mode == JttsRandom is the real
+           switch now. Kept in the DOM so the refresh/apply JS keeps working. -->
+      <label class="toggle-label" for="jtts-idle-enabled" style="display:none">
         <input type="checkbox" id="jtts-idle-enabled" checked>
         <span>アイドル時の発話を有効にする</span>
       </label>
-      <p class="hint">オフにすると下のフレーズを話さなくなります。会話機能もオフのときは、マイク入力に合わせて口が動くリップシンク モードに自動で切替わります。保存後の再起動で反映されます。</p>
 
       <h2 class="section-title">マイク リップシンク 調整 (会話・jtts どちらもオフのとき有効)</h2>
       <p class="hint" style="margin-bottom:0.5rem">マイク入力の音量に合わせて口を開閉します。CoreS3 はマイク感度が低めなので入力ゲインを上げると見栄えします。スライダーを動かすと <strong>即時反映</strong> + 自動保存します。</p>
@@ -577,11 +591,13 @@
                 placeholder="CF-Access-Client-Id: xxxxx.access&#10;CF-Access-Client-Secret: yyyyy"></textarea>
       <p class="hint">会話 API への WebSocket 接続に付与する追加ヘッダ。1 行 1 つ「ヘッダ名: 値」。Cloudflare Access のサービストークン等に使用。全プロバイダ共通。保存後の再起動で反映されます。</p>
 
-      <label class="toggle-label" for="openai-enabled" style="margin-top:1rem">
+      <!-- Hidden legacy toggle — operation_mode (selectable in 接続 tab) is
+           the real switch now. Kept in the DOM so the refresh/apply JS
+           keeps working. -->
+      <label class="toggle-label" for="openai-enabled" style="display:none">
         <input type="checkbox" id="openai-enabled" checked>
         <span>会話機能を有効にする</span>
       </label>
-      <p class="hint">オフにすると API キーは残したまま会話タスクを起動しません</p>
     </div>
   </section><!-- /tab-panel "chat" -->
 
@@ -1033,6 +1049,9 @@ async function refresh() {
     $('ssid').value = s.ssid || '';
     $('provider').value = String(s.provider ?? 0);
     $('openai-enabled').checked = !!s.openai_enabled;
+    if (typeof s.operation_mode === 'number') {
+      $('operation-mode').value = String(s.operation_mode);
+    }
     $('rtp-enabled').checked = (s.rtp_audio_enabled !== false); // default on if absent
     $('jtts-idle-enabled').checked = (s.jtts_idle_enabled !== false); // default on if absent
     $('led-mouth-sync').checked = !!s.led_mouth_sync_enabled; // default off if absent
@@ -1118,6 +1137,7 @@ async function apply() {
     if (xzUrl)     { await postText('/api/xiaozhi-url', xzUrl);               log('XiaoZhi URL 送信', 'ok'); }
     if (xzToken)   { await postText('/api/xiaozhi-token', xzToken);           log('XiaoZhi トークン送信', 'ok'); }
     await postText('/api/provider', provider);
+    await postText('/api/operation-mode', $('operation-mode').value);
     await postText('/api/openai-enabled', enabled ? '1' : '0');
     await postText('/api/rtp-enabled', rtpEnabled ? '1' : '0');
     await postText('/api/jtts-idle-enabled', jttsIdleEnabled ? '1' : '0');

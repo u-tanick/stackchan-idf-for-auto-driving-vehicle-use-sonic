@@ -54,12 +54,19 @@ std::atomic<bool> g_dirty{true};
 int g_provider = 0; // 0 = OpenAI, 1 = Gemini, 2 = XiaoZhi (cached at init)
 
 // Staged settings (loaded from NVS on open; applied on 適用).
+// g_stage_conv mirrors the legacy openai_enabled flag for backwards
+// compat with the rest of the file's plumbing; operation_mode is the
+// real switch on the UI now.
 std::atomic<bool> g_stage_conv{true};
 std::atomic<bool> g_stage_rtp{true};
 std::atomic<bool> g_stage_bat_gauge{true};
 // Master servo enable (NVS-persisted). Distinct from g_state->servo_enabled,
 // which is the runtime torque toggle on the kControl page.
 std::atomic<bool> g_stage_servo_master{true};
+// Primary operation mode (config::OperationMode as u8). Cycled by tapping
+// the mode row on the settings page.
+std::atomic<std::uint8_t> g_stage_op_mode{
+    static_cast<std::uint8_t>(stackchan::config::OperationMode::Conversation)};
 
 // Range-setting page: staged ServoLimits (loaded from NVS on tab open, mutated
 // by capture taps, saved + reboot on 保存). Plain (non-atomic): the device UI
@@ -259,6 +266,32 @@ void draw_info()
             g_has_mcp_token ? ok : dim); y += dy;
 }
 
+// Same shape as draw_toggle_row but the right side shows a textual value
+// (e.g. the operation mode label) instead of a pill switch. Tap to cycle.
+void draw_value_row(int i, const char* label, const char* value, int row_h = kRowH)
+{
+    int rx, ry, rw, rh;
+    row_rect(i, rx, ry, rw, rh, row_h);
+    g_cv->fillRoundRect(rx, ry, rw, rh, 6, g_cv->color565(40, 44, 54));
+    g_cv->setFont(kFontBody);
+    g_cv->setTextDatum(lgfx::textdatum_t::middle_left);
+    g_cv->setTextColor(g_cv->color565(235, 235, 235));
+    g_cv->drawString(label, rx + 12, ry + rh / 2);
+    g_cv->setTextDatum(lgfx::textdatum_t::middle_right);
+    g_cv->setTextColor(g_cv->color565(120, 180, 230));
+    g_cv->drawString(value, rx + rw - 12, ry + rh / 2);
+}
+
+const char* op_mode_label(std::uint8_t m)
+{
+    switch (m) {
+    case 0: return "マイクリップシンク";
+    case 1: return "JTTSランダム発話";
+    case 2: return "会話応答";
+    }
+    return "?";
+}
+
 void draw_toggle_row(int i, const char* label, bool on, int row_h = kRowH)
 {
     int rx, ry, rw, rh;
@@ -292,7 +325,9 @@ void draw_button(int i, const char* label, std::uint16_t color, int row_h = kRow
 
 void draw_settings()
 {
-    draw_toggle_row(0, "会話機能", g_stage_conv.load(std::memory_order_relaxed), kSettingsRowH);
+    draw_value_row(0, "動作モード",
+                   op_mode_label(g_stage_op_mode.load(std::memory_order_relaxed)),
+                   kSettingsRowH);
     draw_toggle_row(1, "RTP 音声受信", g_stage_rtp.load(std::memory_order_relaxed), kSettingsRowH);
     draw_toggle_row(2, "電池ゲージ", g_stage_bat_gauge.load(std::memory_order_relaxed), kSettingsRowH);
     draw_toggle_row(3, "サーボ (恒久)", g_stage_servo_master.load(std::memory_order_relaxed),
@@ -301,7 +336,8 @@ void draw_settings()
     g_cv->setFont(kFontBody);
     g_cv->setTextDatum(lgfx::textdatum_t::top_left);
     g_cv->setTextColor(g_cv->color565(150, 150, 150));
-    g_cv->drawString("変更は適用で反映されます", 12, kContentY + 5 * kSettingsRowH + 2);
+    g_cv->drawString("動作モードをタップで切替 / 変更は適用で反映",
+                     12, kContentY + 5 * kSettingsRowH + 2);
 }
 
 void draw_control()
@@ -548,16 +584,24 @@ void load_staged()
     g_stage_rtp.store(cfg.rtp_audio_enabled, std::memory_order_relaxed);
     g_stage_bat_gauge.store(cfg.battery_gauge_enabled, std::memory_order_relaxed);
     g_stage_servo_master.store(cfg.servo_enabled, std::memory_order_relaxed);
+    g_stage_op_mode.store(static_cast<std::uint8_t>(cfg.operation_mode),
+                          std::memory_order_relaxed);
     g_stage_limits = parse_servo_limits(cfg.servo_limits_json);
 }
 
 void apply_and_reboot()
 {
     config::DeviceConfig cfg = config::load();
-    cfg.openai_enabled = g_stage_conv.load(std::memory_order_relaxed);
     cfg.rtp_audio_enabled = g_stage_rtp.load(std::memory_order_relaxed);
     cfg.battery_gauge_enabled = g_stage_bat_gauge.load(std::memory_order_relaxed);
     cfg.servo_enabled = g_stage_servo_master.load(std::memory_order_relaxed);
+    // operation_mode is now the primary switch — the legacy openai_enabled /
+    // jtts_idle_enabled gates are re-derived at boot from this value, so the
+    // device_ui doesn't bother touching them here. The previous "conv toggle"
+    // semantics still work for older NVS contents via the migration in
+    // config_store::load.
+    cfg.operation_mode = static_cast<config::OperationMode>(
+        g_stage_op_mode.load(std::memory_order_relaxed));
     (void)config::store::save(cfg);
     esp_restart();
 }
@@ -607,6 +651,8 @@ void init(SharedState& state)
     g_stage_rtp.store(cfg.rtp_audio_enabled, std::memory_order_relaxed);
     g_stage_bat_gauge.store(cfg.battery_gauge_enabled, std::memory_order_relaxed);
     g_stage_servo_master.store(cfg.servo_enabled, std::memory_order_relaxed);
+    g_stage_op_mode.store(static_cast<std::uint8_t>(cfg.operation_mode),
+                          std::memory_order_relaxed);
     std::uint8_t mac[6] = {};
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     char host[32];
@@ -683,7 +729,10 @@ void handle_tap(int x, int y)
     };
     if (page == kSettings) {
         if (hit_row(0)) {
-            g_stage_conv.store(!g_stage_conv.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            // Cycle operation_mode 0 → 1 → 2 → 0 ...
+            const std::uint8_t cur = g_stage_op_mode.load(std::memory_order_relaxed);
+            const std::uint8_t next = (cur + 1) % 3;
+            g_stage_op_mode.store(next, std::memory_order_relaxed);
             g_dirty.store(true, std::memory_order_relaxed);
         } else if (hit_row(1)) {
             g_stage_rtp.store(!g_stage_rtp.load(std::memory_order_relaxed), std::memory_order_relaxed);

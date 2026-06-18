@@ -440,6 +440,19 @@
     </div>
   </div>
 
+  <h2 class="section-title" style="margin-top:0.5rem">動作モード</h2>
+  <p class="hint" style="margin-bottom:0.5rem">
+    Stack-chan の主な振る舞いを 3 つから選びます。「会話応答」は OpenAI / Gemini /
+    XiaoZhi のいずれかで会話、「JTTS ランダム発話」は音声のアイドル発話のみ、
+    「マイクでリップシンク」はマイク入力に合わせて口だけ動かします。
+    保存後の再起動で切替わります。
+  </p>
+  <select id="operation-mode">
+    <option value="2">会話応答 (Conversation)</option>
+    <option value="1">JTTS ランダム発話 (JttsRandom)</option>
+    <option value="0">マイクでリップシンク (MicLipSync)</option>
+  </select>
+
   <label for="ssid">Wi-Fi SSID</label>
   <input type="text" id="ssid" maxlength="32" placeholder="MyNetwork">
   <p class="hint">空欄のままにすると現在の値を変更しません</p>
@@ -548,13 +561,14 @@
 
     <div id="jtts-section">
       <h2 class="section-title">アイドル時の声 (jtts)</h2>
-      <label class="toggle-label" for="jtts-idle-enabled">
+      <!-- Hidden legacy toggle — operation_mode == JttsRandom is the real
+           switch now. Kept in the DOM so probe/Apply JS keeps working. -->
+      <label class="toggle-label" for="jtts-idle-enabled" style="display:none">
         <input type="checkbox" id="jtts-idle-enabled" checked>
         <span>アイドル時の発話を有効にする</span>
       </label>
-      <p class="hint">オフにすると下のフレーズを話さなくなります。会話機能もオフのときは、マイク入力に合わせて口が動くリップシンク モードに自動で切替わります。保存後の再起動で反映されます。</p>
 
-      <h2 class="section-title">マイク リップシンク 調整 (会話・jtts どちらもオフのとき有効)</h2>
+      <h2 class="section-title">マイク リップシンク 調整 (動作モード = マイクリップシンク のとき有効)</h2>
       <p class="hint" style="margin-bottom:0.5rem">マイク入力の音量に合わせて口を開閉します。CoreS3 はマイク感度が低めなので入力ゲインを上げると見栄えします。スライダーを動かすと <strong>即時反映</strong> + 自動保存します。</p>
       <div class="grid2">
         <div style="grid-column:span 2">
@@ -722,11 +736,15 @@
       <label for="xiaozhi-token">XiaoZhi トークン</label>
       <input type="password" id="xiaozhi-token" maxlength="256" placeholder="（任意 / 変更しない場合は空欄）">
 
-      <label class="toggle-label" for="openai-enabled" style="margin-top:1rem">
+      <!-- Legacy toggle, kept in the DOM so existing JS keeps working but
+           hidden — operation_mode (selectable on the 接続 tab) now decides
+           whether the conversation task spawns. The device derives this
+           gate from operation_mode at boot, so the toggle value is ignored
+           on the next reboot regardless of what's in dataset.initial. -->
+      <label class="toggle-label" for="openai-enabled" style="display:none">
         <input type="checkbox" id="openai-enabled" checked>
         <span>会話機能を有効にする</span>
       </label>
-      <p class="hint">オフにすると API キーは残したまま会話タスクを起動しません</p>
     </div>
   </section><!-- /tab-panel "chat" -->
 
@@ -965,6 +983,10 @@ const CHR_MIC_LIP_GAIN = 'e3f0a023-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // LedMouthSyncEnabled — encrypted 1-byte flag. When 1, the LED brightness
 // follows the avatar's mouth_open. Staged via Apply path (reboot required).
 const CHR_LED_MOUTH_SYNC = 'e3f0a024-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+// OperationMode — encrypted 1-byte enum (0=MicLipSync, 1=JttsRandom,
+// 2=Conversation). Single source of truth for the avatar's primary
+// behaviour. Staged via Apply path (reboot required).
+const CHR_OPERATION_MODE = 'e3f0a025-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // AvatarBytecode — encrypted RW. Chunked upload of the avatar face .avbc
 // (mirrors `POST /api/avatar-dsl` on the HTTP side). READ returns a status
 // JSON; WRITE accepts a 1-byte op header followed by op-specific payload:
@@ -1022,7 +1044,7 @@ const DIS_CHRS = {
 
 // --- State ---
 let bleDevice = null, bleServer = null, svc = null;
-let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJttsIdleEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrBatGauge = null, chrServoEnabled = null, chrMcpToken = null, chrLtConfig = null, chrServoLimits = null, chrServoRangeMode = null, chrServoPositions = null, chrBoardKind = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null, chrAudioMetrics = null, chrLedState = null, chrMicLipGain = null, chrLedMouthSync = null, chrAvatarBc = null;
+let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJttsIdleEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrBatGauge = null, chrServoEnabled = null, chrMcpToken = null, chrLtConfig = null, chrServoLimits = null, chrServoRangeMode = null, chrServoPositions = null, chrBoardKind = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null, chrAudioMetrics = null, chrLedState = null, chrMicLipGain = null, chrLedMouthSync = null, chrOperationMode = null, chrAvatarBc = null;
 let boardKind = null; // null = unknown (older firmware), else 0/1/2 from BOARD_*
 let batteryPollTimer = null;  // setInterval handle while connected
 let jttsInitialJson = '';  // last read JSON, used to detect Apply-time changes
@@ -2078,6 +2100,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
       ['ledState',  CHR_LED_STATE],
       ['micLipGain', CHR_MIC_LIP_GAIN],
       ['ledMouthSync', CHR_LED_MOUTH_SYNC],
+      ['operationMode', CHR_OPERATION_MODE],
       ['avatarBc',  CHR_AVATAR_BC],
     ];
     const settled = await Promise.allSettled(
@@ -2124,6 +2147,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
     chrLedState = found.ledState ?? null;
     chrMicLipGain = found.micLipGain ?? null;
     chrLedMouthSync = found.ledMouthSync ?? null;
+    chrOperationMode = found.operationMode ?? null;
     chrAvatarBc = found.avatarBc ?? null;
     log(`Characteristics 取得完了 (missing: ${missing.length ? missing.join(', ') : 'none'})`,
         missing.length ? 'info' : 'ok');
@@ -2214,6 +2238,21 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
         log(`LED 口の動きと連動: ${enabled ? '有効' : '無効'}`);
       } catch (e) {
         log(`LED 連動 状態の取得失敗: ${e.message}`, 'err');
+      }
+    }
+
+    if (chrOperationMode) {
+      try {
+        const omBytes = await readEncrypted(chrOperationMode);
+        if (omBytes.length > 0) {
+          const mode = String(omBytes[0]);
+          document.getElementById('operation-mode').value = mode;
+          document.getElementById('operation-mode').dataset.initial = mode;
+          const labels = {'0':'マイクでリップシンク','1':'JTTS ランダム発話','2':'会話応答'};
+          log(`動作モード: ${labels[mode] || `mode ${mode}`}`);
+        }
+      } catch (e) {
+        log(`動作モード 状態の取得失敗: ${e.message}`, 'err');
       }
     }
 
@@ -2392,7 +2431,7 @@ function onDisconnected() {
   micLipLoaded = false;
   svRangeOn = false;
   svLiveYaw = svLivePitch = -1;
-  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJttsIdleEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrXiaozhiUrl = chrXiaozhiToken = chrFaceConfig = chrBattery = chrBatGauge = chrServoEnabled = chrMcpToken = chrLtConfig = chrServoLimits = chrServoRangeMode = chrServoPositions = chrBoardKind = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = chrAudioMetrics = chrLedState = chrMicLipGain = chrLedMouthSync = chrAvatarBc = null;
+  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJttsIdleEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrXiaozhiUrl = chrXiaozhiToken = chrFaceConfig = chrBattery = chrBatGauge = chrServoEnabled = chrMcpToken = chrLtConfig = chrServoLimits = chrServoRangeMode = chrServoPositions = chrBoardKind = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = chrAudioMetrics = chrLedState = chrMicLipGain = chrLedMouthSync = chrOperationMode = chrAvatarBc = null;
   if (typeof refreshAvbcButton === 'function') refreshAvbcButton();
   boardKind = null;
   aesKey = null;
@@ -2401,6 +2440,7 @@ function onDisconnected() {
   delete document.getElementById('rtp-enabled').dataset.initial;
   delete document.getElementById('jtts-idle-enabled').dataset.initial;
   delete document.getElementById('led-mouth-sync').dataset.initial;
+  delete document.getElementById('operation-mode').dataset.initial;
   delete document.getElementById('bat-gauge-enabled').dataset.initial;
   delete document.getElementById('servo-enabled').dataset.initial;
   delete document.getElementById('provider').dataset.initial;
@@ -2512,6 +2552,16 @@ document.getElementById('btn-apply').addEventListener('click', async () => {
     if (chrLedMouthSync && lmsInitial !== undefined && lmsInitial !== lmsWanted) {
       await writeEncrypted(chrLedMouthSync, new Uint8Array([lmsCheckbox.checked ? 1 : 0]));
       log(`LED 口の動き連動を ${lmsCheckbox.checked ? '有効' : '無効'} に切り替え`, 'ok');
+    }
+
+    // Operation mode: only push if it changed AND chr is present.
+    const omSel = document.getElementById('operation-mode');
+    const omInitial = omSel.dataset.initial;
+    if (chrOperationMode && omInitial !== undefined && omInitial !== omSel.value) {
+      const v = Number(omSel.value);
+      await writeEncrypted(chrOperationMode, new Uint8Array([v]));
+      const labels = {0:'マイクでリップシンク',1:'JTTS ランダム発話',2:'会話応答'};
+      log(`動作モードを ${labels[v] || `mode ${v}`} に切り替え`, 'ok');
     }
 
     // Battery gauge: only push if it changed AND chr is present.

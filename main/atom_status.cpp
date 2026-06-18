@@ -33,6 +33,25 @@ std::uint32_t now_ms_local()
 
 std::uint32_t g_last_draw_ms = 0;
 
+// Long-press cycle state. AtomS3R / AtomS3 have no on-screen settings UI,
+// so the only way to change operation_mode locally is to hold the front
+// button while the status overlay is up — that cycles to the next mode,
+// saves, and reboots. 1500 ms threshold; the press-down sets the timestamp
+// and a single edge-trigger inside the poll fires the cycle exactly once.
+constexpr std::uint32_t kLongPressMs = 1500;
+std::uint32_t g_press_start_ms = 0;
+bool g_long_press_fired = false;
+
+void cycle_operation_mode_and_reboot()
+{
+    config::DeviceConfig cfg = config::load();
+    const std::uint8_t cur = static_cast<std::uint8_t>(cfg.operation_mode);
+    const std::uint8_t next = (cur + 1) % 3;
+    cfg.operation_mode = static_cast<config::OperationMode>(next);
+    (void)config::store::save(cfg);
+    esp_restart();
+}
+
 std::string current_ip()
 {
     esp_netif_t* nif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
@@ -60,22 +79,60 @@ const char* conv_status_label(ConvStatus s)
     return "?";
 }
 
+const char* op_mode_short(config::OperationMode m)
+{
+    switch (m) {
+    case config::OperationMode::MicLipSync:   return "mic";
+    case config::OperationMode::JttsRandom:   return "jtts";
+    case config::OperationMode::Conversation: return "conv";
+    }
+    return "?";
+}
+
 } // namespace
+
+// Cached at init time so draw() doesn't have to re-read NVS every frame.
+// Mode can only change via cycle_operation_mode_and_reboot (which reboots),
+// so caching once is safe — there's no live-update path.
+config::OperationMode g_op_mode = config::OperationMode::Conversation;
 
 void init(SharedState& state)
 {
     g_state = &state;
     const config::DeviceConfig cfg = config::load();
     g_ssid = cfg.wifi_ssid;
+    g_op_mode = cfg.operation_mode;
 }
 
 void poll_button()
 {
     // M5.update() is called by demo_loop on each iteration; we just look at
-    // the latched press state. Short press = toggle the overlay.
+    // the latched press state.
+    //
+    // Short tap (release before 1.5 s) → toggle the overlay (existing
+    // behaviour).
+    // Long press (held ≥ 1.5 s while the overlay is up) → cycle the
+    // operation_mode and reboot. The reboot doesn't return.
     if (M5.BtnA.wasPressed()) {
-        g_active.store(!g_active.load(std::memory_order_relaxed),
-                       std::memory_order_relaxed);
+        g_press_start_ms = now_ms_local();
+        g_long_press_fired = false;
+    }
+    if (M5.BtnA.isPressed() && !g_long_press_fired &&
+        now_ms_local() - g_press_start_ms >= kLongPressMs) {
+        g_long_press_fired = true;
+        if (g_active.load(std::memory_order_relaxed)) {
+            cycle_operation_mode_and_reboot();
+            // unreached
+        }
+    }
+    if (M5.BtnA.wasReleased()) {
+        // Suppress the short-tap toggle if the long-press path already
+        // fired (we'd have rebooted anyway, so this is just defensive).
+        if (!g_long_press_fired) {
+            g_active.store(!g_active.load(std::memory_order_relaxed),
+                           std::memory_order_relaxed);
+        }
+        g_long_press_fired = false;
     }
 }
 
@@ -130,11 +187,12 @@ bool draw(avatar::RichCanvas& canvas)
     kv(row++, "Wifi", wifi ? "up" : "down", wifi ? ok : off);
     kv(row++, "BLE",  ble ? "conn" : "wait", ble ? ok : fg);
     kv(row++, "Conv", conv_status_label(cs), fg);
+    kv(row++, "Mode", op_mode_short(g_op_mode), fg);
 
-    // Hint to press the button to dismiss.
+    // Hint: short tap dismisses; long press cycles mode + reboots.
     canvas.setTextColor(dim);
     canvas.setTextDatum(lgfx::textdatum_t::bottom_center);
-    canvas.drawString("press BtnA", w / 2, h - 2);
+    canvas.drawString("hold BtnA: mode", w / 2, h - 2);
     return true;
 }
 

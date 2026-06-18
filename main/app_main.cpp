@@ -827,6 +827,30 @@ extern "C" void app_main()
 
     static stackchan::config::DeviceConfig cfg = stackchan::config::load();
 
+    // operation_mode is the single source of truth for the avatar's primary
+    // behaviour. Derive the legacy gates from it so the rest of the boot
+    // sequence (audio_stream / wifi_audio / conversation task spawn /
+    // demo_loop babble decision / mic lip-sync task spawn) keeps its
+    // existing shape. See config_service::OperationMode for the enum.
+    switch (cfg.operation_mode) {
+    case stackchan::config::OperationMode::Conversation:
+        cfg.openai_enabled = true;
+        cfg.jtts_idle_enabled = false;
+        break;
+    case stackchan::config::OperationMode::JttsRandom:
+        cfg.openai_enabled = false;
+        cfg.jtts_idle_enabled = true;
+        break;
+    case stackchan::config::OperationMode::MicLipSync:
+        cfg.openai_enabled = false;
+        cfg.jtts_idle_enabled = false;
+        break;
+    }
+    ESP_LOGI(kTag, "operation_mode=%u (conv=%d jtts_idle=%d)",
+             static_cast<unsigned>(cfg.operation_mode),
+             static_cast<int>(cfg.openai_enabled),
+             static_cast<int>(cfg.jtts_idle_enabled));
+
     // SharedState + audio_stream sink must be live BEFORE config::start
     // brings the BLE GATT service online. Otherwise a client that
     // connects early (well within the 5–10 s of Wi-Fi / mic / servo
