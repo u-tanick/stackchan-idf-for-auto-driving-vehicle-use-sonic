@@ -181,9 +181,14 @@ fn draw()
   ellipse_eye(tx(230 + eye_off_x), ty(96 + eye_off_y), ew, eh, primary, bo)
   ellipse_eye(tx(90  - eye_off_x), ty(96 + eye_off_y), ew, eh, primary, bo)
 
-  -- Cheeks — hexagram. Slight breath bob keeps the face from feeling static
-  -- when the mouth/eyes aren't moving.
-  let cr = sz(10)
-  hexagram_cheek(tx(65),  ty(153) + bo, cr, primary)
-  hexagram_cheek(tx(255), ty(153) + bo, cr, primary)
+  -- Cheeks — hexagram. Honor FaceTuning's cheek_* knobs so the operator can
+  -- toggle / move / resize them alongside default_face's circle cheeks.
+  -- cheeks_visible defaults OFF in FaceTuning, so users switching to this
+  -- preset must enable it to see the aokko hallmark stars (the Wi-Fi /
+  -- BLE settings UI has the toggle in the avatar tab).
+  if cheeks_visible then
+    let cr = sz(cheek_radius)
+    hexagram_cheek(tx(65  - cheek_off_x), ty(153 + cheek_off_y) + bo, cr, primary)
+    hexagram_cheek(tx(255 + cheek_off_x), ty(153 + cheek_off_y) + bo, cr, primary)
+  end
 end
