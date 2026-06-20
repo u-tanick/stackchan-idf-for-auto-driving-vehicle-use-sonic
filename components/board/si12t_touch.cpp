@@ -26,7 +26,8 @@ constexpr std::uint8_t kRegCalHold2 = 0x0F;
 constexpr std::uint8_t kRegOutput1 = 0x10;
 
 // Sensitivity nibble (each nibble configures one pair of channels; same
-// value in both nibbles). Tuned downward over time:
+// value in both nibbles). Bit3 = HL (0 = Type_Low, 1 = Type_High), bits[2:0] = level.
+// History:
 //   - 0xCC ("High Level 4", BSP default) tripped Level-1 from EMI alone
 //   - 0xBB ("High Level 3") still let Wi-Fi + BLE + radio coex bursts
 //     drag every electrode up to Level-2 simultaneously, so the chip
@@ -34,10 +35,15 @@ constexpr std::uint8_t kRegOutput1 = 0x10;
 //     were busy — visible as continuous diagnostic logs and a few
 //     near-misses of the nadenade trigger before the all-equal exclusion
 //     was added
-//   - 0xAA ("High Level 2") raises the touch detection floor enough
-//     that uniform EMI lift can't reach Level-2. Real touches still
-//     resolve since fingertip capacitance dwarfs the EMI bias.
-constexpr std::uint8_t kSensitivityHighLevel = 0xAA;
+//   - 0xAA ("High Level 2") raised the touch detection floor enough
+//     that uniform EMI lift couldn't reach Level-2, but spurious
+//     swipe-like outputs still occasionally showed up with nothing
+//     touching the head
+//   - 0x33 ("Low Level 3"): switch the sensitivity TYPE from High to Low
+//     (wider Schmitt-style hysteresis between idle and touched levels —
+//     see Si12T datasheet 12.2.2). Matches the original StackChan
+//     firmware (hal_head_touch.cpp). m5stack/StackChan-BSP#6 trial.
+constexpr std::uint8_t kSensitivityValue = 0x33;
 
 // CTRL1 = Auto Mode, FTC=01, response interrupt on Middle/High.
 constexpr std::uint8_t kCtrl1Value = 0x22;
@@ -75,7 +81,7 @@ tl::expected<Si12tTouch, Error> Si12tTouch::probe(std::uint8_t address)
         return tl::unexpected{Error::TouchProbe};
     }
     for (std::uint8_t reg = kRegSensitivity1; reg <= kRegSensitivity5; ++reg) {
-        if (!chip.write_register(reg, kSensitivityHighLevel)) {
+        if (!chip.write_register(reg, kSensitivityValue)) {
             ESP_LOGE(kTag, "Si12T sensitivity write 0x%02X failed", reg);
             return tl::unexpected{Error::TouchProbe};
         }
