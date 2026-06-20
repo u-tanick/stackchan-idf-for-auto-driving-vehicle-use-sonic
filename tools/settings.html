@@ -459,6 +459,27 @@
 
   <label for="password">Wi-Fi パスワード</label>
   <input type="password" id="password" maxlength="64" placeholder="（変更しない場合は空欄）">
+
+  <h2 class="section-title" style="margin-top:0.5rem">デバイス名 (BLE / mDNS)</h2>
+  <p class="hint" style="margin-bottom:0.5rem">
+    BLE アドバタイズ名と mDNS ホスト名のもとになります。空欄なら自動生成
+    (Stackchan-XXXXXX)。mDNS は英数字とハイフンに丸められます。保存後の再起動で反映。
+  </p>
+  <label for="device-name">デバイス名</label>
+  <input type="text" id="device-name" maxlength="24" placeholder="（空欄で自動）">
+
+  <h2 class="section-title" style="margin-top:0.5rem">パスワード認証</h2>
+  <p class="hint" style="margin-bottom:0.5rem">
+    設定すると、BLE 設定ページ (これ) と WiFi 設定ページの両方で認証が必要に
+    なります。BLE は暗号鍵にパスワードハッシュが混入するので、間違ったパスワード
+    では全てのチャネルが復号失敗で動かなくなります。HTTP は Basic Auth。
+    クリアで認証なし (現状互換) に戻ります。保存後の再起動で反映。
+  </p>
+  <label for="auth-password">パスワード <span id="auth-password-state" class="hint" style="font-weight:normal"></span></label>
+  <div style="display:flex;gap:0.4rem;align-items:stretch">
+    <input type="password" id="auth-password" maxlength="64" placeholder="（変更しない場合は空欄）" style="flex:1 1 auto">
+    <button type="button" id="btn-auth-password-clear" class="danger" title="認証なしに戻す">クリア</button>
+  </div>
   </section><!-- /tab-panel "conn" -->
 
   <!-- ===== アバター ===== -->
@@ -1009,6 +1030,11 @@ const CHR_OPERATION_MODE = 'e3f0a025-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // on, a screen tap mid-reply interrupts the AI; off by default because
 // the capacitive pad fires false positives from incidental contact.
 const CHR_BARGE_IN_ENABLED = 'e3f0a026-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+// DeviceName (R/W) — operator-set BLE advertising name + mDNS hostname seed.
+const CHR_DEVICE_NAME = 'e3f0a027-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+// AuthPassword (write-only) — set/clears the BLE+HTTP auth gate. Empty body
+// clears (= no auth). NEVER read back; status uses has_auth_password.
+const CHR_AUTH_PASSWORD = 'e3f0a028-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // AvatarBytecode — encrypted RW. Chunked upload of the avatar face .avbc
 // (mirrors `POST /api/avatar-dsl` on the HTTP side). READ returns a status
 // JSON; WRITE accepts a 1-byte op header followed by op-specific payload:
@@ -1066,7 +1092,7 @@ const DIS_CHRS = {
 
 // --- State ---
 let bleDevice = null, bleServer = null, svc = null;
-let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJttsIdleEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrBatGauge = null, chrServoEnabled = null, chrMcpToken = null, chrLtConfig = null, chrServoLimits = null, chrServoRangeMode = null, chrServoPositions = null, chrBoardKind = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null, chrAudioMetrics = null, chrLedState = null, chrMicLipGain = null, chrLedMouthSync = null, chrOperationMode = null, chrBargeIn = null, chrAvatarBc = null;
+let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJttsIdleEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrBatGauge = null, chrServoEnabled = null, chrMcpToken = null, chrLtConfig = null, chrServoLimits = null, chrServoRangeMode = null, chrServoPositions = null, chrBoardKind = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null, chrAudioMetrics = null, chrLedState = null, chrMicLipGain = null, chrLedMouthSync = null, chrOperationMode = null, chrBargeIn = null, chrDeviceName = null, chrAuthPassword = null, chrAvatarBc = null;
 let boardKind = null; // null = unknown (older firmware), else 0/1/2 from BOARD_*
 let batteryPollTimer = null;  // setInterval handle while connected
 let jttsInitialJson = '';  // last read JSON, used to detect Apply-time changes
@@ -1156,7 +1182,14 @@ async function ensureX25519Supported() {
 //   3. ECDH → 32-byte shared secret → HKDF-SHA256 → AES-256 key.
 //   4. Write our pubkey to KeyExchange to commit the device side.
 // On success `aesKey` is a non-extractable CryptoKey usable for AES-GCM.
-async function setupSession() {
+// Run the X25519 handshake. `saltBytes` is the HKDF salt — empty by default
+// (= back-compat with pre-password firmware and devices with auth disabled).
+// On the password-gated path the caller re-runs setupSession with
+// salt = SHA-256(password), and the device's complete_handshake (which is
+// idempotent w.r.t. repeated peer-pubkey writes) re-derives its AES key with
+// the matching salt. The device's salt is set ONCE at boot from the stored
+// password — this is purely a client-side parameter.
+async function setupSession(saltBytes = new Uint8Array(0)) {
   const devicePubRaw = new Uint8Array((await chrKx.readValue()).buffer);
   if (devicePubRaw.length !== 32) {
     throw new Error(`device pubkey length ${devicePubRaw.length} != 32`);
@@ -1171,7 +1204,7 @@ async function setupSession() {
     {
       name: 'HKDF',
       hash: 'SHA-256',
-      salt: new Uint8Array(0),
+      salt: saltBytes,
       info: enc.encode('stackchan-config-v1'),
     },
     ikm,
@@ -1180,6 +1213,42 @@ async function setupSession() {
     ['encrypt', 'decrypt']);
   const ourPubRaw = new Uint8Array(await crypto.subtle.exportKey('raw', ourKp.publicKey));
   await chrKx.writeValueWithResponse(ourPubRaw);
+}
+
+// Probe-and-retry helper called right after the initial handshake. If the
+// device has an auth password set, the empty-salt session derives the wrong
+// AES key and the first encrypted READ (Status) fails with a GCM tag
+// mismatch. We surface a prompt() to the user; their answer is hashed and
+// fed back into setupSession to re-derive the key. Password is kept only in
+// the local scope (no DOM input, no localStorage) so it lives in memory just
+// long enough to derive the salt and then becomes garbage-collectible.
+async function ensureAuthenticated() {
+  if (!chrStatus) return; // very old firmware — nothing to probe against
+  try {
+    await readEncrypted(chrStatus);
+    return; // no password on device, or already authed (= empty salt matched)
+  } catch (_) {
+    // Fall through to the password prompt.
+  }
+  log('Status 読み取り失敗 → デバイス側で認証パスワードが設定済の可能性。入力を求めます。', 'info');
+  // eslint-disable-next-line no-alert
+  const pwd = window.prompt('BLE 接続パスワードを入力してください\n(このセッション中のみメモリに保持されます)');
+  if (pwd === null) {
+    throw new Error('認証パスワードがキャンセルされたため接続を中断');
+  }
+  if (pwd === '') {
+    throw new Error('空のパスワード — 認証に進めません');
+  }
+  const salt = new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(pwd)));
+  await setupSession(salt);
+  // Final verification: any error here means the password was wrong (a
+  // device with no auth would have succeeded on the first probe above).
+  try {
+    await readEncrypted(chrStatus);
+  } catch (e) {
+    throw new Error('パスワードが違うため接続を中断: ' + e.message);
+  }
+  log('BLE 認証 OK', 'ok');
 }
 
 // Decrypt a characteristic READ. Wire format: [12B nonce][ct][16B tag].
@@ -2124,6 +2193,8 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
       ['ledMouthSync', CHR_LED_MOUTH_SYNC],
       ['operationMode', CHR_OPERATION_MODE],
       ['bargeIn',       CHR_BARGE_IN_ENABLED],
+      ['deviceName',    CHR_DEVICE_NAME],
+      ['authPassword',  CHR_AUTH_PASSWORD],
       ['avatarBc',  CHR_AVATAR_BC],
     ];
     const settled = await Promise.allSettled(
@@ -2172,6 +2243,8 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
     chrLedMouthSync = found.ledMouthSync ?? null;
     chrOperationMode = found.operationMode ?? null;
     chrBargeIn = found.bargeIn ?? null;
+    chrDeviceName = found.deviceName ?? null;
+    chrAuthPassword = found.authPassword ?? null;
     chrAvatarBc = found.avatarBc ?? null;
     log(`Characteristics 取得完了 (missing: ${missing.length ? missing.join(', ') : 'none'})`,
         missing.length ? 'info' : 'ok');
@@ -2186,6 +2259,9 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
     // X25519 handshake. After this, every other read/write is encrypted.
     await setupSession();
     log('鍵交換完了 (X25519 + AES-256-GCM)', 'ok');
+    // Auth gate: if the device has an auth password set, the empty-salt
+    // session we just built doesn't match — prompt() and re-handshake.
+    await ensureAuthenticated();
 
     // DIS is plaintext — read it once and surface in the UI.
     try {
@@ -2289,6 +2365,38 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
         log(`バージイン (頭タッチで会話中断): ${enabled ? '有効' : '無効'}`);
       } catch (e) {
         log(`バージイン 状態の取得失敗: ${e.message}`, 'err');
+      }
+    }
+
+    // Device name (operator-set override; empty → device falls back to MAC).
+    if (chrDeviceName) {
+      try {
+        const dnBytes = await readEncrypted(chrDeviceName);
+        const dn = dec.decode(dnBytes);
+        const el = document.getElementById('device-name');
+        if (el) {
+          el.value = dn;
+          el.dataset.initial = dn;
+        }
+        log(`デバイス名: ${dn || '(自動生成)'}`);
+      } catch (e) {
+        log(`デバイス名 取得失敗: ${e.message}`, 'err');
+      }
+    }
+    // Auth password — read-only state surfacing. The chr itself is
+    // write-only so we don't know the password, just whether it's set.
+    // We infer "set" from a successful encrypted READ of *any* chr — if
+    // the session were salted differently we'd already be in GCM-auth
+    // hell. Since we got this far, we just need to tell the user whether
+    // a password is currently active so they know whether subsequent
+    // central connections will need the same password. Empty status
+    // (= no chr yet, very old firmware) leaves the hint blank.
+    {
+      const hintEl = document.getElementById('auth-password-state');
+      if (hintEl && chrAuthPassword) {
+        // We can't read the password, but we can offer the UI even when
+        // the firmware exposes the chr.
+        hintEl.textContent = '(空欄なら変更しない / クリアで認証なしに戻す)';
       }
     }
 
@@ -2608,6 +2716,26 @@ document.getElementById('btn-apply').addEventListener('click', async () => {
     if (chrBargeIn && biInitial !== undefined && biInitial !== biWanted) {
       await writeEncrypted(chrBargeIn, new Uint8Array([biCheckbox.checked ? 1 : 0]));
       log(`バージインを ${biCheckbox.checked ? '有効' : '無効'} に切り替え`, 'ok');
+    }
+
+    // Device name: only push when the input actually differs from the
+    // value we loaded at handshake. Empty new value is meaningful — it
+    // resets to the auto-generated name.
+    const dnEl = document.getElementById('device-name');
+    if (chrDeviceName && dnEl && dnEl.dataset.initial !== undefined &&
+        dnEl.value !== dnEl.dataset.initial) {
+      await writeEncrypted(chrDeviceName, strToBytes(dnEl.value));
+      log(`デバイス名を更新: ${dnEl.value || '(自動生成)'}`, 'ok');
+    }
+
+    // Auth password (write-only): push when the user typed something OR
+    // explicitly hit Clear (data-cleared=1 → send empty body to disable).
+    const authEl = document.getElementById('auth-password');
+    if (chrAuthPassword && authEl && (authEl.value || authEl.dataset.cleared === '1')) {
+      await writeEncrypted(chrAuthPassword, strToBytes(authEl.value));
+      log(authEl.value ? `認証パスワード送信 (${authEl.value.length}B)` : '認証パスワード クリア', 'ok');
+      authEl.value = '';
+      delete authEl.dataset.cleared;
     }
 
     // Battery gauge: only push if it changed AND chr is present.
@@ -3570,6 +3698,19 @@ document.getElementById('btn-mcp-token-clear').addEventListener('click', () => {
   el.value = '';
   el.type = 'password';
   el.dataset.cleared = '1';
+});
+
+// Auth password "クリア" — same UX as MCP token. On Apply, sends an empty
+// string which disables the auth gate at the next reboot.
+document.getElementById('btn-auth-password-clear').addEventListener('click', () => {
+  if (!confirm('認証なし (空欄) に戻します。保存 & 再起動で反映されます。よろしいですか?')) {
+    return;
+  }
+  const el = document.getElementById('auth-password');
+  el.value = '';
+  el.dataset.cleared = '1';
+  const hintEl = document.getElementById('auth-password-state');
+  if (hintEl) hintEl.textContent = '(クリア予約 — 保存で空欄を送信)';
 });
 
 // ===== Battery (READ + poll) ================================================

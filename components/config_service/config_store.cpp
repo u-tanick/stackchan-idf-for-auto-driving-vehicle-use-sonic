@@ -44,6 +44,8 @@ constexpr const char* kKeyMicLipOut = "mic_lip_out"; // mouth output gain percen
 constexpr const char* kKeyLedMouthSync = "led_msync"; // u8 bool
 constexpr const char* kKeyOperationMode = "op_mode";  // u8 OperationMode
 constexpr const char* kKeyBargeIn       = "bargein_en"; // u8 bool
+constexpr const char* kKeyDeviceName    = "dev_name";   // user-set BLE / mDNS name (empty = auto)
+constexpr const char* kKeyAuthPassword  = "auth_pwd";   // BLE handshake salt + HTTP Basic Auth (empty = no auth)
 
 std::string nvs_read_str(nvs_handle_t h, const char* key)
 {
@@ -90,6 +92,8 @@ DeviceConfig load()
     cfg.servo_limits_json = nvs_read_str(h, kKeyServoLimits);
     cfg.mcp_api_token = nvs_read_str(h, kKeyMcpToken);
     cfg.lt_config_json = nvs_read_str(h, kKeyLtConfig);
+    cfg.device_name = nvs_read_str(h, kKeyDeviceName);
+    cfg.auth_password = nvs_read_str(h, kKeyAuthPassword);
     // Default to enabled when the key is missing (pre-flag NVS contents).
     std::uint8_t enabled = 1;
     esp_err_t en_err = nvs_get_u8(h, kKeyOpenAiEnabled, &enabled);
@@ -207,6 +211,8 @@ tl::expected<void, Error> save(const DeviceConfig& cfg)
         {kKeyServoLimits, cfg.servo_limits_json},
         {kKeyMcpToken, cfg.mcp_api_token},
         {kKeyLtConfig, cfg.lt_config_json},
+        {kKeyDeviceName, cfg.device_name},
+        {kKeyAuthPassword, cfg.auth_password},
     };
     for (const auto& [key, value] : entries) {
         err = nvs_set_str(h, key, value.c_str());

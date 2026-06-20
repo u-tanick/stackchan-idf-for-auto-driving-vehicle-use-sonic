@@ -49,6 +49,16 @@ public:
     // ensure_device_keypair() to have run.
     tl::expected<void, Error> complete_handshake(std::span<const std::uint8_t, 32> peer_pub);
 
+    // Install an HKDF salt used for all subsequent handshakes. Caller passes
+    // the SHA-256 hash of the operator-set password — a client that connects
+    // without the right password derives a different AES key, so every
+    // encrypted READ/WRITE then fails with a GCM tag mismatch. Empty span
+    // restores the no-auth default (salt = nullptr in HKDF, matching the
+    // historical "stackchan-config-v1" info-only derivation). Caller may
+    // change the salt between connections; the in-flight session keeps the
+    // key it was derived with.
+    void set_hkdf_salt(std::span<const std::uint8_t> salt);
+
     bool is_established() const noexcept { return established_; }
 
     // Encrypt plaintext into [12B nonce][ciphertext][16B tag]. The nonce is
@@ -67,6 +77,9 @@ private:
     std::array<std::uint8_t, 32> device_pub_{};
     std::array<std::uint8_t, 32> device_priv_{};
     std::array<std::uint8_t, 32> aes_key_{};
+    // HKDF salt installed by set_hkdf_salt. Empty (size 0) means "no salt"
+    // (back-compat with pre-password installs).
+    std::vector<std::uint8_t> hkdf_salt_{};
     mbedtls_gcm_context gcm_;
 };
 

@@ -412,6 +412,26 @@
 
   <label for="password">Wi-Fi パスワード</label>
   <input type="password" id="password" maxlength="64" placeholder="（変更しない場合は空欄）">
+
+  <h2 class="section-title" style="margin-top:0.5rem">デバイス名 (BLE / mDNS)</h2>
+  <p class="hint" style="margin-bottom:0.5rem">
+    BLE アドバタイズ名と mDNS ホスト名のもとになります。空欄なら自動生成 (Stackchan-XXXXXX)。
+    mDNS は英数字とハイフンに丸められます。保存後の再起動で反映。
+  </p>
+  <label for="device-name">デバイス名</label>
+  <input type="text" id="device-name" maxlength="24" placeholder="（空欄で自動）">
+
+  <h2 class="section-title" style="margin-top:0.5rem">パスワード認証</h2>
+  <p class="hint" style="margin-bottom:0.5rem">
+    設定すると、この設定ページ (WiFi) と BLE の両方で認証が必要になります。
+    空欄を保存すると認証なし (現状互換) に戻ります。HTTP は Basic Auth、BLE は
+    暗号鍵に混入されます。保存後の再起動で反映。
+  </p>
+  <label for="auth-password">パスワード <span id="auth-password-state" class="hint" style="font-weight:normal"></span></label>
+  <div style="display:flex;gap:0.4rem;align-items:stretch">
+    <input type="password" id="auth-password" maxlength="64" placeholder="（変更しない場合は空欄）" style="flex:1 1 auto">
+    <button type="button" id="btn-auth-password-clear" class="danger" title="認証なしに戻す">クリア</button>
+  </div>
   </section><!-- /tab-panel "conn" -->
 
   <!-- ===== アバター ===== -->
@@ -959,6 +979,18 @@ $('btn-mcp-token-clear').addEventListener('click', () => {
   el.dataset.cleared = '1';
 });
 
+// Auth password "クリア" — same UX as MCP token. Sends an explicit empty
+// string on Apply (= disable auth gate).
+$('btn-auth-password-clear').addEventListener('click', () => {
+  if (!confirm('認証なし (空欄) に戻します。保存 & 再起動で反映されます。よろしいですか?')) {
+    return;
+  }
+  const el = $('auth-password');
+  el.value = '';
+  el.dataset.cleared = '1';
+  $('auth-password-state').textContent = '(クリア予約 — 保存で空欄を送信)';
+});
+
 // --- LT timekeeper config ---
 
 // Build the compact JSON from whichever fields are filled. Empty form → null
@@ -1066,6 +1098,13 @@ async function refresh() {
     $('bat-gauge-enabled').checked = (s.battery_gauge_enabled !== false); // default on if absent
     $('servo-enabled').checked = (s.servo_enabled !== false); // default on if absent
     $('mcp-token-state').textContent = s.has_mcp_token ? '設定済' : '未設定';
+    // Device name + auth password (auth password is write-only — never
+    // returned, only a has_* flag).
+    $('device-name').value = s.device_name || '';
+    $('device-name').dataset.initial = s.device_name || '';
+    $('auth-password-state').textContent = s.has_auth_password
+      ? '(設定済 — 変更しない場合は空欄)'
+      : '(未設定 — 空欄なら認証なし)';
     // ffmpeg send examples. This page is served by the device, so its own
     // hostname is the RTP destination.
     const h = location.hostname || (s.ip || '');
@@ -1147,6 +1186,21 @@ async function apply() {
     await postText('/api/provider', provider);
     await postText('/api/operation-mode', $('operation-mode').value);
     await postText('/api/barge-in', $('barge-in-enabled').checked ? '1' : '0');
+    // Device name: only push when it actually changed (so leaving the field
+    // untouched preserves the current value across saves).
+    const devName = $('device-name').value;
+    if (devName !== ($('device-name').dataset.initial || '')) {
+      await postText('/api/device-name', devName);
+      log('デバイス名送信', 'ok');
+    }
+    // Auth password: push when the user typed something OR explicitly hit
+    // "クリア" (dataset.cleared = 1 → send empty string = disable auth).
+    const authEl = $('auth-password');
+    if (authEl.value || authEl.dataset.cleared === '1') {
+      await postText('/api/auth-password', authEl.value);
+      log(authEl.value ? '認証パスワード送信' : '認証パスワード クリア', 'ok');
+      delete authEl.dataset.cleared;
+    }
     await postText('/api/openai-enabled', enabled ? '1' : '0');
     await postText('/api/rtp-enabled', rtpEnabled ? '1' : '0');
     await postText('/api/jtts-idle-enabled', jttsIdleEnabled ? '1' : '0');

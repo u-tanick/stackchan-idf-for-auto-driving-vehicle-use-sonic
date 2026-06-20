@@ -27,15 +27,46 @@ bool g_started = false;
 httpd_handle_t g_server = nullptr;
 char g_hostname[32] = "stackchan";
 
-// Build the mDNS hostname from the Wi-Fi STA MAC lower 3 bytes. The BLE
-// advertising name (config_service) is composed from the SAME MAC, so a
-// central can derive the .local hostname from the BLE name (tools/settings.html
-// does exactly that). STA is the ESP32 base MAC and is what the router shows,
-// so the hostname suffix matches the device's visible Wi-Fi MAC. (Both sides
-// MUST stay on ESP_MAC_WIFI_STA — they previously diverged, BLE on ESP_MAC_BT
-// = base + 2, which made the settings-page link unresolvable.)
-void compose_hostname()
+// Build the mDNS hostname. If the operator set DeviceConfig.device_name we
+// sanitize that to RFC-1123 (lowercase alphanumerics + single-hyphen runs, no
+// leading/trailing hyphen, ≤24 chars) so it can serve as the .local label.
+// Otherwise we fall back to the Wi-Fi STA MAC lower 3 bytes — the BLE
+// advertising name (config_service) uses the SAME MAC bytes, so a central
+// can derive the .local hostname from the BLE name (tools/settings.html does
+// exactly that). STA is the ESP32 base MAC and is what the router shows, so
+// the hostname suffix matches the device's visible Wi-Fi MAC.
+//
+// (Both sides MUST stay on ESP_MAC_WIFI_STA when falling back — they
+// previously diverged, BLE on ESP_MAC_BT = base + 2, which made the
+// settings-page link unresolvable.)
+void compose_hostname(const std::string& operator_name)
 {
+    if (!operator_name.empty()) {
+        std::size_t out = 0;
+        bool last_hyphen = false;
+        for (char c : operator_name) {
+            if (out + 1 >= sizeof(g_hostname)) break;
+            // ASCII alnum: keep as lowercase. Non-alnum collapses to a single
+            // hyphen (skipping leading and consecutive runs).
+            if ((c >= 'A' && c <= 'Z')) c = static_cast<char>(c - 'A' + 'a');
+            const bool alnum = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+            if (alnum) {
+                g_hostname[out++] = c;
+                last_hyphen = false;
+            } else if (out > 0 && !last_hyphen) {
+                g_hostname[out++] = '-';
+                last_hyphen = true;
+            }
+        }
+        // Trim trailing hyphen so we never publish "foo-.local".
+        while (out > 0 && g_hostname[out - 1] == '-') --out;
+        if (out > 0) {
+            g_hostname[out] = '\0';
+            return;
+        }
+        // Empty after sanitization (e.g. operator_name was all symbols) →
+        // fall through to the MAC fallback.
+    }
     std::uint8_t mac[6] = {};
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     std::snprintf(g_hostname, sizeof(g_hostname),
@@ -165,7 +196,7 @@ tl::expected<void, Error> start(const config::DeviceConfig& current)
         return tl::unexpected(Error::AlreadyStarted);
     }
 
-    compose_hostname();
+    compose_hostname(current.device_name);
 
     g_started = true;
     BaseType_t ok = xTaskCreate(init_task, "cfg-wifi-init", 6 * 1024,

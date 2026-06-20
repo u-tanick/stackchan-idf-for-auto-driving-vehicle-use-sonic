@@ -144,14 +144,16 @@ tl::expected<void, Error> Session::complete_handshake(std::span<const std::uint8
         return tl::unexpected{Error::CryptoBadKey};
     }
 
-    // HKDF-SHA256, no salt, info = "stackchan-config-v1".
+    // HKDF-SHA256 with optional salt (= SHA-256 of operator password when
+    // configured, empty otherwise). info = "stackchan-config-v1".
     const auto* md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
     if (md_info == nullptr) {
         mbedtls_platform_zeroize(shared.data(), shared.size());
         return tl::unexpected{Error::CryptoBadKey};
     }
     int rc = mbedtls_hkdf(md_info,
-                          nullptr, 0,
+                          hkdf_salt_.empty() ? nullptr : hkdf_salt_.data(),
+                          hkdf_salt_.size(),
                           shared.data(), shared.size(),
                           reinterpret_cast<const unsigned char*>(kHkdfInfo), std::strlen(kHkdfInfo),
                           aes_key_.data(), aes_key_.size());
@@ -234,6 +236,22 @@ void Session::reset()
     mbedtls_platform_zeroize(aes_key_.data(), aes_key_.size());
     keypair_ready_ = false;
     established_ = false;
+    // hkdf_salt_ is configuration, not session state — keep it across
+    // disconnects so the next central also gets the password gate.
+}
+
+void Session::set_hkdf_salt(std::span<const std::uint8_t> salt)
+{
+    if (salt.empty()) {
+        // Zeroize before clearing so even the heap pages we held don't keep
+        // the password hash around.
+        if (!hkdf_salt_.empty()) {
+            mbedtls_platform_zeroize(hkdf_salt_.data(), hkdf_salt_.size());
+        }
+        hkdf_salt_.clear();
+        return;
+    }
+    hkdf_salt_.assign(salt.begin(), salt.end());
 }
 
 } // namespace stackchan::config::crypto

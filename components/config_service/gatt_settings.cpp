@@ -23,6 +23,8 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
+#include <mbedtls/sha256.h>
+
 #include <host/ble_hs.h>
 #include <host/ble_gap.h>
 #include <host/ble_gatt.h>
@@ -295,6 +297,24 @@ static const ble_uuid128_t kOperationModeUuid = BLE_UUID128_INIT(
 static const ble_uuid128_t kBargeInEnabledUuid = BLE_UUID128_INIT(
     0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
     0x2a, 0x4d, 0x1c, 0x7b, 0x26, 0xa0, 0xf0, 0xe3);
+// DeviceName — encrypted R/W UTF-8 string (up to 24 bytes). Operator-set
+// override for the BLE advertising name AND the mDNS hostname seed (after
+// RFC-1123 sanitization). Empty means "use auto-generated Stackchan-XXXXXX".
+// Staged + applied on the next boot — the running advertising name can't be
+// changed without restarting GAP.
+static const ble_uuid128_t kDeviceNameUuid = BLE_UUID128_INIT(
+    0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
+    0x2a, 0x4d, 0x1c, 0x7b, 0x27, 0xa0, 0xf0, 0xe3);
+// AuthPassword — encrypted **WRITE-ONLY** UTF-8 string (up to 64 bytes).
+// When non-empty, SHA-256(password) is mixed into the HKDF salt on every
+// session handshake (clients without the right password derive a different
+// key → GCM tag fails on every encrypted op), and HTTP Basic Auth gates the
+// settings web UI + every /api/*. Empty clears the gate (no auth). READ is
+// intentionally NOT exposed — the value is stored plaintext in NVS but never
+// returned over the wire; status surfaces only a has_* flag.
+static const ble_uuid128_t kAuthPasswordUuid = BLE_UUID128_INIT(
+    0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
+    0x2a, 0x4d, 0x1c, 0x7b, 0x28, 0xa0, 0xf0, 0xe3);
 
 // --- Mutable state guarded by g_mutex ---
 static SemaphoreHandle_t g_mutex = nullptr;
@@ -313,6 +333,8 @@ struct StagingBuffer {
     std::optional<Provider> provider;
     std::optional<OperationMode> operation_mode;
     std::optional<bool> barge_in_enabled;
+    std::optional<std::string> device_name;
+    std::optional<std::string> auth_password;
 };
 
 static DeviceConfig g_active;
@@ -354,6 +376,8 @@ static MicLipGainSink g_mic_lip_gain_sink = nullptr;
 static uint16_t g_led_mouth_sync_handle = 0;
 static uint16_t g_operation_mode_handle = 0;
 static uint16_t g_barge_in_enabled_handle = 0;
+static uint16_t g_device_name_handle = 0;
+static uint16_t g_auth_password_handle = 0;
 static uint16_t g_avatar_bc_handle = 0;
 static AvatarBytecodeSink g_avatar_bc_sink = nullptr;
 
@@ -630,6 +654,19 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             }
             const std::uint8_t byte = g_active.barge_in_enabled ? 1 : 0;
             const bool ok = append_encrypted(ctxt->om, {&byte, 1});
+            xSemaphoreGive(g_mutex);
+            return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
+        }
+        if (attr_handle == g_device_name_handle) {
+            xSemaphoreTake(g_mutex, portMAX_DELAY);
+            if (!g_session.is_established()) {
+                xSemaphoreGive(g_mutex);
+                return BLE_ATT_ERR_UNLIKELY;
+            }
+            const std::string name = g_active.device_name;
+            const bool ok = append_encrypted(
+                ctxt->om,
+                {reinterpret_cast<const std::uint8_t*>(name.data()), name.size()});
             xSemaphoreGive(g_mutex);
             return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
         }
@@ -1067,6 +1104,23 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             xSemaphoreGive(g_mutex);
             return 0;
         }
+        if (attr_handle == g_device_name_handle) {
+            if (pt.size() > 24) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            std::string val(reinterpret_cast<const char*>(pt.data()), pt.size());
+            xSemaphoreTake(g_mutex, portMAX_DELAY);
+            g_staging.device_name = std::move(val);
+            xSemaphoreGive(g_mutex);
+            return 0;
+        }
+        if (attr_handle == g_auth_password_handle) {
+            // Write-only. Empty body clears the gate (no auth required).
+            if (pt.size() > 64) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            std::string val(reinterpret_cast<const char*>(pt.data()), pt.size());
+            xSemaphoreTake(g_mutex, portMAX_DELAY);
+            g_staging.auth_password = std::move(val);
+            xSemaphoreGive(g_mutex);
+            return 0;
+        }
         if (attr_handle == g_bat_gauge_handle) {
             if (pt.size() != 1) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
             xSemaphoreTake(g_mutex, portMAX_DELAY);
@@ -1344,6 +1398,8 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             if (g_staging.led_mouth_sync_enabled) merged.led_mouth_sync_enabled = *g_staging.led_mouth_sync_enabled;
             if (g_staging.operation_mode) merged.operation_mode = *g_staging.operation_mode;
             if (g_staging.barge_in_enabled) merged.barge_in_enabled = *g_staging.barge_in_enabled;
+            if (g_staging.device_name) merged.device_name = *g_staging.device_name;
+            if (g_staging.auth_password) merged.auth_password = *g_staging.auth_password;
             if (g_staging.battery_gauge_enabled) merged.battery_gauge_enabled = *g_staging.battery_gauge_enabled;
             if (g_staging.servo_enabled) merged.servo_enabled = *g_staging.servo_enabled;
             if (g_staging.mcp_api_token) merged.mcp_api_token = *g_staging.mcp_api_token;
@@ -1534,6 +1590,22 @@ static ble_gatt_chr_def kChrs[] = {
         .val_handle = &g_barge_in_enabled_handle,
     },
     {
+        .uuid = &kDeviceNameUuid.u,
+        .access_cb = gatt_access_cb,
+        // R = current operator-set name (may be empty); W = stage new name
+        // for Apply (reboot). Take effect requires reboot because BLE GAP
+        // advertising name is set once at on_sync() time.
+        .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+        .val_handle = &g_device_name_handle,
+    },
+    {
+        .uuid = &kAuthPasswordUuid.u,
+        .access_cb = gatt_access_cb,
+        // Write-only: empty body clears, non-empty installs the password gate.
+        .flags = BLE_GATT_CHR_F_WRITE,
+        .val_handle = &g_auth_password_handle,
+    },
+    {
         .uuid = &kBoardKindUuid.u,
         .access_cb = gatt_access_cb,
         .flags = BLE_GATT_CHR_F_READ,
@@ -1651,6 +1723,21 @@ void init(const DeviceConfig& active)
 {
     g_mutex = xSemaphoreCreateMutex();
     g_active = active;
+
+    // Install the password-derived HKDF salt before any central can connect.
+    // Empty password leaves the salt empty (back-compat: handshake derives
+    // the same key it always did, no auth gate).
+    if (!active.auth_password.empty()) {
+        std::array<std::uint8_t, 32> hash{};
+        // SHA-256(password). is224=0 selects SHA-256 (vs SHA-224).
+        mbedtls_sha256(reinterpret_cast<const unsigned char*>(active.auth_password.data()),
+                       active.auth_password.size(),
+                       hash.data(), 0);
+        g_session.set_hkdf_salt(std::span<const std::uint8_t>{hash});
+        ESP_LOGI(kTag, "BLE auth gate ON (HKDF salt installed)");
+    } else {
+        g_session.set_hkdf_salt({});
+    }
 
     ble_svc_gap_init();
     ble_svc_gatt_init();

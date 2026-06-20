@@ -28,6 +28,8 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
+#include <mbedtls/base64.h>
+
 // Embedded settings page (added by CMake EMBED_TXTFILES).
 extern const char settings_wifi_html_start[] asm("_binary_settings_wifi_html_start");
 extern const char settings_wifi_html_end[]   asm("_binary_settings_wifi_html_end");
@@ -58,6 +60,8 @@ struct StagingBuffer {
     std::optional<config::Provider> provider;
     std::optional<config::OperationMode> operation_mode;
     std::optional<bool> barge_in_enabled;
+    std::optional<std::string> device_name;
+    std::optional<std::string> auth_password;
 };
 
 config::DeviceConfig g_active;
@@ -105,6 +109,58 @@ constexpr std::size_t kMaxSystemPrompt = 2048;
 constexpr std::size_t kMaxConvHeaders = 1024;
 constexpr std::size_t kMaxOtaChunk = 16384; // HTTP can chunk much bigger than BLE
 constexpr std::size_t kMaxBodyBytes = 32768;
+constexpr std::size_t kMaxDeviceName = 24;
+constexpr std::size_t kMaxAuthPassword = 64;
+
+// --- HTTP Basic Auth gate ---
+//
+// Every public handler calls require_auth() at the top. When
+// DeviceConfig.auth_password is empty (default / back-compat), the gate is a
+// no-op. When set, the request must carry an Authorization: Basic header
+// whose decoded password (everything after the first ':') matches; otherwise
+// we 401 with WWW-Authenticate so the browser pops its native prompt. The
+// username field is ignored — Stack-chan has no concept of multiple users.
+bool require_auth(httpd_req_t* req)
+{
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    const std::string expected = g_active.auth_password;
+    xSemaphoreGive(g_mutex);
+    if (expected.empty()) return true;
+
+    char hdr[160];
+    esp_err_t err = httpd_req_get_hdr_value_str(req, "Authorization", hdr, sizeof(hdr));
+    if (err == ESP_OK) {
+        constexpr const char* kPrefix = "Basic ";
+        if (std::strncmp(hdr, kPrefix, 6) == 0) {
+            // mbedtls_base64_decode accepts the strict alphabet (RFC 4648),
+            // sufficient for what browsers send. olen is set even on
+            // BUFFER_TOO_SMALL — we pre-size the destination to the upper
+            // bound (input_len * 3 / 4).
+            const char* b64 = hdr + 6;
+            const std::size_t b64_len = std::strlen(b64);
+            std::vector<unsigned char> dec(b64_len + 3, 0);
+            std::size_t olen = 0;
+            int rc = mbedtls_base64_decode(dec.data(), dec.size(), &olen,
+                                            reinterpret_cast<const unsigned char*>(b64),
+                                            b64_len);
+            if (rc == 0) {
+                std::string up(reinterpret_cast<const char*>(dec.data()), olen);
+                auto colon = up.find(':');
+                if (colon != std::string::npos) {
+                    const std::string pwd = up.substr(colon + 1);
+                    if (pwd == expected) return true;
+                }
+            }
+        }
+    }
+    httpd_resp_set_status(req, "401 Unauthorized");
+    // Realm must be wrapped in literal quotes per RFC 7617; "stackchan" is
+    // shown verbatim in the browser prompt.
+    httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"stackchan\"");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_send(req, nullptr, 0);
+    return false;
+}
 
 // --- Body helpers ---
 
@@ -226,6 +282,7 @@ std::string escape_json(const std::string& in)
 
 esp_err_t handle_status_get(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     xSemaphoreTake(g_mutex, portMAX_DELAY);
     const auto cfg = g_active;
     const bool wifi_ok = g_wifi_connected;
@@ -263,6 +320,8 @@ esp_err_t handle_status_get(httpd_req_t* req)
     body += "\"led_mouth_sync_enabled\":" + std::string(cfg.led_mouth_sync_enabled ? "true" : "false") + ",";
     body += "\"operation_mode\":" + std::to_string(static_cast<int>(cfg.operation_mode)) + ",";
     body += "\"barge_in_enabled\":" + std::string(cfg.barge_in_enabled ? "true" : "false") + ",";
+    body += "\"device_name\":\"" + escape_json(cfg.device_name) + "\",";
+    body += "\"has_auth_password\":" + std::string(cfg.auth_password.empty() ? "false" : "true") + ",";
     // Token itself is never returned; the UI only needs to know whether the
     // /mcp/* API is reachable (= has a token).
     body += "\"has_mcp_token\":" + std::string(g_mcp_active_token.empty() ? "false" : "true") + ",";
@@ -289,6 +348,7 @@ esp_err_t handle_status_get(httpd_req_t* req)
 
 esp_err_t handle_ssid_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, kMaxSsid) != ESP_OK) return ESP_OK;
     xSemaphoreTake(g_mutex, portMAX_DELAY);
@@ -299,6 +359,7 @@ esp_err_t handle_ssid_post(httpd_req_t* req)
 
 esp_err_t handle_password_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, kMaxPassword) != ESP_OK) return ESP_OK;
     xSemaphoreTake(g_mutex, portMAX_DELAY);
@@ -309,6 +370,7 @@ esp_err_t handle_password_post(httpd_req_t* req)
 
 esp_err_t handle_api_key_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, kMaxApiKey) != ESP_OK) return ESP_OK;
     xSemaphoreTake(g_mutex, portMAX_DELAY);
@@ -319,6 +381,7 @@ esp_err_t handle_api_key_post(httpd_req_t* req)
 
 esp_err_t handle_gemini_api_key_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, kMaxApiKey) != ESP_OK) return ESP_OK;
     xSemaphoreTake(g_mutex, portMAX_DELAY);
@@ -329,6 +392,7 @@ esp_err_t handle_gemini_api_key_post(httpd_req_t* req)
 
 esp_err_t handle_xiaozhi_url_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, kMaxApiKey) != ESP_OK) return ESP_OK;
     xSemaphoreTake(g_mutex, portMAX_DELAY);
@@ -339,6 +403,7 @@ esp_err_t handle_xiaozhi_url_post(httpd_req_t* req)
 
 esp_err_t handle_xiaozhi_token_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, kMaxApiKey) != ESP_OK) return ESP_OK;
     xSemaphoreTake(g_mutex, portMAX_DELAY);
@@ -349,6 +414,7 @@ esp_err_t handle_xiaozhi_token_post(httpd_req_t* req)
 
 esp_err_t handle_openai_enabled_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, 8) != ESP_OK) return ESP_OK;
     const bool enabled = !body.empty() && (body[0] == '1' || body[0] == 't' || body[0] == 'y');
@@ -360,6 +426,7 @@ esp_err_t handle_openai_enabled_post(httpd_req_t* req)
 
 esp_err_t handle_rtp_enabled_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, 8) != ESP_OK) return ESP_OK;
     const bool enabled = !body.empty() && (body[0] == '1' || body[0] == 't' || body[0] == 'y');
@@ -371,6 +438,7 @@ esp_err_t handle_rtp_enabled_post(httpd_req_t* req)
 
 esp_err_t handle_jtts_idle_enabled_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, 8) != ESP_OK) return ESP_OK;
     const bool enabled = !body.empty() && (body[0] == '1' || body[0] == 't' || body[0] == 'y');
@@ -382,6 +450,7 @@ esp_err_t handle_jtts_idle_enabled_post(httpd_req_t* req)
 
 esp_err_t handle_led_mouth_sync_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, 8) != ESP_OK) return ESP_OK;
     const bool enabled = !body.empty() && (body[0] == '1' || body[0] == 't' || body[0] == 'y');
@@ -393,6 +462,7 @@ esp_err_t handle_led_mouth_sync_post(httpd_req_t* req)
 
 esp_err_t handle_operation_mode_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, 8) != ESP_OK) return ESP_OK;
     if (body.empty()) {
@@ -412,6 +482,7 @@ esp_err_t handle_operation_mode_post(httpd_req_t* req)
 
 esp_err_t handle_barge_in_enabled_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, 8) != ESP_OK) return ESP_OK;
     const bool enabled = !body.empty() && (body[0] == '1' || body[0] == 't' || body[0] == 'y');
@@ -423,6 +494,7 @@ esp_err_t handle_barge_in_enabled_post(httpd_req_t* req)
 
 esp_err_t handle_battery_gauge_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, 8) != ESP_OK) return ESP_OK;
     const bool enabled = !body.empty() && (body[0] == '1' || body[0] == 't' || body[0] == 'y');
@@ -434,6 +506,7 @@ esp_err_t handle_battery_gauge_post(httpd_req_t* req)
 
 esp_err_t handle_servo_enabled_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, 8) != ESP_OK) return ESP_OK;
     const bool enabled = !body.empty() && (body[0] == '1' || body[0] == 't' || body[0] == 'y');
@@ -445,6 +518,7 @@ esp_err_t handle_servo_enabled_post(httpd_req_t* req)
 
 esp_err_t handle_lt_config_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     // LT timekeeper config JSON. Applied live through the sink (demo_loop
     // re-parses off this task's stack) and staged so /api/apply persists it.
     std::string body;
@@ -459,6 +533,7 @@ esp_err_t handle_lt_config_post(httpd_req_t* req)
 
 esp_err_t handle_mcp_token_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     // The token can be anything up to 128 bytes; the firmware just stores it
     // verbatim and constant-time compares against the Authorization header.
     // An empty body explicitly clears the NVS token (next reboot → 404 on
@@ -473,6 +548,7 @@ esp_err_t handle_mcp_token_post(httpd_req_t* req)
 
 esp_err_t handle_provider_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, 8) != ESP_OK) return ESP_OK;
     const int v = body.empty() ? 0 : (body[0] - '0');
@@ -487,6 +563,7 @@ esp_err_t handle_provider_post(httpd_req_t* req)
 
 esp_err_t handle_jtts_config_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, kMaxJttsConfig) != ESP_OK) return ESP_OK;
     xSemaphoreTake(g_mutex, portMAX_DELAY);
@@ -497,6 +574,7 @@ esp_err_t handle_jtts_config_post(httpd_req_t* req)
 
 esp_err_t handle_servo_limits_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, kMaxJttsConfig) != ESP_OK) return ESP_OK;
     xSemaphoreTake(g_mutex, portMAX_DELAY);
@@ -507,6 +585,7 @@ esp_err_t handle_servo_limits_post(httpd_req_t* req)
 
 esp_err_t handle_system_prompt_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, kMaxSystemPrompt) != ESP_OK) return ESP_OK;
     xSemaphoreTake(g_mutex, portMAX_DELAY);
@@ -517,6 +596,7 @@ esp_err_t handle_system_prompt_post(httpd_req_t* req)
 
 esp_err_t handle_conv_headers_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, kMaxConvHeaders) != ESP_OK) return ESP_OK;
     xSemaphoreTake(g_mutex, portMAX_DELAY);
@@ -527,6 +607,7 @@ esp_err_t handle_conv_headers_post(httpd_req_t* req)
 
 esp_err_t handle_servo_range_mode_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, 8) != ESP_OK) return ESP_OK;
     const bool on = !body.empty() && (body[0] == '1' || body[0] == 't' || body[0] == 'y');
@@ -538,8 +619,31 @@ esp_err_t handle_servo_range_mode_post(httpd_req_t* req)
     return send_empty(req);
 }
 
+esp_err_t handle_device_name_post(httpd_req_t* req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    std::string body;
+    if (read_body_str(req, body, kMaxDeviceName) != ESP_OK) return ESP_OK;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_staging.device_name = std::move(body);
+    xSemaphoreGive(g_mutex);
+    return send_empty(req);
+}
+
+esp_err_t handle_auth_password_post(httpd_req_t* req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    std::string body;
+    if (read_body_str(req, body, kMaxAuthPassword) != ESP_OK) return ESP_OK;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_staging.auth_password = std::move(body);
+    xSemaphoreGive(g_mutex);
+    return send_empty(req);
+}
+
 esp_err_t handle_apply_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     xSemaphoreTake(g_mutex, portMAX_DELAY);
     config::DeviceConfig merged = g_active;
     if (g_staging.ssid)            merged.wifi_ssid = *g_staging.ssid;
@@ -563,6 +667,8 @@ esp_err_t handle_apply_post(httpd_req_t* req)
     if (g_staging.system_prompt)   merged.system_prompt = *g_staging.system_prompt;
     if (g_staging.conv_headers)    merged.conv_extra_headers = *g_staging.conv_headers;
     if (g_staging.provider)        merged.provider = *g_staging.provider;
+    if (g_staging.device_name)     merged.device_name = *g_staging.device_name;
+    if (g_staging.auth_password)   merged.auth_password = *g_staging.auth_password;
     xSemaphoreGive(g_mutex);
 
     auto result = config::store::save(merged);
@@ -587,11 +693,13 @@ esp_err_t handle_apply_post(httpd_req_t* req)
 
 esp_err_t handle_ota_status_get(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     return send_json(req, config::ota::status_json());
 }
 
 esp_err_t handle_ota_control_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, kMaxJttsConfig) != ESP_OK) return ESP_OK;
     return send_json(req, config::ota::handle_control_command(body));
@@ -599,6 +707,7 @@ esp_err_t handle_ota_control_post(httpd_req_t* req)
 
 esp_err_t handle_ota_data_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::vector<std::uint8_t> body;
     if (read_body(req, body, kMaxOtaChunk) != ESP_OK) return ESP_OK;
     return send_json(req, config::ota::handle_data_chunk({body.data(), body.size()}));
@@ -611,6 +720,7 @@ esp_err_t handle_ota_data_post(httpd_req_t* req)
 // after the next reboot anyway.
 esp_err_t handle_avatar_dsl_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::vector<std::uint8_t> body;
     if (read_body(req, body, avatar_vm::storage::kMaxBytecodeBytes) != ESP_OK) return ESP_OK;
 
@@ -639,6 +749,7 @@ esp_err_t handle_avatar_dsl_post(httpd_req_t* req)
 // firmware-embedded default face live.
 esp_err_t handle_avatar_dsl_reset_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     auto r = avatar_vm::storage::clear();
     if (!r) {
         return send_error(req, "500 Internal Server Error",
@@ -792,6 +903,7 @@ esp_err_t handle_mcp_state_get(httpd_req_t* req)
 // session token.
 esp_err_t handle_audio_metrics_get(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (g_audio_metrics_getter != nullptr) {
         body = g_audio_metrics_getter();
@@ -806,6 +918,7 @@ esp_err_t handle_audio_metrics_get(httpd_req_t* req)
 // GET /api/led-state — current LED mode/colour/brightness/gradient period.
 esp_err_t handle_led_state_get(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     config::LedState s{};
     if (g_led_state_getter != nullptr) s = g_led_state_getter();
     char buf[192];
@@ -825,6 +938,7 @@ esp_err_t handle_led_state_get(httpd_req_t* req)
 // state as JSON so the client can confirm the apply.
 esp_err_t handle_led_state_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, 256) != ESP_OK) return ESP_OK;
     cJSON* root = cJSON_Parse(body.c_str());
@@ -858,6 +972,7 @@ esp_err_t handle_led_state_post(httpd_req_t* req)
 // GET /api/mic-lip-gain — current input / output gain percentages.
 esp_err_t handle_mic_lip_gain_get(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     config::MicLipGain g{100, 100};
     if (g_mic_lip_gain_getter != nullptr) g = g_mic_lip_gain_getter();
     char buf[64];
@@ -872,6 +987,7 @@ esp_err_t handle_mic_lip_gain_get(httpd_req_t* req)
 // Missing fields fall back to the current value. Sink clamps to 10..1000.
 esp_err_t handle_mic_lip_gain_post(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, 128) != ESP_OK) return ESP_OK;
     cJSON* root = cJSON_Parse(body.c_str());
@@ -903,6 +1019,7 @@ esp_err_t handle_mic_lip_gain_post(httpd_req_t* req)
 
 esp_err_t handle_root_get(httpd_req_t* req)
 {
+    if (!require_auth(req)) return ESP_OK;
     const std::size_t len = settings_wifi_html_end - settings_wifi_html_start;
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
@@ -978,6 +1095,8 @@ void register_handlers(httpd_handle_t server, const config::DeviceConfig& curren
     add(server, "/api/led-state",        HTTP_POST, handle_led_state_post);
     add(server, "/api/mic-lip-gain",     HTTP_GET,  handle_mic_lip_gain_get);
     add(server, "/api/mic-lip-gain",     HTTP_POST, handle_mic_lip_gain_post);
+    add(server, "/api/device-name",     HTTP_POST, handle_device_name_post);
+    add(server, "/api/auth-password",   HTTP_POST, handle_auth_password_post);
     // Claude Code Channel adapter API (Bearer-gated). Empty
     // CONFIG_MCP_API_TOKEN keeps these handlers registered but they 404.
     add(server, "/mcp/say",              HTTP_POST, handle_mcp_say_post);
