@@ -1121,6 +1121,15 @@ extern "C" void app_main()
         // driving UART. SCS0009 needs ~1 s after Vmotor comes up before it
         // answers PING.
         vTaskDelay(pdMS_TO_TICKS(1500));
+        // Servo VM coming up is a known Si12T baseline disturbance: the
+        // chip's running baseline acquired with Vmotor off no longer
+        // matches the post-power-on environment, which we've seen as
+        // ghost head-touch firings in the first few seconds. Force a
+        // baseline update now (cheap: 4 I2C writes) so the chip starts
+        // clean instead of waiting for FTC=10 s to drift back.
+        if (auto* t = board.touch_sensor(); t != nullptr) {
+            t->recalibrate();
+        }
     } else if (!cfg.servo_enabled) {
         ESP_LOGW(kTag, "servo VM rail OFF: cfg.servo_enabled=false (set via settings UI)");
     }

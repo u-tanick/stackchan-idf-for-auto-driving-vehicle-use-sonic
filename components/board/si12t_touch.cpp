@@ -45,8 +45,15 @@ constexpr std::uint8_t kRegOutput1 = 0x10;
 //     firmware (hal_head_touch.cpp). m5stack/StackChan-BSP#6 trial.
 constexpr std::uint8_t kSensitivityValue = 0x33;
 
-// CTRL1 = Auto Mode, FTC=01, response interrupt on Middle/High.
-constexpr std::uint8_t kCtrl1Value = 0x22;
+// CTRL1 = MS | FTC[1:0] | ILC[1:0] | RTC[2:0].
+//   0x25 = auto mode, FTC=01 (10 s first-touch recal), ILC=00 (interrupt on
+//   middle/high), RTC=5 → response cycle (RTC + 2) = 7 scan cycles.
+//   Was 0x22 (RTC=2 → 4 cycles); bumping to 5 stacks an extra HW debounce
+//   on top of our software firmly_touched() filter to reject single-spike
+//   noise from radio coex bursts. Trade-off: nadenade latency rises by
+//   roughly (5-2) scan cycles ≈ 30 ms at the chip's default scan rate,
+//   which is unnoticeable for head-petting. m5stack/StackChan-BSP#6 trial.
+constexpr std::uint8_t kCtrl1Value = 0x25;
 
 } // namespace
 
@@ -89,6 +96,19 @@ tl::expected<Si12tTouch, Error> Si12tTouch::probe(std::uint8_t address)
 
     ESP_LOGI(kTag, "Si12T touch sensor initialised at 0x%02X", address);
     return chip;
+}
+
+void Si12tTouch::recalibrate()
+{
+    // Pulse all-channel bits in Ref_rst1 (ch 1-8) / Ref_rst2 (ch 9-12) to
+    // force the chip to update its idle baseline (datasheet 12.2.4). Call
+    // after known disturbances — power-rail switching, radio coex bursts —
+    // that would otherwise leave the baseline biased and the chip stuck
+    // reporting low-level intensities with nothing touching it.
+    write_register(kRegRefRst1, 0xFF);
+    write_register(kRegRefRst2, 0x0F);
+    write_register(kRegRefRst1, 0x00);
+    write_register(kRegRefRst2, 0x00);
 }
 
 Si12tTouch::Reading Si12tTouch::read()

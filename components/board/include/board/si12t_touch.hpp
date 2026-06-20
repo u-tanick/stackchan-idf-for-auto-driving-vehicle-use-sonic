@@ -65,6 +65,13 @@ public:
     // intensities. Returns an all-zero Reading on bus error.
     Reading read();
 
+    // Force the chip to update its idle baseline for all channels. Call
+    // after a disturbance that's likely to skew the running baseline (e.g.
+    // servo VM rail switched on, Wi-Fi associated). Without this the chip
+    // can park its baseline mid-burst and report ghost touches until its
+    // own slow auto-calibration catches up (FTC = 10 s).
+    void recalibrate();
+
     std::uint8_t address() const noexcept { return address_; }
 
 private:
