@@ -60,25 +60,30 @@ The repo is `ciniml/stackchan-idf` (use `--repo` consistently when invoking `gh`
 8. **Manually trigger pages.yml**
    GitHub's loop-prevention means the release-published event from `GITHUB_TOKEN`-created releases does not chain-trigger downstream workflows. Manual dispatch is required for every release.
 
-   **Pass `--ref <SHA>` explicitly** so the dispatch is pinned to the local
-   HEAD even if a parallel `push: main` run hasn't fully indexed yet on
-   GitHub's side. A naked `gh workflow run pages.yml` (no `--ref`) reads
-   whatever main currently points to, which can be an older commit if push
-   indexing is still in flight — and because pages.yml has
-   `concurrency.cancel-in-progress: false`, the older-SHA dispatch will
-   then finish AFTER the push-triggered run and overwrite it with stale
-   content. Has bitten us before (see commit log around v0.6.0).
+   **Wait for the push to fully index on GitHub before dispatching**, then
+   dispatch on `main`. A naked `gh workflow run pages.yml` right after a
+   push reads whatever main currently points to, which can be the
+   pre-push commit if indexing is still in flight — and because pages.yml
+   has `concurrency.cancel-in-progress: false`, the older-SHA dispatch
+   then finishes AFTER the push-triggered run and overwrites it with
+   stale content. Has bitten us before (see commit log around v0.6.0).
+
+   `gh workflow run --ref <SHA>` would pin the dispatch but the gh CLI
+   only accepts branch / tag names there ("No ref found for: <SHA>"),
+   not raw commit SHAs. So the only reliable pattern is poll-until-
+   remote-matches-local, then dispatch on `main`.
    ```bash
    LOCAL_SHA=$(git rev-parse HEAD)
-   # Belt-and-braces: wait until remote main reports our SHA before
-   # dispatching. Usually instant; the loop bails after 30 s if GitHub
-   # is having a bad day.
    for _ in $(seq 1 30); do
      REMOTE_SHA=$(gh api repos/ciniml/stackchan-idf/commits/main --jq '.sha')
      [ "$LOCAL_SHA" = "$REMOTE_SHA" ] && break
      sleep 1
    done
-   gh workflow run pages.yml --repo ciniml/stackchan-idf --ref "$LOCAL_SHA"
+   gh workflow run pages.yml --repo ciniml/stackchan-idf --ref main
+   # Verify the run was actually queued against your SHA before watching it:
+   sleep 5
+   gh run list --repo ciniml/stackchan-idf --workflow pages.yml --limit 1 \
+     --json headSha,databaseId --jq '.[0]'
    ```
 
 9. **Watch the pages deploy (~30 s)**
