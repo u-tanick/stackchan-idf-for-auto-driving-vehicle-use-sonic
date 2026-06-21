@@ -794,6 +794,15 @@ extern "C" void app_main()
         // audio playback, which drops BLE RX throughput from ~22 KiB/s
         // to ~10 KiB/s and turns BLE audio streaming choppy.
         spk.task_pinned_core = 1;
+        // StopWatch (C152) needs a software gain bump: the M5Unified default
+        // spk_cfg.magnification = 1 leaves audio inaudibly quiet through the
+        // ES8311 → AW8737A path (R57/R58 = 200 kΩ input attenuator on the
+        // amp side eats ~-8 dB before the speaker). Other boards keep the
+        // factory magnification (CoreS3 / AtomNyan tune theirs in M5Unified
+        // per their codec / amp pair).
+        if (board.kind() == stackchan::board::BoardKind::StopWatch) {
+            spk.magnification = 16;
+        }
         M5.Speaker.config(spk);
         M5.Speaker.end();
 
@@ -806,7 +815,15 @@ extern "C" void app_main()
 
     // Quick audio sanity check: a short rising arpeggio so we can hear
     // immediately whether the speaker is wired up correctly.
-    M5.Speaker.setVolume(128);
+    // Volume default is per-board. StopWatch's ES8311 + AW8737A path
+    // ships with M5Unified's spk_cfg.magnification=1, considerably quieter
+    // out-of-the-box than CoreS3's full-range AXP2101+ES8311 path or the
+    // AtomNyan ECHO BASE chain. Bump to the top end so the bench unit's
+    // 8Ω/1W speaker is actually audible; other boards keep the historical
+    // 128 (≈ 50%) which was comfortable on a desk.
+    const std::uint8_t spk_volume =
+        (board.kind() == stackchan::board::BoardKind::StopWatch) ? 255 : 128;
+    M5.Speaker.setVolume(spk_volume);
     for (float freq : {523.25f, 659.25f, 783.99f}) { // C5 – E5 – G5
         M5.Speaker.tone(freq, 150);
         vTaskDelay(pdMS_TO_TICKS(180));

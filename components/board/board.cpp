@@ -97,6 +97,24 @@ tl::expected<Board, Error> Board::begin()
         // ピクセルが正方形なので 90° 倍数ならどれでも収まる) が、後段 UI が
         // 矩形扱いするので 0 に固定。
         M5.Display.setRotation(0);
+        // Force the ES8311 enable callback NOW (rather than waiting for the
+        // first lazy playRaw downstream). app_main runs a startup arpeggio
+        // around line 810 — if Speaker.begin() hasn't completed by then,
+        // the tone goes out before the M5IOE1 audio power / PA / codec
+        // init sequence finishes and we hear nothing. The 200 ms delay
+        // gives the ES8311 + M5IOE1 power rail time to settle (the
+        // M5Unified callback only delays 10 ms after Audio Power ON before
+        // writing ES8311 registers, which experimentally was too tight on
+        // the bench unit). Logging the result so a future regression on
+        // the M5IOE1 / codec bring-up is obvious from the boot trace.
+        {
+            const bool ok = M5.Speaker.begin();
+            ESP_LOGI(kTag, "StopWatch M5.Speaker.begin -> %s", ok ? "ok" : "FAILED");
+            vTaskDelay(pdMS_TO_TICKS(200));
+            // Volume is set by app_main per board (StopWatch needs max because
+            // M5Unified ships spk_cfg.magnification=1 on this hardware). Leave
+            // it default here.
+        }
         Board board;
         board.impl_ = std::make_shared<Impl>(BoardKind::StopWatch,
                                              std::optional<Py32Expander>{},
