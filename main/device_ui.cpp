@@ -86,6 +86,76 @@ std::string g_host;
 avatar::RichCanvas* g_cv = nullptr;
 std::uint32_t g_last_info_ms = 0;
 
+// Display origin for the 320×240 UI when the actual panel is larger
+// (e.g. StopWatch 466×466 round AMOLED). draw() initialises these from
+// the canvas dimensions; handle_tap applies the same translation to the
+// incoming touch coords. 0/0 on CoreS3 since its panel is exactly 320×240.
+std::int32_t g_off_x = 0;
+std::int32_t g_off_y = 0;
+
+// Adapter that forwards every RichCanvas call to an inner canvas, adding
+// (ox, oy) to every coordinate. Used so the device_ui can keep drawing as
+// if the surface were 320×240 even when it lives in the middle of a
+// 466×466 panel. The (vw, vh) reported by width()/height() is the
+// virtual 320×240 so internal layout maths (kW / kH) stay correct.
+// fillScreen is forwarded as-is — it clears the whole physical surface,
+// which is what we want for the avatar background that surrounds the UI.
+class OffsetRichCanvas final : public avatar::RichCanvas {
+public:
+    OffsetRichCanvas(avatar::RichCanvas& inner, std::int32_t ox, std::int32_t oy,
+                     std::int32_t vw, std::int32_t vh)
+        : inner_{inner}, ox_{ox}, oy_{oy}, vw_{vw}, vh_{vh} {}
+
+    std::int32_t width() const override { return vw_; }
+    std::int32_t height() const override { return vh_; }
+    void fillScreen(std::uint16_t c) override { inner_.fillScreen(c); }
+    void fillRect(std::int32_t x, std::int32_t y, std::int32_t w, std::int32_t h,
+                  std::uint16_t c) override { inner_.fillRect(x + ox_, y + oy_, w, h, c); }
+    void fillCircle(std::int32_t x, std::int32_t y, std::int32_t r, std::uint16_t c) override {
+        inner_.fillCircle(x + ox_, y + oy_, r, c);
+    }
+    void fillTriangle(std::int32_t x0, std::int32_t y0, std::int32_t x1, std::int32_t y1,
+                      std::int32_t x2, std::int32_t y2, std::uint16_t c) override {
+        inner_.fillTriangle(x0 + ox_, y0 + oy_, x1 + ox_, y1 + oy_, x2 + ox_, y2 + oy_, c);
+    }
+    void begin_group(std::int32_t x, std::int32_t y, std::int32_t w, std::int32_t h) override {
+        inner_.begin_group(x + ox_, y + oy_, w, h);
+    }
+    void end_group() override { inner_.end_group(); }
+    void begin_frame(std::uint16_t bg) override { inner_.begin_frame(bg); }
+    void end_frame() override { inner_.end_frame(); }
+    void request_full_repaint() override { inner_.request_full_repaint(); }
+
+    std::uint16_t color565(std::uint8_t r, std::uint8_t g, std::uint8_t b) override {
+        return inner_.color565(r, g, b);
+    }
+    void fillRoundRect(std::int32_t x, std::int32_t y, std::int32_t w, std::int32_t h,
+                       std::int32_t r, std::uint16_t c) override {
+        inner_.fillRoundRect(x + ox_, y + oy_, w, h, r, c);
+    }
+    void drawRoundRect(std::int32_t x, std::int32_t y, std::int32_t w, std::int32_t h,
+                       std::int32_t r, std::uint16_t c) override {
+        inner_.drawRoundRect(x + ox_, y + oy_, w, h, r, c);
+    }
+    void setTextColor(std::uint16_t fg) override { inner_.setTextColor(fg); }
+    void setTextColor(std::uint16_t fg, std::uint16_t bg) override { inner_.setTextColor(fg, bg); }
+    void setFont(const lgfx::IFont* f) override { inner_.setFont(f); }
+    void setTextSize(float s) override { inner_.setTextSize(s); }
+    void setTextDatum(lgfx::textdatum_t d) override { inner_.setTextDatum(d); }
+    void drawString(const char* s, std::int32_t x, std::int32_t y) override {
+        inner_.drawString(s, x + ox_, y + oy_);
+    }
+    std::int32_t textWidth(const char* s) override { return inner_.textWidth(s); }
+    void setClipRect(std::int32_t x, std::int32_t y, std::int32_t w, std::int32_t h) override {
+        inner_.setClipRect(x + ox_, y + oy_, w, h);
+    }
+    void clearClipRect() override { inner_.clearClipRect(); }
+
+private:
+    avatar::RichCanvas& inner_;
+    std::int32_t ox_, oy_, vw_, vh_;
+};
+
 std::uint32_t now_ms()
 {
     return static_cast<std::uint32_t>(esp_timer_get_time() / 1000);
@@ -667,6 +737,13 @@ bool active()
 
 void handle_tap(int x, int y)
 {
+    // Translate physical touch coords into the 320×240 design space the
+    // hit-test layout assumes. On panels where the UI is centered (e.g.
+    // StopWatch's 466×466 round AMOLED), the avatar's tap-to-open hot
+    // corner is shifted by the offset too. Negative results land outside
+    // the 320×240 box and harmlessly fail all in_rect() checks.
+    x -= g_off_x;
+    y -= g_off_y;
     if (!g_active.load(std::memory_order_relaxed)) {
         // Avatar showing: a tap in the top-right corner opens the UI.
         if (x >= kW - 64 && y < 64) {
@@ -815,7 +892,18 @@ void handle_tap(int x, int y)
 
 bool draw(avatar::RichCanvas& canvas)
 {
-    g_cv = &canvas; // borrowed for this frame; the draw helpers render through it
+    // Display offset: center the 320×240 UI on panels larger than that.
+    // On CoreS3 (exactly 320×240) offsets are 0; on StopWatch (466×466
+    // round AMOLED) they're (73, 113), placing every corner of the 320×240
+    // rectangle within radius 200 — well inside the visible 233-radius
+    // circle. handle_tap reads these to translate touch coords back.
+    g_off_x = (canvas.width() - kW) / 2;
+    g_off_y = (canvas.height() - kH) / 2;
+    if (g_off_x < 0) g_off_x = 0;
+    if (g_off_y < 0) g_off_y = 0;
+    OffsetRichCanvas wrapped(canvas, g_off_x, g_off_y, kW, kH);
+    g_cv = (g_off_x == 0 && g_off_y == 0) ? &canvas
+                                          : static_cast<avatar::RichCanvas*>(&wrapped);
 
     bool need = g_dirty.exchange(false, std::memory_order_relaxed);
     // The info and 会話 pages have live fields (IP/uptime/heap, conn status /

@@ -1163,18 +1163,21 @@ extern "C" void app_main()
     // Mic / loopback sanity check at startup.
     record_and_playback(2, "mic test");
 
-    // Treat AtomS3 (slim), AtomNyan (full AtomS3R), and StopWatch the same
-    // for the "no servo bus / no Si12T touch / minimal status overlay"
-    // decisions below — none of them carry the M5 Stack-chan base PY32 /
-    // Si12T stack. The variable kept its legacy name to minimise diff; what
-    // it actually means is "no-servo + minimal-UI board profile". Battery
-    // telemetry IS available on StopWatch (M5PM1) and is handled by
-    // board.has_battery() separately, not by this flag. The conv / audio /
-    // wifi-audio stack differences are handled by Kconfig gates
-    // (CONFIG_STACKCHAN_*_ENABLED) further down, not by BoardKind.
+    // is_atom_nyan: legacy predicate covering "no servo bus + no LCD touch
+    // → use atom_status button overlay UI". AtomS3R / AtomS3 fall here.
+    // StopWatch ALSO has no servo bus but DOES have a CST820B touch panel,
+    // so it gets the CoreS3-style touch UI (ui::handle_tap) below — kept
+    // separate from this flag. Servo gating uses the wider no_servo_bus
+    // below; only the on-device UI choice keys off is_atom_nyan.
     const bool is_atom_nyan =
         board.kind() == stackchan::board::BoardKind::AtomNyan ||
-        board.kind() == stackchan::board::BoardKind::AtomS3 ||
+        board.kind() == stackchan::board::BoardKind::AtomS3;
+    // Boards without an SCS servo bus. Covers Atom family + StopWatch (no
+    // M5 base wiring) — used to gate servo-power bring-up, servo task
+    // start-up, and barge-in touch hit-tests that assume a head with
+    // servos.
+    const bool no_servo_bus =
+        is_atom_nyan ||
         board.kind() == stackchan::board::BoardKind::StopWatch;
 
     // Servo bring-up is only meaningful on boards that actually have a servo
@@ -1183,7 +1186,7 @@ extern "C" void app_main()
     // NVS-persisted master switch cfg.servo_enabled (settable from BLE / Wi-Fi
     // / on-device UI — distinct from SharedState::servo_enabled which is the
     // live torque toggle).
-    if (!is_atom_nyan && cfg.servo_enabled) {
+    if (!no_servo_bus && cfg.servo_enabled) {
         if (auto r = board.set_servo_power(true); !r) {
             ESP_LOGE(kTag, "set_servo_power(true) failed: %d", static_cast<int>(r.error()));
         }
@@ -1212,7 +1215,7 @@ extern "C" void app_main()
         .circular_display = is_circular_display,
     };
     const auto servo_limits = stackchan::app::parse_servo_limits(cfg.servo_limits_json);
-    if (!is_atom_nyan) {
+    if (!no_servo_bus) {
         const auto sb = board.servo_bus_config();
         g_servo_args = new stackchan::app::ServoTaskArgs{
             .state = g_state,
@@ -1273,7 +1276,7 @@ extern "C" void app_main()
         stackchan::app::ui::init(*g_state);
     }
     stackchan::app::start_render_task(*g_render_args);
-    if (!is_atom_nyan && cfg.servo_enabled && g_servo_args != nullptr) {
+    if (!no_servo_bus && cfg.servo_enabled && g_servo_args != nullptr) {
         stackchan::app::start_servo_task(*g_servo_args);
     }
     // NeoPixel animation task. Driven by SharedState (led_mode / led_color /
