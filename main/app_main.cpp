@@ -1098,14 +1098,19 @@ extern "C" void app_main()
     // Mic / loopback sanity check at startup.
     record_and_playback(2, "mic test");
 
-    // Treat AtomS3 (slim) and AtomNyan (full AtomS3R) the same for the
-    // "no servo / no battery / minimal status overlay" decisions below —
-    // both have no servo bus, no INA226, no Si12T head touch. The conv /
-    // audio / wifi-audio stack differences are handled by Kconfig gates
+    // Treat AtomS3 (slim), AtomNyan (full AtomS3R), and StopWatch the same
+    // for the "no servo bus / no Si12T touch / minimal status overlay"
+    // decisions below — none of them carry the M5 Stack-chan base PY32 /
+    // Si12T stack. The variable kept its legacy name to minimise diff; what
+    // it actually means is "no-servo + minimal-UI board profile". Battery
+    // telemetry IS available on StopWatch (M5PM1) and is handled by
+    // board.has_battery() separately, not by this flag. The conv / audio /
+    // wifi-audio stack differences are handled by Kconfig gates
     // (CONFIG_STACKCHAN_*_ENABLED) further down, not by BoardKind.
     const bool is_atom_nyan =
         board.kind() == stackchan::board::BoardKind::AtomNyan ||
-        board.kind() == stackchan::board::BoardKind::AtomS3;
+        board.kind() == stackchan::board::BoardKind::AtomS3 ||
+        board.kind() == stackchan::board::BoardKind::StopWatch;
 
     // Servo bring-up is only meaningful on boards that actually have a servo
     // bus (CoreS3 + M5/Takao). Atom-nyan has no servos in Phase 1 scope; skip

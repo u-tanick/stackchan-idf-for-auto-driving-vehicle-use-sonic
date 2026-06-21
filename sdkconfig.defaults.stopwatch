@@ -1,0 +1,27 @@
+# M5Stack StopWatch (C152) — 1.75" AMOLED 円形 + ES8311 + MEMS MIC + M5PM1
+# PMIC + M5IOE1 IO expander + RX8130CE RTC + BMI270 IMU + 振動モータ.
+# Selected by `make build BOARD=stopwatch`.
+#
+# ESP32-S3R8 module: 16 MB external SPI flash + 8 MB in-package Octal PSRAM
+# (the `R8` suffix is the Octal-PSRAM variant). M5Unified ≥ 0.2.17 / M5GFX
+# ≥ 0.2.23 handle Panel_CO5300 autodetect, M5PM1 power backend, RX8130CE RTC
+# and the ES8311 speaker/mic enable callbacks — so as long as we land here
+# with the right PSRAM mode + flash size, `M5.begin()` brings up the AMOLED
+# / touch / audio stack on its own.
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# Free UART0 (G43 TX / G44 RX) for the back-side 2.54 mm bus — it's the only
+# UART exposed there, so anything wanting to drive an external SCS bus or
+# console-via-3.3V from the back will route through it. Push the ESP-IDF
+# console + idf.py monitor onto USB-Serial-JTAG instead so the two can't
+# fight over UART0 pins.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+# UART0 stays unconfigured here; sub-components opt in via their own pin
+# selection (e.g. scs_servo in a future Phase 3 servo-enable path).
+
+# StopWatch has no DVP camera. Make sure CONFIG_STACKCHAN_CAMERA_ENABLED
+# stays off (the cores3 profile is the only one that flips it to y).
+CONFIG_STACKCHAN_CAMERA_ENABLED=n

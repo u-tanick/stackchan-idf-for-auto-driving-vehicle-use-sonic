@@ -10,6 +10,12 @@ TARGET      ?= esp32s3
 #   atoms3   — Plain AtomS3 + Atomic ECHO BASE — slim profile (no PSRAM):
 #              avatar + jtts + nekomimi LED + settings UI; no realtime
 #              conversation / no BLE audio / no RTP / no camera.
+#   stopwatch — M5Stack StopWatch (C152): ESP32-S3R8 + 16 MB flash +
+#              8 MB Octal PSRAM + 466×466 AMOLED 円形 + CST820B touch +
+#              ES8311 + MEMS mic + AW8737A speaker + M5PM1 PMIC +
+#              M5IOE1 IO expander + RX8130CE RTC + BMI270 IMU + 振動モータ.
+#              No PY32 / no Si12T / no nekomimi LED 配線. Servo I/O は背面
+#              2.54 mm バス経由のオプション (Phase 3).
 # Default cores3 keeps `make build` backward-compatible.
 BOARD       ?= cores3
 BUILD_DIR    = build-$(BOARD)

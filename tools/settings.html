@@ -1046,7 +1046,15 @@ const CHR_AVATAR_BC = 'e3f0a021-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const BOARD_M5_BASE = 0;
 const BOARD_TAKAO_BASE = 1;
 const BOARD_ATOM_NYAN = 2;
-const BOARD_LABELS = {0: 'CoreS3 + M5 base', 1: 'CoreS3 + Takao base', 2: 'AtomS3R + Atomic ECHO BASE'};
+const BOARD_ATOM_S3 = 3;
+const BOARD_STOPWATCH = 4;
+const BOARD_LABELS = {
+  0: 'CoreS3 + M5 base',
+  1: 'CoreS3 + Takao base',
+  2: 'AtomS3R + Atomic ECHO BASE',
+  3: 'AtomS3 + Atomic ECHO BASE (slim)',
+  4: 'M5 StopWatch (C152)',
+};
 const CHR_JTTS    = 'e3f0a008-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_OTA_CTRL = 'e3f0a009-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_OTA_DATA = 'e3f0a00a-7b1c-4d2a-9e6f-2c5a8d4b1f00';
@@ -1548,19 +1556,26 @@ function applyCapabilityGating() {
   }
   document.getElementById('btn-apply').style.display = hasSettings ? '' : 'none';
 
-  // Per-board gating: Atom-nyan has no servos, no battery monitor, no LED
-  // strip. Older firmware that doesn't expose CHR_BOARD_KIND leaves
-  // boardKind = null → fall back to the historical M5-base assumption
-  // (everything visible) so we don't regress those installs.
-  const isAtom = (boardKind === BOARD_ATOM_NYAN);
-  document.getElementById('servo-section').style.display = isAtom ? 'none' : '';
-  if (isAtom) {
+  // Per-board gating: hide controls for hardware the board doesn't carry.
+  // Older firmware that doesn't expose CHR_BOARD_KIND leaves boardKind = null
+  // → fall back to the historical M5-base assumption (everything visible) so
+  // we don't regress those installs.
+  // No-servo boards: AtomS3R / AtomS3 / StopWatch all lack the M5 base servo
+  // bus (StopWatch's back-side UART0 servo route is Phase-3 opt-in and not
+  // surfaced here yet).
+  const noServo = (boardKind === BOARD_ATOM_NYAN) ||
+                  (boardKind === BOARD_ATOM_S3) ||
+                  (boardKind === BOARD_STOPWATCH);
+  document.getElementById('servo-section').style.display = noServo ? 'none' : '';
+  if (noServo) {
     setVisible('label.toggle-label[for="servo-enabled"]', false);
     setVisible('label.toggle-label[for="servo-enabled"] + p.hint', false);
   }
-  // Battery row + battery-gauge toggle don't apply when there's no INA226.
-  // (M5 base = battery, Takao base + Atom-nyan = no battery.)
-  const noBattery = (boardKind === BOARD_TAKAO_BASE) || isAtom;
+  // Battery telemetry: M5 base = INA226, StopWatch = M5PM1 PMIC (M5Unified
+  // M5.Power surfaces it). Takao / AtomNyan / AtomS3 = none.
+  const noBattery = (boardKind === BOARD_TAKAO_BASE) ||
+                    (boardKind === BOARD_ATOM_NYAN) ||
+                    (boardKind === BOARD_ATOM_S3);
   document.getElementById('dis-battery-row').style.display = noBattery ? 'none' : '';
   if (noBattery) {
     setVisible('label.toggle-label[for="bat-gauge-enabled"]', false);

@@ -33,13 +33,17 @@ public:
         : kind_{kind}, expander_{std::move(expander)}, touch_{std::move(touch)}
     {
         // Stack-chan ネコミミ NeoPixel (18 LEDs = 9 per ear) — present on
-        // every supported board, but the data line varies: CoreS3 uses
+        // M5/Takao/AtomNyan bases, but the data line varies: CoreS3 uses
         // GPIO9 (free pin near the M-BUS), AtomNyan uses GPIO38 (the
         // available pin on Atomic ECHO BASE's headers). We prefer the
         // nekomimi strip over the M5-base PY32 ring (currently disabled —
         // JOURNAL: "M5 base 背面 NeoPixel … 完全に無効化中"); the PY32
         // path can come back via a separate accessor without disturbing
-        // this one.
+        // this one. StopWatch (C152) has no nekomimi wiring at all — leave
+        // led_ as nullptr so app_main / led_task null-check naturally.
+        if (kind_ == BoardKind::StopWatch) {
+            return;
+        }
         const int gpio = (kind_ == BoardKind::AtomNyan)
                              ? NekomimiLedStrip::kDataGpioAtomNyan
                              : NekomimiLedStrip::kDataGpioCoreS3;
@@ -71,11 +75,11 @@ tl::expected<Board, Error> Board::begin()
     cfg.external_speaker.atomic_echo = 1;
     M5.begin(cfg);
 
-    // AtomS3R variants (Atom-nyan) — picked up from M5Unified's board ID
-    // after M5.begin. No PY32, no Si12T, no servo/battery/LED on this combo;
-    // bail out of the probe phases entirely to keep boot fast. Plain
-    // AtomS3 (C014, no PSRAM) gets the same treatment with its own
-    // BoardKind so settings UIs / build gates can tell the two apart.
+    // AtomS3R / AtomS3 / StopWatch — picked up from M5Unified's board ID
+    // after M5.begin. None of these carry the M5 Stack-chan base PY32 / Si12T
+    // / INA226 stack so we bail out of those probe phases entirely. Each
+    // gets its own BoardKind so settings UIs / build gates can tell them
+    // apart (different LCD / capability set).
     const auto m5_board = M5.getBoard();
     const bool is_atom_s3r =
         m5_board == m5::board_t::board_M5AtomS3R    ||
@@ -83,6 +87,27 @@ tl::expected<Board, Error> Board::begin()
         m5_board == m5::board_t::board_M5AtomEchoS3R ||
         m5_board == m5::board_t::board_M5AtomS3RCam;
     const bool is_atom_s3 = m5_board == m5::board_t::board_M5AtomS3;
+    const bool is_stopwatch = m5_board == m5::board_t::board_M5StopWatch;
+    if (is_stopwatch) {
+        // StopWatch (C152): 466×466 AMOLED 円形パネル。
+        // M5.begin() で Panel_CO5300 autodetect / CST820B touch / ES8311
+        // codec / M5PM1 power / RX8130CE RTC が立ち上がる (M5Unified ≥ 0.2.17
+        // / M5GFX ≥ 0.2.23)。回転は 0 (USB-C 上、表示は AMOLED native 方位)。
+        // 円形なので setRotation の数値は表示の見え方には影響しない (アクティブ
+        // ピクセルが正方形なので 90° 倍数ならどれでも収まる) が、後段 UI が
+        // 矩形扱いするので 0 に固定。
+        M5.Display.setRotation(0);
+        Board board;
+        board.impl_ = std::make_shared<Impl>(BoardKind::StopWatch,
+                                             std::optional<Py32Expander>{},
+                                             std::optional<Si12tTouch>{});
+        // StopWatch には nekomimi NeoPixel の専用配線が無いので LED strip は
+        // 初期化しない (Impl の led_ は構築時に nullptr 相当 — 後述、別途
+        // 直し)。app_main / led_task は led == nullptr を null-check で
+        // skip するので動作には影響しない。
+        ESP_LOGI(kTag, "board initialized: kind=StopWatch (466×466 AMOLED, M5PM1, no PY32/Si12T/nekomimi)");
+        return board;
+    }
     if (is_atom_s3 || is_atom_s3r) {
         const BoardKind kind = is_atom_s3 ? BoardKind::AtomS3 : BoardKind::AtomNyan;
         // AtomS3 / AtomS3R: square 128x128 GC9107, base rotation (0) lands
@@ -181,10 +206,13 @@ BoardKind Board::kind() const noexcept
 ServoBusConfig Board::servo_bus_config() const noexcept
 {
     if (impl_->kind() == BoardKind::AtomNyan ||
-        impl_->kind() == BoardKind::AtomS3) {
-        // Atom family has no on-board servo bus; the servo task is not started.
-        // Return a syntactically valid but inert config so callers that read
-        // this defensively don't see junk.
+        impl_->kind() == BoardKind::AtomS3 ||
+        impl_->kind() == BoardKind::StopWatch) {
+        // No on-board servo bus on these variants — the servo task is not
+        // started. Return a syntactically valid but inert config so callers
+        // that read this defensively don't see junk. (StopWatch *can* drive
+        // an external servo via the back-side 2.54 mm bus UART0=G43/G44, but
+        // that's a Phase-3 opt-in route; default profile keeps it inert.)
         return {UART_NUM_1, GPIO_NUM_NC, GPIO_NUM_NC, 0u, /*echo_cancel=*/false};
     }
     if (impl_->kind() == BoardKind::TakaoBase) {
@@ -202,14 +230,21 @@ ServoBusConfig Board::servo_bus_config() const noexcept
 
 bool Board::has_battery() const noexcept
 {
-    return impl_->kind() == BoardKind::M5Base; // INA226 only on the M5 base
+    // M5 base: INA226. StopWatch: M5PM1 PMIC (M5Unified `M5.Power` API
+    // surfaces battery voltage / state-of-charge directly). Other variants
+    // have no battery telemetry path we expose here.
+    return impl_->kind() == BoardKind::M5Base ||
+           impl_->kind() == BoardKind::StopWatch;
 }
 
 tl::expected<void, Error> Board::set_servo_power(bool on)
 {
     auto& expander = impl_->expander();
     if (!expander) {
-        return {}; // Takao base: no servo-power control line — always powered.
+        // Takao base / Atom family / StopWatch: no PY32 servo-power
+        // control line — servos (if any) are externally powered. No-op
+        // success keeps the boot sequence simple.
+        return {};
     }
     return expander->digital_write(Py32Expander::kPinServoPowerEnable, on);
 }

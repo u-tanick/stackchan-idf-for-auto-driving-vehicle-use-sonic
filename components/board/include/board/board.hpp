@@ -34,6 +34,8 @@ enum class BoardKind {
     TakaoBase, // Takao Base (CoreS3 SE port A): half-duplex servos on port A, no power/battery control.
     AtomNyan,  // AtomS3R + Atomic ECHO BASE: 128x128 LCD, ES8311 codec, no servo/battery/LED/touch.
     AtomS3,    // Plain AtomS3 (no PSRAM) + Atomic ECHO BASE: avatar / jtts / LED only, no conv/audio-stream.
+    StopWatch, // M5 StopWatch (C152): 466×466 AMOLED 円形 + CST820B touch + ES8311 + M5PM1 PMIC + M5IOE1.
+               // No PY32 / no INA226 / no Si12T / no nekomimi LED 配線. Servo は背面 UART0 経由の Phase 3 オプション.
 };
 
 // SCS servo bus wiring for the detected board. Maps 1:1 onto scs_servo::ScsBus::Config.

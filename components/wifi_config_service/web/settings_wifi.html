@@ -1042,17 +1042,33 @@ $('btn-lt-send').addEventListener('click', () => {
 const BOARD_M5_BASE = 0;
 const BOARD_TAKAO_BASE = 1;
 const BOARD_ATOM_NYAN = 2;
-const BOARD_LABELS = {0: 'CoreS3 + M5 base', 1: 'CoreS3 + Takao base', 2: 'AtomS3R + Atomic ECHO BASE'};
+const BOARD_ATOM_S3 = 3;
+const BOARD_STOPWATCH = 4;
+const BOARD_LABELS = {
+  0: 'CoreS3 + M5 base',
+  1: 'CoreS3 + Takao base',
+  2: 'AtomS3R + Atomic ECHO BASE',
+  3: 'AtomS3 + Atomic ECHO BASE (slim)',
+  4: 'M5 StopWatch (C152)',
+};
 
 function applyBoardGating(kind) {
-  const isAtom = (kind === BOARD_ATOM_NYAN);
-  const noBattery = (kind === BOARD_TAKAO_BASE) || isAtom;
+  // No servo: Atom-family and StopWatch all lack the M5 base servo bus.
+  // (StopWatch's back-side UART0 servo route is Phase-3 opt-in, not surfaced.)
+  const noServo = (kind === BOARD_ATOM_NYAN) ||
+                  (kind === BOARD_ATOM_S3) ||
+                  (kind === BOARD_STOPWATCH);
+  // Battery telemetry: M5 base = INA226, StopWatch = M5PM1.
+  // Takao / AtomNyan / AtomS3 = none.
+  const noBattery = (kind === BOARD_TAKAO_BASE) ||
+                    (kind === BOARD_ATOM_NYAN) ||
+                    (kind === BOARD_ATOM_S3);
   const sv = document.getElementById('servo-section');
-  if (sv) sv.style.display = isAtom ? 'none' : '';
+  if (sv) sv.style.display = noServo ? 'none' : '';
   const svEnToggle = document.querySelector('label.toggle-label[for="servo-enabled"]');
-  if (svEnToggle) svEnToggle.style.display = isAtom ? 'none' : '';
+  if (svEnToggle) svEnToggle.style.display = noServo ? 'none' : '';
   const svEnHint = svEnToggle ? svEnToggle.nextElementSibling : null;
-  if (svEnHint && svEnHint.tagName === 'P') svEnHint.style.display = isAtom ? 'none' : '';
+  if (svEnHint && svEnHint.tagName === 'P') svEnHint.style.display = noServo ? 'none' : '';
   const batRow = document.getElementById('dis-battery-row');
   if (batRow) batRow.style.display = noBattery ? 'none' : '';
   const batToggle = document.querySelector('label.toggle-label[for="bat-gauge-enabled"]');
