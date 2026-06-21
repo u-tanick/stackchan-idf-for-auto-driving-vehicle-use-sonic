@@ -1682,8 +1682,27 @@ async function loadOtaReleases() {
 async function fetchReleaseFirmware(tag) {
   const rel = otaReleases.find((r) => r.tag === tag);
   if (!rel) throw new Error(`unknown release ${tag}`);
-  const zipUrl = `./firmware/${rel.tag}/${rel.zip}`;
-  log(`Downloading ${rel.zip}…`);
+  // Pick the ZIP that matches the connected board. Newer versions.json
+  // publishes per-board zips under .boards.<cores3|atoms3r|atoms3|stopwatch>;
+  // legacy single-zip releases (pre-AtomS3R) used a flat .zip field that
+  // only ever held a cores3 image. boardKind = null = pre-CHR_BOARD_KIND
+  // firmware; assume cores3 there (= original behaviour).
+  const boardName = (() => {
+    switch (boardKind) {
+      case BOARD_ATOM_NYAN: return 'atoms3r';
+      case BOARD_ATOM_S3:   return 'atoms3';
+      case BOARD_STOPWATCH: return 'stopwatch';
+      default:              return 'cores3'; // M5_BASE / TAKAO_BASE / null
+    }
+  })();
+  let zipName = null;
+  if (rel.boards && rel.boards[boardName]) zipName = rel.boards[boardName];
+  else if (rel.zip && boardName === 'cores3') zipName = rel.zip;
+  if (!zipName) {
+    throw new Error(`${tag} has no firmware ZIP for board "${boardName}"`);
+  }
+  const zipUrl = `./firmware/${rel.tag}/${zipName}`;
+  log(`Downloading ${zipName}…`);
   const r = await fetch(zipUrl);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const zipBuf = await r.arrayBuffer();
