@@ -864,6 +864,19 @@ extern "C" void app_main()
         if (board.kind() == stackchan::board::BoardKind::StopWatch) {
             spk.magnification = 16;
         }
+        // Module Audio (ES8388) requires an actual MCLK input — its DAC PLL
+        // won't lock from BCLK alone, so without this line GPIO0 stays idle
+        // and the line-out / HP jacks are silent even after the I2C register
+        // init succeeds. AW88298 (CoreS3's internal amp) ignores MCLK so the
+        // extra pin assignment is harmless when the module isn't fitted.
+        // GPIO0 is the M5Stack-standard MCLK pin on the M-Bus for codec
+        // accessories (Module Audio, Atomic Echo etc.). Speaker_Class only
+        // routes MCLK to the pad when pin_mck < GPIO_NUM_MAX, so the
+        // M5Unified default of I2S_PIN_NO_CHANGE leaves the pad floating —
+        // that's the Phase-1 gap the ES8388 init was missing.
+        if (has_audio_module) {
+            spk.pin_mck = GPIO_NUM_0;
+        }
         M5.Speaker.config(spk);
         M5.Speaker.end();
 
