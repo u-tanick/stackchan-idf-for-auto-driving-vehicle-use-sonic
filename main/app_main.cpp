@@ -829,21 +829,45 @@ extern "C" void app_main()
     // they get starved and the I2S DMA underruns: choppy playback and gappy
     // capture (which whisper then mistranscribes). Lift them above the app
     // tasks and give the speaker extra DMA buffering for jitter margin.
+    // NVS init + config load — needed here (earlier than the rest of the
+    // setup) so the audio_output decision below can consult cfg.
+    {
+        esp_err_t nvs_err = nvs_flash_init();
+        if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+            nvs_flash_erase();
+            nvs_flash_init();
+        }
+    }
+    static stackchan::config::DeviceConfig cfg = stackchan::config::load();
+
     // Module Audio (M144, ES8388 codec): probe once at boot. With its
-    // jumpers in Config B the codec already listens on the same I2S1 bus as
-    // the internal AW88298 (BCK=34, WS=33, DIN=13); we just have to start
-    // emitting MCLK on GPIO0 (the AW88298 never needed it) and program the
-    // codec over I2C. Both outputs then play in parallel: internal 1 W
-    // speaker + the module's line/headphone jacks (→ active speaker for
-    // venue-level volume, e.g. the LT timekeeper announcements).
-    const bool has_audio_module = stackchan::board::es8388::probe();
-    if (has_audio_module) {
+    // jumpers in Config B the codec listens on the M-BUS I2S; the host
+    // re-routes its single I2S to the module's pins below (the codec
+    // and the internal AW88298 / ES7210 can't run at the same time —
+    // they share G0 / G14). cfg.audio_output decides which side wins:
+    //   Auto         → codec_present ? module : internal
+    //   Internal     → internal even if codec_present
+    //   ModuleAudio  → module if codec_present, else warn and use internal
+    const bool codec_present = stackchan::board::es8388::probe();
+    const bool effective_audio_module =
+        codec_present && (cfg.audio_output == stackchan::config::AudioOutput::Auto ||
+                          cfg.audio_output == stackchan::config::AudioOutput::ModuleAudio);
+    if (cfg.audio_output == stackchan::config::AudioOutput::ModuleAudio && !codec_present) {
+        ESP_LOGW(kTag, "audio_output=ModuleAudio but ES8388 absent — falling back to internal");
+    }
+    if (codec_present && cfg.audio_output == stackchan::config::AudioOutput::Internal) {
+        ESP_LOGI(kTag, "Module Audio (ES8388) detected but audio_output=Internal — internal speaker");
+    }
+    if (effective_audio_module) {
         if (auto r = stackchan::board::es8388::init(); r) {
             ESP_LOGI(kTag, "Module Audio (ES8388) detected — line-out enabled");
         } else {
             ESP_LOGW(kTag, "Module Audio (ES8388) detected but init failed");
         }
     }
+    // Keep the old name available so the rest of this block (still using
+    // has_audio_module) reads naturally. Equivalent to effective_audio_module.
+    const bool has_audio_module = effective_audio_module;
     // Always run the MCU-side RGB diagnostic when EITHER the codec OR the
     // MCU shows up. The MCU lives at 0x33 (LED strip + buttons) and is on
     // the same M-BUS I2C as the codec but doesn't depend on it — useful for
@@ -857,7 +881,7 @@ extern "C" void app_main()
             ESP_LOGI(kTag, "Module Audio HP jack: %s",
                      *hp ? "inserted" : "not inserted");
         }
-    } else if (has_audio_module) {
+    } else if (codec_present) {
         ESP_LOGW(kTag, "Module Audio MCU absent at 0x%02X but codec is present",
                  stackchan::board::es8388::kMcuI2cAddress);
     }
@@ -1005,16 +1029,9 @@ extern "C" void app_main()
     M5.Speaker.end();
     vTaskDelay(pdMS_TO_TICKS(20));
 
-    // NVS must be initialised exactly once, before NimBLE host and Wi-Fi.
-    {
-        esp_err_t nvs_err = nvs_flash_init();
-        if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-            nvs_flash_erase();
-            nvs_flash_init();
-        }
-    }
-
-    static stackchan::config::DeviceConfig cfg = stackchan::config::load();
+    // nvs_flash_init + config::load have already been called above
+    // (needed earlier so cfg.audio_output could gate the Module Audio
+    // pin override). `cfg` here is the static instance from line ~840.
 
     // operation_mode is the single source of truth for the avatar's primary
     // behaviour. Derive the legacy gates from it so the rest of the boot

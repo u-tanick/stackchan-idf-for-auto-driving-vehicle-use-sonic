@@ -406,6 +406,19 @@
     <option value="0">マイクでリップシンク (MicLipSync)</option>
   </select>
 
+  <h2 class="section-title">音声出力</h2>
+  <p class="hint" style="margin-bottom:0.5rem">
+    音声の出力先を選びます。「自動」は M5 Module Audio が装着されていれば
+    そちらを優先、未装着なら内蔵スピーカ。「内蔵」と「Module Audio」は
+    強制指定 (Module Audio 未装着で「Module Audio」を選ぶと内蔵に
+    フォールバックします)。保存後の再起動で切替わります。
+  </p>
+  <select id="audio-output">
+    <option value="0">自動 (Auto)</option>
+    <option value="1">内蔵スピーカ (Internal)</option>
+    <option value="2">M5 Module Audio (ModuleAudio)</option>
+  </select>
+
   <label for="ssid">Wi-Fi SSID</label>
   <input type="text" id="ssid" maxlength="32" placeholder="MyNetwork">
   <p class="hint">空欄のままにすると現在の値を変更しません</p>
@@ -1107,6 +1120,9 @@ async function refresh() {
     if (typeof s.operation_mode === 'number') {
       $('operation-mode').value = String(s.operation_mode);
     }
+    if (typeof s.audio_output === 'number') {
+      $('audio-output').value = String(s.audio_output);
+    }
     $('barge-in-enabled').checked = !!s.barge_in_enabled; // default false if absent
     $('rtp-enabled').checked = (s.rtp_audio_enabled !== false); // default on if absent
     $('jtts-idle-enabled').checked = (s.jtts_idle_enabled !== false); // default on if absent
@@ -1201,6 +1217,7 @@ async function apply() {
     if (xzToken)   { await postText('/api/xiaozhi-token', xzToken);           log('XiaoZhi トークン送信', 'ok'); }
     await postText('/api/provider', provider);
     await postText('/api/operation-mode', $('operation-mode').value);
+    await postText('/api/audio-output', $('audio-output').value);
     await postText('/api/barge-in', $('barge-in-enabled').checked ? '1' : '0');
     // Device name: only push when it actually changed (so leaving the field
     // untouched preserves the current value across saves).

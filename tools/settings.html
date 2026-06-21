@@ -453,6 +453,19 @@
     <option value="0">マイクでリップシンク (MicLipSync)</option>
   </select>
 
+  <label for="audio-output">音声出力</label>
+  <p class="hint">
+    音声の出力先を選びます。「自動」は M5 Module Audio が装着されていれば
+    そちらを優先、未装着なら内蔵スピーカ。「内蔵」と「Module Audio」は
+    強制指定 (Module Audio 未装着で「Module Audio」を選ぶと内蔵に
+    フォールバックします)。保存後の再起動で切替わります。
+  </p>
+  <select id="audio-output">
+    <option value="0">自動 (Auto)</option>
+    <option value="1">内蔵スピーカ (Internal)</option>
+    <option value="2">M5 Module Audio (ModuleAudio)</option>
+  </select>
+
   <label for="ssid">Wi-Fi SSID</label>
   <input type="text" id="ssid" maxlength="32" placeholder="MyNetwork">
   <p class="hint">空欄のままにすると現在の値を変更しません</p>
@@ -1035,6 +1048,10 @@ const CHR_DEVICE_NAME = 'e3f0a027-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // AuthPassword (write-only) — set/clears the BLE+HTTP auth gate. Empty body
 // clears (= no auth). NEVER read back; status uses has_auth_password.
 const CHR_AUTH_PASSWORD = 'e3f0a028-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+// AudioOutput — encrypted 1-byte enum (0=Auto, 1=Internal, 2=ModuleAudio).
+// Forces a specific output codec selection at next boot, overriding the
+// boot-time Module Audio probe when set to Internal / ModuleAudio.
+const CHR_AUDIO_OUTPUT = 'e3f0a029-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // AvatarBytecode — encrypted RW. Chunked upload of the avatar face .avbc
 // (mirrors `POST /api/avatar-dsl` on the HTTP side). READ returns a status
 // JSON; WRITE accepts a 1-byte op header followed by op-specific payload:
@@ -1100,7 +1117,7 @@ const DIS_CHRS = {
 
 // --- State ---
 let bleDevice = null, bleServer = null, svc = null;
-let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJttsIdleEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrBatGauge = null, chrServoEnabled = null, chrMcpToken = null, chrLtConfig = null, chrServoLimits = null, chrServoRangeMode = null, chrServoPositions = null, chrBoardKind = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null, chrAudioMetrics = null, chrLedState = null, chrMicLipGain = null, chrLedMouthSync = null, chrOperationMode = null, chrBargeIn = null, chrDeviceName = null, chrAuthPassword = null, chrAvatarBc = null;
+let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJttsIdleEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrBatGauge = null, chrServoEnabled = null, chrMcpToken = null, chrLtConfig = null, chrServoLimits = null, chrServoRangeMode = null, chrServoPositions = null, chrBoardKind = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null, chrAudioMetrics = null, chrLedState = null, chrMicLipGain = null, chrLedMouthSync = null, chrOperationMode = null, chrAudioOutput = null, chrBargeIn = null, chrDeviceName = null, chrAuthPassword = null, chrAvatarBc = null;
 let boardKind = null; // null = unknown (older firmware), else 0/1/2 from BOARD_*
 let batteryPollTimer = null;  // setInterval handle while connected
 let jttsInitialJson = '';  // last read JSON, used to detect Apply-time changes
@@ -2226,6 +2243,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
       ['micLipGain', CHR_MIC_LIP_GAIN],
       ['ledMouthSync', CHR_LED_MOUTH_SYNC],
       ['operationMode', CHR_OPERATION_MODE],
+      ['audioOutput',   CHR_AUDIO_OUTPUT],
       ['bargeIn',       CHR_BARGE_IN_ENABLED],
       ['deviceName',    CHR_DEVICE_NAME],
       ['authPassword',  CHR_AUTH_PASSWORD],
@@ -2276,6 +2294,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
     chrMicLipGain = found.micLipGain ?? null;
     chrLedMouthSync = found.ledMouthSync ?? null;
     chrOperationMode = found.operationMode ?? null;
+    chrAudioOutput = found.audioOutput ?? null;
     chrBargeIn = found.bargeIn ?? null;
     chrDeviceName = found.deviceName ?? null;
     chrAuthPassword = found.authPassword ?? null;
@@ -2387,6 +2406,21 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
         }
       } catch (e) {
         log(`動作モード 状態の取得失敗: ${e.message}`, 'err');
+      }
+    }
+
+    if (chrAudioOutput) {
+      try {
+        const aoBytes = await readEncrypted(chrAudioOutput);
+        if (aoBytes.length > 0) {
+          const v = String(aoBytes[0]);
+          document.getElementById('audio-output').value = v;
+          document.getElementById('audio-output').dataset.initial = v;
+          const labels = {'0':'自動','1':'内蔵スピーカ','2':'M5 Module Audio'};
+          log(`音声出力: ${labels[v] || `mode ${v}`}`);
+        }
+      } catch (e) {
+        log(`音声出力 状態の取得失敗: ${e.message}`, 'err');
       }
     }
 
@@ -2609,7 +2643,7 @@ function onDisconnected() {
   micLipLoaded = false;
   svRangeOn = false;
   svLiveYaw = svLivePitch = -1;
-  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJttsIdleEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrXiaozhiUrl = chrXiaozhiToken = chrFaceConfig = chrBattery = chrBatGauge = chrServoEnabled = chrMcpToken = chrLtConfig = chrServoLimits = chrServoRangeMode = chrServoPositions = chrBoardKind = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = chrAudioMetrics = chrLedState = chrMicLipGain = chrLedMouthSync = chrOperationMode = chrBargeIn = chrAvatarBc = null;
+  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJttsIdleEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrXiaozhiUrl = chrXiaozhiToken = chrFaceConfig = chrBattery = chrBatGauge = chrServoEnabled = chrMcpToken = chrLtConfig = chrServoLimits = chrServoRangeMode = chrServoPositions = chrBoardKind = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = chrAudioMetrics = chrLedState = chrMicLipGain = chrLedMouthSync = chrOperationMode = chrAudioOutput = chrBargeIn = chrAvatarBc = null;
   if (typeof refreshAvbcButton === 'function') refreshAvbcButton();
   boardKind = null;
   aesKey = null;
@@ -2619,6 +2653,7 @@ function onDisconnected() {
   delete document.getElementById('jtts-idle-enabled').dataset.initial;
   delete document.getElementById('led-mouth-sync').dataset.initial;
   delete document.getElementById('operation-mode').dataset.initial;
+  delete document.getElementById('audio-output').dataset.initial;
   delete document.getElementById('barge-in-enabled').dataset.initial;
   delete document.getElementById('bat-gauge-enabled').dataset.initial;
   delete document.getElementById('servo-enabled').dataset.initial;
@@ -2741,6 +2776,16 @@ document.getElementById('btn-apply').addEventListener('click', async () => {
       await writeEncrypted(chrOperationMode, new Uint8Array([v]));
       const labels = {0:'マイクでリップシンク',1:'JTTS ランダム発話',2:'会話応答'};
       log(`動作モードを ${labels[v] || `mode ${v}`} に切り替え`, 'ok');
+    }
+
+    // Audio output: only push if it changed AND chr is present.
+    const aoSel = document.getElementById('audio-output');
+    const aoInitial = aoSel.dataset.initial;
+    if (chrAudioOutput && aoInitial !== undefined && aoInitial !== aoSel.value) {
+      const v = Number(aoSel.value);
+      await writeEncrypted(chrAudioOutput, new Uint8Array([v]));
+      const labels = {0:'自動',1:'内蔵スピーカ',2:'M5 Module Audio'};
+      log(`音声出力を ${labels[v] || `mode ${v}`} に切り替え`, 'ok');
     }
 
     // Barge-in: only push if it changed AND chr is present.

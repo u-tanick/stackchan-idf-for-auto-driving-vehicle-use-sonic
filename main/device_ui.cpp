@@ -67,6 +67,11 @@ std::atomic<bool> g_stage_servo_master{true};
 // the mode row on the settings page.
 std::atomic<std::uint8_t> g_stage_op_mode{
     static_cast<std::uint8_t>(stackchan::config::OperationMode::Conversation)};
+// Forced output codec selection (config::AudioOutput as u8). Cycled by
+// tapping the row on the settings page. Default Auto = honour the
+// boot-time probe.
+std::atomic<std::uint8_t> g_stage_audio_output{
+    static_cast<std::uint8_t>(stackchan::config::AudioOutput::Auto)};
 
 // Range-setting page: staged ServoLimits (loaded from NVS on tab open, mutated
 // by capture taps, saved + reboot on 保存). Plain (non-atomic): the device UI
@@ -176,8 +181,11 @@ void row_rect(int i, int& rx, int& ry, int& rw, int& rh, int row_h = kRowH)
     rh = row_h - 6;
 }
 
-// Tighter row pitch for pages with 5+ rows. (5 * 36 = 180 < 240 - kContentY = 194.)
-constexpr int kSettingsRowH = 36;
+// Tighter row pitch for pages with 5+ rows.
+// 設定 page has 6 rows (op_mode / audio_output / RTP / battery / servo /
+// apply) so 6 * 30 = 180 still fits under 240 - kContentY = 194 with room
+// for the footer hint.
+constexpr int kSettingsRowH = 30;
 
 std::string current_ip()
 {
@@ -362,6 +370,16 @@ const char* op_mode_label(std::uint8_t m)
     return "?";
 }
 
+const char* audio_output_label(std::uint8_t m)
+{
+    switch (m) {
+    case 0: return "自動";
+    case 1: return "内蔵スピーカ";
+    case 2: return "Module Audio";
+    }
+    return "?";
+}
+
 void draw_toggle_row(int i, const char* label, bool on, int row_h = kRowH)
 {
     int rx, ry, rw, rh;
@@ -398,16 +416,19 @@ void draw_settings()
     draw_value_row(0, "動作モード",
                    op_mode_label(g_stage_op_mode.load(std::memory_order_relaxed)),
                    kSettingsRowH);
-    draw_toggle_row(1, "RTP 音声受信", g_stage_rtp.load(std::memory_order_relaxed), kSettingsRowH);
-    draw_toggle_row(2, "電池ゲージ", g_stage_bat_gauge.load(std::memory_order_relaxed), kSettingsRowH);
-    draw_toggle_row(3, "サーボ (恒久)", g_stage_servo_master.load(std::memory_order_relaxed),
+    draw_value_row(1, "音声出力",
+                   audio_output_label(g_stage_audio_output.load(std::memory_order_relaxed)),
+                   kSettingsRowH);
+    draw_toggle_row(2, "RTP 音声受信", g_stage_rtp.load(std::memory_order_relaxed), kSettingsRowH);
+    draw_toggle_row(3, "電池ゲージ", g_stage_bat_gauge.load(std::memory_order_relaxed), kSettingsRowH);
+    draw_toggle_row(4, "サーボ (恒久)", g_stage_servo_master.load(std::memory_order_relaxed),
                     kSettingsRowH);
-    draw_button(4, "適用（保存して再起動）", g_cv->color565(60, 120, 200), kSettingsRowH);
+    draw_button(5, "適用（保存して再起動）", g_cv->color565(60, 120, 200), kSettingsRowH);
     g_cv->setFont(kFontBody);
     g_cv->setTextDatum(lgfx::textdatum_t::top_left);
     g_cv->setTextColor(g_cv->color565(150, 150, 150));
-    g_cv->drawString("動作モードをタップで切替 / 変更は適用で反映",
-                     12, kContentY + 5 * kSettingsRowH + 2);
+    g_cv->drawString("行をタップで切替 / 変更は適用で反映",
+                     12, kContentY + 6 * kSettingsRowH + 2);
 }
 
 void draw_control()
@@ -656,6 +677,8 @@ void load_staged()
     g_stage_servo_master.store(cfg.servo_enabled, std::memory_order_relaxed);
     g_stage_op_mode.store(static_cast<std::uint8_t>(cfg.operation_mode),
                           std::memory_order_relaxed);
+    g_stage_audio_output.store(static_cast<std::uint8_t>(cfg.audio_output),
+                               std::memory_order_relaxed);
     g_stage_limits = parse_servo_limits(cfg.servo_limits_json);
 }
 
@@ -672,6 +695,8 @@ void apply_and_reboot()
     // config_store::load.
     cfg.operation_mode = static_cast<config::OperationMode>(
         g_stage_op_mode.load(std::memory_order_relaxed));
+    cfg.audio_output = static_cast<config::AudioOutput>(
+        g_stage_audio_output.load(std::memory_order_relaxed));
     (void)config::store::save(cfg);
     esp_restart();
 }
@@ -723,6 +748,8 @@ void init(SharedState& state)
     g_stage_servo_master.store(cfg.servo_enabled, std::memory_order_relaxed);
     g_stage_op_mode.store(static_cast<std::uint8_t>(cfg.operation_mode),
                           std::memory_order_relaxed);
+    g_stage_audio_output.store(static_cast<std::uint8_t>(cfg.audio_output),
+                               std::memory_order_relaxed);
     std::uint8_t mac[6] = {};
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     char host[32];
@@ -831,16 +858,22 @@ void handle_tap(int x, int y)
             g_stage_op_mode.store(next, std::memory_order_relaxed);
             g_dirty.store(true, std::memory_order_relaxed);
         } else if (hit_row(1)) {
-            g_stage_rtp.store(!g_stage_rtp.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            // Cycle audio_output 0 (Auto) → 1 (Internal) → 2 (ModuleAudio) → 0 ...
+            const std::uint8_t cur = g_stage_audio_output.load(std::memory_order_relaxed);
+            const std::uint8_t next = (cur + 1) % 3;
+            g_stage_audio_output.store(next, std::memory_order_relaxed);
             g_dirty.store(true, std::memory_order_relaxed);
         } else if (hit_row(2)) {
-            g_stage_bat_gauge.store(!g_stage_bat_gauge.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            g_stage_rtp.store(!g_stage_rtp.load(std::memory_order_relaxed), std::memory_order_relaxed);
             g_dirty.store(true, std::memory_order_relaxed);
         } else if (hit_row(3)) {
+            g_stage_bat_gauge.store(!g_stage_bat_gauge.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            g_dirty.store(true, std::memory_order_relaxed);
+        } else if (hit_row(4)) {
             g_stage_servo_master.store(!g_stage_servo_master.load(std::memory_order_relaxed),
                                        std::memory_order_relaxed);
             g_dirty.store(true, std::memory_order_relaxed);
-        } else if (hit_row(4)) {
+        } else if (hit_row(5)) {
             apply_and_reboot(); // does not return
         }
     } else if (page == kControl) {

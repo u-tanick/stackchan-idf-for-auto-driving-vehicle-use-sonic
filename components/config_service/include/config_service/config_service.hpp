@@ -34,6 +34,25 @@ enum class OperationMode : std::uint8_t {
     Conversation = 2,
 };
 
+// Output audio routing on boards that can host an M5 Module Audio (M144)
+// alongside an internal codec (currently CoreS3 = AW88298 internal,
+// ES8388 line-out on the module):
+//   Auto         ‐ honour the boot-time codec probe (use Module Audio when
+//                  ES8388 ACKs at I2C 0x10, otherwise fall back to internal)
+//   Internal     ‐ force the internal codec even if Module Audio is fitted
+//                  (used when the module is plugged in for power-monitoring
+//                  but the user wants to drive the on-board speaker)
+//   ModuleAudio  ‐ force Module Audio; warn-and-fall-back-to-internal at
+//                  boot if the codec is absent
+// app_main.cpp evaluates `effective_audio_module` from this + the live
+// probe result and uses it to gate the speaker pin override / ES8388 init
+// / volume defaults.
+enum class AudioOutput : std::uint8_t {
+    Auto         = 0,
+    Internal     = 1,
+    ModuleAudio  = 2,
+};
+
 struct DeviceConfig {
     std::string wifi_ssid;
     std::string wifi_password;
@@ -138,6 +157,12 @@ struct DeviceConfig {
     // to true, and the migration path in config_store::load preserves any
     // explicit override the user already saved before this field existed).
     OperationMode operation_mode = OperationMode::Conversation;
+    // Audio output routing. Only meaningful when Module Audio is in play
+    // (CoreS3 currently). Default Auto keeps existing devices on the
+    // historical "probe → use whichever shows up" behaviour. Takes
+    // effect after the Apply reboot. See AudioOutput above for the
+    // semantics of each value.
+    AudioOutput audio_output = AudioOutput::Auto;
     // Touch barge-in: when on, tapping the head during AI reply playback
     // interrupts the reply (so the user can cut in). The Si12T capacitive
     // pad on the head is sensitive enough that incidental contact (sleeve

@@ -46,6 +46,7 @@ constexpr const char* kKeyOperationMode = "op_mode";  // u8 OperationMode
 constexpr const char* kKeyBargeIn       = "bargein_en"; // u8 bool
 constexpr const char* kKeyDeviceName    = "dev_name";   // user-set BLE / mDNS name (empty = auto)
 constexpr const char* kKeyAuthPassword  = "auth_pwd";   // BLE handshake salt + HTTP Basic Auth (empty = no auth)
+constexpr const char* kKeyAudioOutput   = "audio_out";  // u8 AudioOutput (Auto/Internal/ModuleAudio)
 
 std::string nvs_read_str(nvs_handle_t h, const char* key)
 {
@@ -184,6 +185,20 @@ DeviceConfig load()
     } else if (bi_err != ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGW(kTag, "nvs_get_u8(%s): %s", kKeyBargeIn, esp_err_to_name(bi_err));
     }
+    // audio_output: u8 with bounds-check, missing key → Auto (preserves
+    // existing behaviour on pre-upgrade NVS).
+    std::uint8_t aout = 0;
+    esp_err_t aout_err = nvs_get_u8(h, kKeyAudioOutput, &aout);
+    if (aout_err == ESP_OK) {
+        if (aout <= static_cast<std::uint8_t>(AudioOutput::ModuleAudio)) {
+            cfg.audio_output = static_cast<AudioOutput>(aout);
+        } else {
+            ESP_LOGW(kTag, "%s: out-of-range value %u, falling back to Auto",
+                     kKeyAudioOutput, aout);
+        }
+    } else if (aout_err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(kTag, "nvs_get_u8(%s): %s", kKeyAudioOutput, esp_err_to_name(aout_err));
+    }
     nvs_close(h);
     return cfg;
 }
@@ -268,6 +283,13 @@ tl::expected<void, Error> save(const DeviceConfig& cfg)
     err = nvs_set_u8(h, kKeyOperationMode, static_cast<std::uint8_t>(cfg.operation_mode));
     if (err != ESP_OK) {
         ESP_LOGE(kTag, "nvs_set_u8(%s): %s", kKeyOperationMode, esp_err_to_name(err));
+        nvs_close(h);
+        return tl::unexpected(Error::NvsWrite);
+    }
+
+    err = nvs_set_u8(h, kKeyAudioOutput, static_cast<std::uint8_t>(cfg.audio_output));
+    if (err != ESP_OK) {
+        ESP_LOGE(kTag, "nvs_set_u8(%s): %s", kKeyAudioOutput, esp_err_to_name(err));
         nvs_close(h);
         return tl::unexpected(Error::NvsWrite);
     }
