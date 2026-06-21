@@ -79,6 +79,16 @@ enum class ConversationEventType : std::uint8_t {
     ToolCallRequested,
     ResponseDone,
     Error,
+    // Backend warned that the current connection will be terminated soon
+    // (Gemini Live `goAway` message — currently fires near the 15-min audio
+    // session cap, but the server may send it at any time). The application
+    // is expected to reconnect proactively; the existing resumption handle
+    // is preserved across the reconnect so the conversation continues. The
+    // event's `text` field carries the server's timeLeft as a string (e.g.
+    // "5s") for diagnostic logging; no special parsing is required because
+    // the conv-task just hands off to its standard recovery path which
+    // already saves+restores the handle.
+    GoingAway,
 };
 
 struct ToolCall {

@@ -350,13 +350,26 @@ private:
             emit_error(ConversationError::TransportInit, "websocket error");
             break;
         case WEBSOCKET_EVENT_CLOSED:
-            // Gemini silently closes the WS on bad setup (unknown model,
-            // unsupported field) — no DISCONNECTED, just CLOSED. Surface
-            // as a transport error so the conv-task recovery path runs
-            // instead of sitting Idle forever.
-            ESP_LOGW(kTag, "WEBSOCKET_EVENT_CLOSED (setup rejected?)");
+            // Either a setup-time rejection (Gemini silently closes the WS on
+            // unknown model / unsupported field — no DISCONNECTED, just
+            // CLOSED) or a mid-turn server close (code 1011 etc). Surface the
+            // close frame info captured in on_websocket_data so the trace
+            // shows the actual cause; the conv-task recovery path takes over
+            // from here. setup_sent_ disambiguates the two phases in the log.
+            if (last_close_code_ != 0) {
+                ESP_LOGW(kTag, "WEBSOCKET_EVENT_CLOSED phase=%s code=%u reason='%s'",
+                         setup_sent_ ? "post-setup" : "pre-setup",
+                         last_close_code_, last_close_reason_.c_str());
+            } else {
+                ESP_LOGW(kTag, "WEBSOCKET_EVENT_CLOSED phase=%s (no close frame seen)",
+                         setup_sent_ ? "post-setup" : "pre-setup");
+            }
             set_state(ConversationState::Error);
             emit_error(ConversationError::NotConnected, "websocket closed");
+            // Reset for the next session — the new client (re-init in
+            // conv-task) will see fresh frames.
+            last_close_code_ = 0;
+            last_close_reason_.clear();
             break;
         default:
             break;
@@ -381,6 +394,10 @@ private:
                 const int reason_len = data->data_len - 2;
                 const char* reason = reinterpret_cast<const char*>(bytes + 2);
                 ESP_LOGW(kTag, "ws close: code=%u reason='%.*s'", code, reason_len, reason);
+                // Stash for the WEBSOCKET_EVENT_CLOSED handler (fires after
+                // this) so it can log the actual code/reason.
+                last_close_code_ = code;
+                last_close_reason_.assign(reason, reason_len);
 
                 // Gemini returns code=1008 with reason
                 // "BidiGenerateContent session not found" when the cached
@@ -389,6 +406,15 @@ private:
                 // recovery path replays the same dead handle on every
                 // reconnect and we ping-pong forever. Drop the handle so
                 // send_setup() opens a fresh session on the next attempt.
+                //
+                // We deliberately do NOT clear on 1011 ("Internal error
+                // occurred."). Per the official docs the resumption token is
+                // valid for 2h after session termination — there's no
+                // documented relationship between close code and token
+                // validity. LiveKit's Google plugin (the reference impl)
+                // also keeps the handle across 1011 and just retries with
+                // backoff. Mirror that behavior here; if a stale handle
+                // does cause repeat failures, the 1008 path catches it.
                 if (code == 1008 && reason_len > 0 &&
                     std::string_view(reason, reason_len).find("session not found") != std::string_view::npos) {
                     if (!session_handle_.empty()) {
@@ -555,11 +581,21 @@ private:
             handle_session_resumption_update(up);
         }
         if (cJSON* gw = cJSON_GetObjectItemCaseSensitive(root, "goAway"); gw != nullptr) {
-            const cJSON* tb = cJSON_GetObjectItemCaseSensitive(gw, "timeBeforeClose");
-            ESP_LOGW(kTag, "goAway received: timeBeforeClose=%s",
-                     cJSON_IsString(tb) ? tb->valuestring : "?");
-            // The server will close shortly; conv-task's existing recovery
-            // path reconnects, and send_setup() replays session_handle_.
+            // Gemini docs name this field `timeLeft`; older snippets called
+            // it `timeBeforeClose`. Read whichever the server sent.
+            const cJSON* tl = cJSON_GetObjectItemCaseSensitive(gw, "timeLeft");
+            if (tl == nullptr) tl = cJSON_GetObjectItemCaseSensitive(gw, "timeBeforeClose");
+            const char* tl_str = cJSON_IsString(tl) ? tl->valuestring : "?";
+            ESP_LOGW(kTag, "goAway received: timeLeft=%s", tl_str);
+            // Surface to the conv-task so it can reconnect BEFORE the server
+            // closes — otherwise we eat a hard ABORTED close at the deadline
+            // and any in-flight audio gets cut off. The existing handle in
+            // session_handle_ (cached from the latest sessionResumptionUpdate)
+            // survives the reconnect; send_setup() replays it.
+            ConversationEvent ev{};
+            ev.type = ConversationEventType::GoingAway;
+            ev.text = tl_str;
+            emit(ev);
         }
         cJSON_Delete(root);
     }
@@ -839,6 +875,14 @@ private:
     // Resumption handle from goAway / sessionResumptionUpdate. Empty means
     // no prior session.
     std::string session_handle_;
+
+    // Stash of the last WS close frame (opcode 0x08) we saw on this client.
+    // The control-frame DATA event fires before WEBSOCKET_EVENT_CLOSED, so
+    // we save what we saw and surface it accurately in the CLOSED handler
+    // — previously CLOSED logged a misleading "(setup rejected?)" hint that
+    // was wrong for any post-setup close.
+    std::uint16_t last_close_code_{0};
+    std::string last_close_reason_;
 
     char* rx_buffer_{nullptr};
     std::size_t rx_capacity_{0};

@@ -403,9 +403,32 @@ private:
         return true;
     }
 
-    void recover_after_error()
+    // from_failure = false: clean handoff (e.g. Gemini goAway). Skip the
+    // exponential backoff counter bump, but still go through the standard
+    // reconnect flow (teardown old client + dma settle + connect).
+    void recover_after_error(bool from_failure = true)
     {
-        ESP_LOGW(kTag, "recovering conversation session");
+        if (from_failure) {
+            ++consecutive_recover_failures_;
+            // Cap at 60 s. 500 ms × 2^(n-1) for n=1..7 then capped (n>=8 → 60s):
+            // 500 / 1k / 2k / 4k / 8k / 16k / 32k / 60k. First failure has
+            // essentially no extra wait beyond the DMA-settle loop below.
+            constexpr std::uint32_t kRecoverBackoffBaseMs = 500;
+            constexpr std::uint32_t kRecoverBackoffCapMs = 60u * 1000u;
+            const unsigned shift = std::min<unsigned>(consecutive_recover_failures_ - 1u, 7u);
+            const std::uint32_t backoff_ms =
+                std::min(kRecoverBackoffBaseMs << shift, kRecoverBackoffCapMs);
+            ESP_LOGW(kTag, "recovering conversation session (attempt #%u, backoff %u ms)",
+                     consecutive_recover_failures_, static_cast<unsigned>(backoff_ms));
+            if (consecutive_recover_failures_ > 1) {
+                // Skip the wait on the first try so transient blips don't
+                // visibly delay reconnect; back off only when failures
+                // pile up.
+                vTaskDelay(pdMS_TO_TICKS(backoff_ms));
+            }
+        } else {
+            ESP_LOGI(kTag, "graceful session handoff (goAway)");
+        }
         state_.conversation_status.store(ConvStatus::Reconnecting, std::memory_order_relaxed);
         state_.conversation_reconnects.fetch_add(1, std::memory_order_relaxed);
         if (local_ == Local::Speaking) {
@@ -775,6 +798,27 @@ private:
                 state_.conversation_active.store(true, std::memory_order_relaxed);
                 enter_listening();
             }
+            // Any time the backend reaches Listening (= setup accepted, session
+            // alive) reset the consecutive-failure counter so a future
+            // transient outage starts the backoff fresh instead of inheriting
+            // the prior storm's tail.
+            if (ev.state == conv::ConversationState::Listening &&
+                consecutive_recover_failures_ > 0) {
+                ESP_LOGI(kTag, "session healthy → reset recover counter (was %u)",
+                         consecutive_recover_failures_);
+                consecutive_recover_failures_ = 0;
+            }
+            break;
+
+        case conv::ConversationEventType::GoingAway:
+            // Server is warning us it will close soon (typically the ~15 min
+            // audio-session cap; Gemini docs § "Session resumption"). Tear
+            // down + reconnect proactively while we still have the
+            // resumption handle cached — this rotates the underlying TCP/TLS
+            // session without losing the conversation context. Not a
+            // failure, so don't bump the backoff counter.
+            ESP_LOGI(kTag, "GoingAway: timeLeft=%s → proactive reconnect", ev.text.c_str());
+            recover_after_error(/*from_failure=*/false);
             break;
 
         case conv::ConversationEventType::SpeechStarted:
@@ -1100,6 +1144,14 @@ private:
     std::uint32_t playback_start_ms_{0};
     std::int64_t playback_start_us_{0};
     std::string assistant_text_;
+
+    // Consecutive transport-failure count for exponential reconnect backoff.
+    // Bumped on every recover_after_error(/*from_failure=*/true) and reset
+    // when StateChanged → Listening fires for the new session (= the server
+    // accepted setup). Capped backoff at kRecoverBackoffCapMs so prolonged
+    // outages don't drag the wait time past 1 min — Gemini's preview-endpoint
+    // 1011 storms typically last 10-30 s, so 60 s of grace is plenty.
+    unsigned consecutive_recover_failures_{0};
 
     // --- audio-pipeline diagnostics ----------------------------------------
     // A chunk's identity is "the last sample offset in assistant_pcm_ at the
