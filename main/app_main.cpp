@@ -1139,7 +1139,13 @@ extern "C" void app_main()
         ESP_LOGW(kTag, "servo VM rail OFF: cfg.servo_enabled=false (set via settings UI)");
     }
 
-    g_render_args = new stackchan::app::RenderTaskArgs{.display = &board.display(), .state = g_state};
+    const bool is_circular_display =
+        board.kind() == stackchan::board::BoardKind::StopWatch;
+    g_render_args = new stackchan::app::RenderTaskArgs{
+        .display = &board.display(),
+        .state = g_state,
+        .circular_display = is_circular_display,
+    };
     const auto servo_limits = stackchan::app::parse_servo_limits(cfg.servo_limits_json);
     if (!is_atom_nyan) {
         const auto sb = board.servo_bus_config();

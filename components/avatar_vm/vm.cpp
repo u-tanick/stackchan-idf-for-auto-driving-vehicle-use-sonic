@@ -34,12 +34,17 @@ inline float expression_to_f(avatar::Expression e) noexcept
 }
 
 // Compute the design→canvas uniform scale the original face.cpp used.
+// For circular displays, divide by an extra √2 so the 320×240 design
+// space fits in the inscribed square — otherwise effect marks designed
+// for the corners end up outside the visible circle on a 466×466 AMOLED.
 inline float canvas_scale(const avatar::Canvas& c) noexcept
 {
     constexpr float kBaseW = 320.0f;
     constexpr float kBaseH = 240.0f;
-    return std::min(static_cast<float>(c.width()) / kBaseW,
-                    static_cast<float>(c.height()) / kBaseH);
+    constexpr float kCircleInset = 0.70710678f; // 1/sqrt(2)
+    const float scale = std::min(static_cast<float>(c.width()) / kBaseW,
+                                 static_cast<float>(c.height()) / kBaseH);
+    return c.is_circular() ? scale * kCircleInset : scale;
 }
 
 inline float read_var(Var v, const avatar::Canvas& canvas, const avatar::DrawContext& ctx,

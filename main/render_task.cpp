@@ -85,8 +85,8 @@ void render_task_entry(void* arg)
     // without per-board ifdefs.
     const std::int32_t canvas_w = display.width();
     const std::int32_t canvas_h = display.height();
-    avatar::BufferedCanvas buffered{display};
-    avatar::DirectCanvas direct{display};
+    avatar::BufferedCanvas buffered{display, args.circular_display};
+    avatar::DirectCanvas direct{display, args.circular_display};
     avatar::RichCanvas* cv = nullptr;
     // PSRAM presence drives the buffered (full framebuffer) vs direct
     // (partial-update) canvas choice. When SPIRAM is disabled at compile

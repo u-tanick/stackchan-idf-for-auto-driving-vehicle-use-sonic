@@ -54,6 +54,14 @@ public:
     // (e.g. expression / layout change, or returning from the on-device UI).
     // No-op for the buffered strategy (it clears every frame anyway).
     virtual void request_full_repaint() = 0;
+
+    // True when the underlying display is round (StopWatch's AMOLED). The
+    // avatar VM uses this to shrink the design-space scale so face features
+    // stay within the inscribed circle — without the hint, a 320×240 face
+    // on a 466×466 panel scales up to 1.46× and effect marks at the design
+    // corners land outside the visible circle. Default false (every existing
+    // wrapper); StopWatch's wrapper opts in via its constructor.
+    virtual bool is_circular() const noexcept { return false; }
 };
 
 // Adds the text / rounded-rect / colour helpers used by the balloon, the

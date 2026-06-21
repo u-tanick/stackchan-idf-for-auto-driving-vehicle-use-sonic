@@ -20,7 +20,11 @@ namespace stackchan::avatar {
 // already composites into the single buffer.
 class BufferedCanvas final : public RichCanvas {
 public:
-    explicit BufferedCanvas(M5GFX& panel) noexcept : panel_{panel} {}
+    explicit BufferedCanvas(M5GFX& panel, bool circular = false) noexcept
+        : panel_{panel}, circular_{circular}
+    {}
+
+    bool is_circular() const noexcept override { return circular_; }
 
     // Allocate the full-screen sprite. Standalone (no display parent) + explicit
     // target on present, to dodge the CoreS3 GPIO35 MISO/DC read hang. Returns
@@ -89,6 +93,7 @@ public:
 
 private:
     M5GFX& panel_;
+    bool circular_{false};
     M5Canvas sprite_;
 };
 
@@ -105,7 +110,11 @@ private:
 // the group rect, so different-sized groups in one frame reuse one allocation.
 class DirectCanvas final : public RichCanvas {
 public:
-    explicit DirectCanvas(M5GFX& panel) noexcept : panel_{panel} {}
+    explicit DirectCanvas(M5GFX& panel, bool circular = false) noexcept
+        : panel_{panel}, circular_{circular}
+    {}
+
+    bool is_circular() const noexcept override { return circular_; }
 
     bool begin() { return true; } // nothing to allocate up front
 
@@ -267,6 +276,7 @@ private:
     static constexpr std::int32_t kMaxScratchWidth = 160;
 
     M5GFX& panel_;
+    bool circular_{false};
     M5Canvas scratch_;
     std::int32_t scratch_w_ = 0, scratch_h_ = 0;
     std::uint16_t bg_ = 0;
