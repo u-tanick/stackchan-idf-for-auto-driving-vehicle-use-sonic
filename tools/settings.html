@@ -368,6 +368,30 @@
 </style>
 </head>
 <body>
+<!-- BLE auth password prompt — modal dialog with a real <form> so browser
+     password managers (Chrome / Edge / Safari) can offer to save / fill
+     it. Surfaced by ensureAuthenticated() when the device has an auth
+     password set; replaces window.prompt() which is plaintext + invisible
+     to password managers. -->
+<div id="auth-modal-backdrop" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center">
+  <form id="auth-modal-form" autocomplete="on" style="background:white;padding:1.5rem;border-radius:8px;min-width:300px;max-width:90vw;box-shadow:0 4px 24px rgba(0,0,0,0.3)">
+    <h2 style="margin:0 0 0.5rem 0;font-size:1.1rem">BLE 接続パスワード</h2>
+    <p class="hint" style="margin:0 0 1rem 0">このデバイスは認証パスワードが設定されています。</p>
+    <!-- Hidden username so password managers can scope the credential
+         to a specific device. We use the BLE device name when known,
+         falling back to a generic placeholder. -->
+    <input id="auth-modal-username" name="username" autocomplete="username"
+           style="display:none" value="stackchan" readonly>
+    <label for="auth-modal-password" style="display:block;font-size:0.9rem;margin-bottom:0.25rem">パスワード</label>
+    <input type="password" id="auth-modal-password" name="password"
+           autocomplete="current-password" required minlength="1" maxlength="64"
+           style="width:100%;box-sizing:border-box;padding:0.5rem;font-size:1rem;margin-bottom:1rem">
+    <div style="display:flex;gap:0.5rem;justify-content:flex-end">
+      <button type="button" id="auth-modal-cancel" class="secondary">キャンセル</button>
+      <button type="submit" id="auth-modal-ok">接続</button>
+    </div>
+  </form>
+</div>
 <div class="card">
   <h1>🤖 Stack-chan 設定</h1>
   <p class="subtitle">Web Bluetooth 経由で Wi-Fi と API キーを設定します</p>
@@ -1264,12 +1288,51 @@ async function setupSession(saltBytes = new Uint8Array(0)) {
   await chrKx.writeValueWithResponse(ourPubRaw);
 }
 
+// Show the auth-modal-form modal and return the entered password as a
+// Promise. Resolves with the string on submit, rejects on cancel. The
+// password field has autocomplete="current-password" + a hidden
+// username field so browser password managers can save / fill the
+// credential per origin.
+function promptForAuthPassword(deviceName) {
+  return new Promise((resolve, reject) => {
+    const backdrop = document.getElementById('auth-modal-backdrop');
+    const form     = document.getElementById('auth-modal-form');
+    const pwdEl    = document.getElementById('auth-modal-password');
+    const userEl   = document.getElementById('auth-modal-username');
+    const cancelEl = document.getElementById('auth-modal-cancel');
+    // Scope the saved credential by the device name when known so the
+    // browser can offer the right one back the next time we connect.
+    userEl.value = deviceName || 'stackchan';
+    pwdEl.value = '';
+    backdrop.style.display = 'flex';
+    setTimeout(() => pwdEl.focus(), 0);
+    const cleanup = () => {
+      backdrop.style.display = 'none';
+      form.removeEventListener('submit', onSubmit);
+      cancelEl.removeEventListener('click', onCancel);
+    };
+    const onSubmit = (e) => {
+      e.preventDefault();
+      const pwd = pwdEl.value;
+      cleanup();
+      if (!pwd) reject(new Error('空のパスワード — 認証に進めません'));
+      else resolve(pwd);
+    };
+    const onCancel = () => {
+      cleanup();
+      reject(new Error('認証パスワードがキャンセルされたため接続を中断'));
+    };
+    form.addEventListener('submit', onSubmit);
+    cancelEl.addEventListener('click', onCancel);
+  });
+}
+
 // Probe-and-retry helper called right after the initial handshake. If the
 // device has an auth password set, the empty-salt session derives the wrong
 // AES key and the first encrypted READ (Status) fails with a GCM tag
-// mismatch. We surface a prompt() to the user; their answer is hashed and
-// fed back into setupSession to re-derive the key. Password is kept only in
-// the local scope (no DOM input, no localStorage) so it lives in memory just
+// mismatch. We surface a modal prompt to the user; their answer is hashed
+// and fed back into setupSession to re-derive the key. Password is kept
+// only in the local scope (no localStorage) so it lives in memory just
 // long enough to derive the salt and then becomes garbage-collectible.
 async function ensureAuthenticated() {
   if (!chrStatus) return; // very old firmware — nothing to probe against
@@ -1280,11 +1343,8 @@ async function ensureAuthenticated() {
     // Fall through to the password prompt.
   }
   log('Status 読み取り失敗 → デバイス側で認証パスワードが設定済の可能性。入力を求めます。', 'info');
-  // eslint-disable-next-line no-alert
-  const pwd = window.prompt('BLE 接続パスワードを入力してください\n(このセッション中のみメモリに保持されます)');
-  if (pwd === null) {
-    throw new Error('認証パスワードがキャンセルされたため接続を中断');
-  }
+  const deviceName = (bleDevice && bleDevice.name) || '';
+  const pwd = await promptForAuthPassword(deviceName);
   if (pwd === '') {
     throw new Error('空のパスワード — 認証に進めません');
   }
