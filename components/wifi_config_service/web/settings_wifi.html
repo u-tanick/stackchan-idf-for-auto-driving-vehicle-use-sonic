@@ -661,9 +661,20 @@
 
       <label class="toggle-label" for="led-mouth-sync" style="margin-top:1rem">
         <input type="checkbox" id="led-mouth-sync">
-        <span>ネコミミ LED の輝度を口の動きと連動させる</span>
+        <span>ネコミミ LED を口の動きと連動させる</span>
       </label>
-      <p class="hint">アバターの口が開くほど LED が明るくなります (会話再生・jtts 発話・マイク リップシンク いずれの口元アニメーションでも有効)。OFF のときは設定した明るさで固定。保存後の再起動で反映されます。</p>
+      <p class="hint">アバターの口が開くと LED が反応します (会話再生・jtts 発話・マイク リップシンク いずれの口元アニメーションでも有効)。OFF のときは設定した明るさで固定。保存後の再起動で反映されます。</p>
+
+      <label for="lip-sync-mode" style="margin-top:0.5rem">リップシンク モード</label>
+      <p class="hint" style="margin-bottom:0.5rem">
+        ON のときの制御方式を選びます。「輝度」は口が開くほど LED 全体が明るくなる
+        従来動作。「レベル メーター」はネコミミの三角形 (LED1 = 底辺、LED5 = 頂点)
+        を 5 段階のバー グラフとして点灯させます。保存後の再起動で反映されます。
+      </p>
+      <select id="lip-sync-mode">
+        <option value="0">輝度 (Brightness)</option>
+        <option value="1">レベル メーター (LevelMeter)</option>
+      </select>
     </div>
 
     <div id="servo-section">
@@ -1129,6 +1140,9 @@ async function refresh() {
     $('rtp-enabled').checked = (s.rtp_audio_enabled !== false); // default on if absent
     $('jtts-idle-enabled').checked = (s.jtts_idle_enabled !== false); // default on if absent
     $('led-mouth-sync').checked = !!s.led_mouth_sync_enabled; // default off if absent
+    if (typeof s.lip_sync_mode === 'number') {
+      $('lip-sync-mode').value = String(s.lip_sync_mode);
+    }
     $('bat-gauge-enabled').checked = (s.battery_gauge_enabled !== false); // default on if absent
     $('servo-enabled').checked = (s.servo_enabled !== false); // default on if absent
     $('mcp-token-state').textContent = s.has_mcp_token ? '設定済' : '未設定';
@@ -1240,6 +1254,7 @@ async function apply() {
     await postText('/api/rtp-enabled', rtpEnabled ? '1' : '0');
     await postText('/api/jtts-idle-enabled', jttsIdleEnabled ? '1' : '0');
     await postText('/api/led-mouth-sync', ledMouthSync ? '1' : '0');
+    await postText('/api/lip-sync-mode', $('lip-sync-mode').value);
     await postText('/api/battery-gauge', batGauge ? '1' : '0');
     await postText('/api/servo-enabled', servoEn ? '1' : '0');
     // MCP token: send only when the user typed something OR explicitly hit

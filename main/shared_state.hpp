@@ -135,6 +135,11 @@ public:
     // staging path on Apply (reboot) — so this matches `battery_gauge_enabled`
     // semantics (NVS-persisted, not a slider). Off by default.
     std::atomic<bool> led_mouth_sync_enabled{false};
+    // Lip-sync renderer selection (config::LipSyncMode as u8: 0=Brightness,
+    // 1=LevelMeter). Only consulted by main/led_task when
+    // led_mouth_sync_enabled is true. Seeded from cfg.lip_sync_mode at boot;
+    // live-writable via BLE/HTTP (no reboot needed).
+    std::atomic<std::uint8_t> lip_sync_mode{0};
 
     // Touch barge-in master switch. Read on every nadenade-detect tick in
     // demo_loop; when false the screen-tap path that sets

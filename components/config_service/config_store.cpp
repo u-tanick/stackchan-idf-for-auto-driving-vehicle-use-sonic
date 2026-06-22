@@ -47,6 +47,7 @@ constexpr const char* kKeyBargeIn       = "bargein_en"; // u8 bool
 constexpr const char* kKeyDeviceName    = "dev_name";   // user-set BLE / mDNS name (empty = auto)
 constexpr const char* kKeyAuthPassword  = "auth_pwd";   // BLE handshake salt + HTTP Basic Auth (empty = no auth)
 constexpr const char* kKeyAudioOutput   = "audio_out";  // u8 AudioOutput (Auto/Internal/ModuleAudio)
+constexpr const char* kKeyLipSyncMode   = "lipsync_md"; // u8 LipSyncMode (Brightness/LevelMeter)
 
 std::string nvs_read_str(nvs_handle_t h, const char* key)
 {
@@ -199,6 +200,20 @@ DeviceConfig load()
     } else if (aout_err != ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGW(kTag, "nvs_get_u8(%s): %s", kKeyAudioOutput, esp_err_to_name(aout_err));
     }
+    // lip_sync_mode: missing key → Brightness (the only mode before this
+    // feature existed, preserves prior visual behaviour for upgraders).
+    std::uint8_t lsm = 0;
+    esp_err_t lsm_err = nvs_get_u8(h, kKeyLipSyncMode, &lsm);
+    if (lsm_err == ESP_OK) {
+        if (lsm <= static_cast<std::uint8_t>(LipSyncMode::LevelMeter)) {
+            cfg.lip_sync_mode = static_cast<LipSyncMode>(lsm);
+        } else {
+            ESP_LOGW(kTag, "%s: out-of-range value %u, falling back to Brightness",
+                     kKeyLipSyncMode, lsm);
+        }
+    } else if (lsm_err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(kTag, "nvs_get_u8(%s): %s", kKeyLipSyncMode, esp_err_to_name(lsm_err));
+    }
     nvs_close(h);
     return cfg;
 }
@@ -290,6 +305,13 @@ tl::expected<void, Error> save(const DeviceConfig& cfg)
     err = nvs_set_u8(h, kKeyAudioOutput, static_cast<std::uint8_t>(cfg.audio_output));
     if (err != ESP_OK) {
         ESP_LOGE(kTag, "nvs_set_u8(%s): %s", kKeyAudioOutput, esp_err_to_name(err));
+        nvs_close(h);
+        return tl::unexpected(Error::NvsWrite);
+    }
+
+    err = nvs_set_u8(h, kKeyLipSyncMode, static_cast<std::uint8_t>(cfg.lip_sync_mode));
+    if (err != ESP_OK) {
+        ESP_LOGE(kTag, "nvs_set_u8(%s): %s", kKeyLipSyncMode, esp_err_to_name(err));
         nvs_close(h);
         return tl::unexpected(Error::NvsWrite);
     }

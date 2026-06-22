@@ -53,6 +53,21 @@ enum class AudioOutput : std::uint8_t {
     ModuleAudio  = 2,
 };
 
+// How the nekomimi (cat-ear) LED strip should render the mouth_open signal
+// when led_mouth_sync_enabled is true. Off (= led_mouth_sync_enabled false)
+// is a separate gate, so this enum only covers the active-rendering choices:
+//   Brightness  ‐ scale the strip brightness (current base animation
+//                  intact, base brightness × mouth_open with a floor)
+//   LevelMeter  ‐ overlay a discrete 5-step VU-meter: nekomimi LEDs are
+//                  arranged as a triangle with LED #5 at the apex and LEDs
+//                  #1 / #9 at the base; light pairs (1,9), (2,8), (3,7),
+//                  (4,6) plus the apex (5) as the level rises 0 → 5
+// Default Brightness keeps the historical behaviour.
+enum class LipSyncMode : std::uint8_t {
+    Brightness  = 0,
+    LevelMeter  = 1,
+};
+
 struct DeviceConfig {
     std::string wifi_ssid;
     std::string wifi_password;
@@ -151,6 +166,11 @@ struct DeviceConfig {
     // opt-in to keep the default look conservative. Implemented in
     // main/led_task.cpp: brightness = base + (max - base) * mouth_open.
     bool led_mouth_sync_enabled = false;
+    // Lip-sync rendering style — only consulted when led_mouth_sync_enabled
+    // is true. Brightness (default) preserves the prior behaviour;
+    // LevelMeter switches to a 5-step VU-meter rendering up the cat-ear
+    // triangle (base pair lit first, apex last). See LipSyncMode above.
+    LipSyncMode lip_sync_mode = LipSyncMode::Brightness;
     // Primary operation mode. See OperationMode above. Defaults to
     // Conversation so a fresh install keeps the historical behaviour
     // (the legacy openai_enabled / jtts_idle_enabled toggles also default

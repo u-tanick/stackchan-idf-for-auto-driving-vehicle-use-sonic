@@ -906,9 +906,19 @@
       </div>
       <label class="toggle-label" for="led-mouth-sync" style="margin-top:1rem">
         <input type="checkbox" id="led-mouth-sync">
-        <span>口の動きに合わせて輝度を変化させる</span>
+        <span>口の動きに合わせて LED を制御する</span>
       </label>
-      <p class="hint">アバターの口が開くほど LED が明るくなります (会話再生・jtts 発話・マイク リップシンク いずれの口元アニメーションでも有効)。OFF のときは設定した明るさ で固定。保存後の再起動で反映されます。</p>
+      <p class="hint">アバターの口が開くと LED が反応します (会話再生・jtts 発話・マイク リップシンク いずれの口元アニメーションでも有効)。OFF のときは設定した明るさ で固定。保存後の再起動で反映されます。</p>
+      <label for="lip-sync-mode" style="margin-top:0.5rem">リップシンク モード</label>
+      <p class="hint">
+        ON のときの制御方式を選びます。「輝度」は口が開くほど LED 全体が明るくなる
+        従来動作。「レベル メーター」はネコミミの三角形 (LED1 = 底辺、LED5 = 頂点)
+        を 5 段階のバー グラフとして点灯させます。保存後の再起動で反映されます。
+      </p>
+      <select id="lip-sync-mode">
+        <option value="0">輝度 (Brightness)</option>
+        <option value="1">レベル メーター (LevelMeter)</option>
+      </select>
     </div>
   </section><!-- /tab-panel "device" -->
 
@@ -1054,6 +1064,10 @@ const CHR_AUTH_PASSWORD = 'e3f0a028-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // Forces a specific output codec selection at next boot, overriding the
 // boot-time Module Audio probe when set to Internal / ModuleAudio.
 const CHR_AUDIO_OUTPUT = 'e3f0a029-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+// LipSyncMode — encrypted 1-byte enum (0=Brightness, 1=LevelMeter).
+// Selects how main/led_task renders mouth_open when led_mouth_sync_enabled
+// is on. Staged via Apply path (reboot required).
+const CHR_LIP_SYNC_MODE = 'e3f0a02a-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // AvatarBytecode — encrypted RW. Chunked upload of the avatar face .avbc
 // (mirrors `POST /api/avatar-dsl` on the HTTP side). READ returns a status
 // JSON; WRITE accepts a 1-byte op header followed by op-specific payload:
@@ -1119,7 +1133,7 @@ const DIS_CHRS = {
 
 // --- State ---
 let bleDevice = null, bleServer = null, svc = null;
-let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJttsIdleEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrBatGauge = null, chrServoEnabled = null, chrMcpToken = null, chrLtConfig = null, chrServoLimits = null, chrServoRangeMode = null, chrServoPositions = null, chrBoardKind = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null, chrAudioMetrics = null, chrLedState = null, chrMicLipGain = null, chrLedMouthSync = null, chrOperationMode = null, chrAudioOutput = null, chrBargeIn = null, chrDeviceName = null, chrAuthPassword = null, chrAvatarBc = null;
+let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJttsIdleEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrBatGauge = null, chrServoEnabled = null, chrMcpToken = null, chrLtConfig = null, chrServoLimits = null, chrServoRangeMode = null, chrServoPositions = null, chrBoardKind = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null, chrAudioMetrics = null, chrLedState = null, chrMicLipGain = null, chrLedMouthSync = null, chrLipSyncMode = null, chrOperationMode = null, chrAudioOutput = null, chrBargeIn = null, chrDeviceName = null, chrAuthPassword = null, chrAvatarBc = null;
 let boardKind = null; // null = unknown (older firmware), else 0/1/2 from BOARD_*
 let batteryPollTimer = null;  // setInterval handle while connected
 let jttsInitialJson = '';  // last read JSON, used to detect Apply-time changes
@@ -2244,6 +2258,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
       ['ledState',  CHR_LED_STATE],
       ['micLipGain', CHR_MIC_LIP_GAIN],
       ['ledMouthSync', CHR_LED_MOUTH_SYNC],
+      ['lipSyncMode',  CHR_LIP_SYNC_MODE],
       ['operationMode', CHR_OPERATION_MODE],
       ['audioOutput',   CHR_AUDIO_OUTPUT],
       ['bargeIn',       CHR_BARGE_IN_ENABLED],
@@ -2295,6 +2310,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
     chrLedState = found.ledState ?? null;
     chrMicLipGain = found.micLipGain ?? null;
     chrLedMouthSync = found.ledMouthSync ?? null;
+    chrLipSyncMode = found.lipSyncMode ?? null;
     chrOperationMode = found.operationMode ?? null;
     chrAudioOutput = found.audioOutput ?? null;
     chrBargeIn = found.bargeIn ?? null;
@@ -2393,6 +2409,21 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
         log(`LED 口の動きと連動: ${enabled ? '有効' : '無効'}`);
       } catch (e) {
         log(`LED 連動 状態の取得失敗: ${e.message}`, 'err');
+      }
+    }
+
+    if (chrLipSyncMode) {
+      try {
+        const lsmBytes = await readEncrypted(chrLipSyncMode);
+        if (lsmBytes.length > 0) {
+          const m = String(lsmBytes[0]);
+          document.getElementById('lip-sync-mode').value = m;
+          document.getElementById('lip-sync-mode').dataset.initial = m;
+          const labels = {'0':'輝度','1':'レベル メーター'};
+          log(`リップシンク モード: ${labels[m] || `mode ${m}`}`);
+        }
+      } catch (e) {
+        log(`リップシンク モード 状態の取得失敗: ${e.message}`, 'err');
       }
     }
 
@@ -2645,7 +2676,7 @@ function onDisconnected() {
   micLipLoaded = false;
   svRangeOn = false;
   svLiveYaw = svLivePitch = -1;
-  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJttsIdleEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrXiaozhiUrl = chrXiaozhiToken = chrFaceConfig = chrBattery = chrBatGauge = chrServoEnabled = chrMcpToken = chrLtConfig = chrServoLimits = chrServoRangeMode = chrServoPositions = chrBoardKind = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = chrAudioMetrics = chrLedState = chrMicLipGain = chrLedMouthSync = chrOperationMode = chrAudioOutput = chrBargeIn = chrAvatarBc = null;
+  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJttsIdleEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrXiaozhiUrl = chrXiaozhiToken = chrFaceConfig = chrBattery = chrBatGauge = chrServoEnabled = chrMcpToken = chrLtConfig = chrServoLimits = chrServoRangeMode = chrServoPositions = chrBoardKind = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = chrAudioMetrics = chrLedState = chrMicLipGain = chrLedMouthSync = chrLipSyncMode = chrOperationMode = chrAudioOutput = chrBargeIn = chrAvatarBc = null;
   if (typeof refreshAvbcButton === 'function') refreshAvbcButton();
   boardKind = null;
   aesKey = null;
@@ -2654,6 +2685,7 @@ function onDisconnected() {
   delete document.getElementById('rtp-enabled').dataset.initial;
   delete document.getElementById('jtts-idle-enabled').dataset.initial;
   delete document.getElementById('led-mouth-sync').dataset.initial;
+  delete document.getElementById('lip-sync-mode').dataset.initial;
   delete document.getElementById('operation-mode').dataset.initial;
   delete document.getElementById('audio-output').dataset.initial;
   delete document.getElementById('barge-in-enabled').dataset.initial;
@@ -2768,6 +2800,16 @@ document.getElementById('btn-apply').addEventListener('click', async () => {
     if (chrLedMouthSync && lmsInitial !== undefined && lmsInitial !== lmsWanted) {
       await writeEncrypted(chrLedMouthSync, new Uint8Array([lmsCheckbox.checked ? 1 : 0]));
       log(`LED 口の動き連動を ${lmsCheckbox.checked ? '有効' : '無効'} に切り替え`, 'ok');
+    }
+
+    // Lip-sync mode: only push if it changed AND chr is present.
+    const lsmSel = document.getElementById('lip-sync-mode');
+    const lsmInitial = lsmSel.dataset.initial;
+    if (chrLipSyncMode && lsmInitial !== undefined && lsmInitial !== lsmSel.value) {
+      const v = Number(lsmSel.value);
+      await writeEncrypted(chrLipSyncMode, new Uint8Array([v]));
+      const labels = {0:'輝度',1:'レベル メーター'};
+      log(`リップシンク モードを ${labels[v] || `mode ${v}`} に切り替え`, 'ok');
     }
 
     // Operation mode: only push if it changed AND chr is present.

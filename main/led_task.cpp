@@ -28,6 +28,25 @@ constexpr std::uint8_t kModeSolid = 1;
 constexpr std::uint8_t kModeBreath = 2;
 constexpr std::uint8_t kModeGradient = 3;
 
+// LipSyncMode (must match config_service::LipSyncMode u8 wire values).
+constexpr std::uint8_t kLipBrightness = 0;
+constexpr std::uint8_t kLipLevelMeter = 1;
+
+// Nekomimi geometry: 9 LEDs per ear, left = indices 0..8, right = 9..17.
+// User-facing 1-indexed LED numbers: 1 (base) … 5 (apex) … 9 (base). In
+// 0-indexed C arrays that's apex = 4, base pair = (0, 8). The 5 level-meter
+// steps light additional pairs from the base toward the apex:
+//   level 1: (0, 8)
+//   level 2: + (1, 7)
+//   level 3: + (2, 6)
+//   level 4: + (3, 5)
+//   level 5: + (4)        — apex (single LED, no symmetric partner)
+// 0..1 mouth_open is bucketed into 0..5 with thresholds at 0.1, 0.3, 0.5,
+// 0.7, 0.9 — slight asymmetric breakpoints so silence-floor noise doesn't
+// flicker the first pair on, and a saturated mouth lights all 5 levels.
+constexpr float kLevelThresholds[5] = {0.10f, 0.30f, 0.50f, 0.70f, 0.90f};
+constexpr std::size_t kLedsPerEar = 9;
+
 // Map a hue in [0, 1) → 24-bit RGB. Standard piecewise sextant HSV with S=V=1.
 // Used by the gradient mode.
 void hsv_to_rgb(float h, std::uint8_t& r, std::uint8_t& g, std::uint8_t& b) noexcept
@@ -83,23 +102,62 @@ void led_task_entry(void* arg)
         const std::uint8_t cg = static_cast<std::uint8_t>((color >>  8) & 0xFF);
         const std::uint8_t cb = static_cast<std::uint8_t>( color        & 0xFF);
 
-        // When the user opts into mouth-driven brightness, scale the strip
-        // brightness with the avatar's current mouth opening so the user's
-        // configured brightness acts as the *ceiling* (loudest peak → exactly
-        // `base_bright`) rather than as the floor. A small floor keeps the
-        // ears visibly lit during silence so the strip doesn't turn off
-        // entirely between phrases. All mouth_open writers (mic lip-sync,
-        // jtts babble, conversation playback) feed through the same atomic.
-        // Off → use base_bright unchanged.
+        // When the user opts into mouth-driven LED behaviour there are two
+        // renderers depending on `lip_sync_mode`:
+        //   Brightness (default, legacy): scale the base animation's overall
+        //     brightness by mouth_open, with a floor so the strip never
+        //     fully extinguishes between phrases. The user-set base_bright
+        //     becomes the ceiling.
+        //   LevelMeter: short-circuit the base animation entirely and draw
+        //     a 5-step VU-meter up the ear triangle. base_bright × led_color
+        //     paints the lit pairs; un-lit pairs are dark.
+        // All mouth_open writers (mic lip-sync, jtts babble, conversation
+        // playback) feed through the same atomic.
+        const bool mouth_sync = state.led_mouth_sync_enabled.load(std::memory_order_relaxed);
+        const std::uint8_t lip_mode = state.lip_sync_mode.load(std::memory_order_relaxed);
+        const bool level_meter_active = mouth_sync && lip_mode == kLipLevelMeter;
+
         constexpr float kMouthFloor = 0.25f;
         std::uint8_t bright = base_bright;
-        if (state.led_mouth_sync_enabled.load(std::memory_order_relaxed)) {
-            float m = state.mouth_open.load(std::memory_order_relaxed);
-            if (m < 0.0f) m = 0.0f;
-            if (m > 1.0f) m = 1.0f;
-            const float scaled = static_cast<float>(base_bright) *
-                                 (kMouthFloor + (1.0f - kMouthFloor) * m);
-            bright = static_cast<std::uint8_t>(scaled < 0 ? 0 : (scaled > 255 ? 255 : scaled));
+        float mouth = 0.0f;
+        if (mouth_sync) {
+            mouth = state.mouth_open.load(std::memory_order_relaxed);
+            if (mouth < 0.0f) mouth = 0.0f;
+            if (mouth > 1.0f) mouth = 1.0f;
+            if (lip_mode == kLipBrightness) {
+                const float scaled = static_cast<float>(base_bright) *
+                                     (kMouthFloor + (1.0f - kMouthFloor) * mouth);
+                bright = static_cast<std::uint8_t>(scaled < 0 ? 0 : (scaled > 255 ? 255 : scaled));
+            }
+        }
+
+        // Level-meter renderer short-circuits the base animation: the meter
+        // visually replaces the strip's overall colour pattern, so honouring
+        // mode/breath/gradient on top would look noisy. Use the user-set
+        // colour (or white when none) at full base_bright on lit pairs.
+        if (level_meter_active) {
+            std::size_t level = 0;
+            for (std::size_t k = 0; k < 5; ++k) {
+                if (mouth >= kLevelThresholds[k]) level = k + 1;
+            }
+            const std::uint8_t lit_r = scale8(cr, base_bright);
+            const std::uint8_t lit_g = scale8(cg, base_bright);
+            const std::uint8_t lit_b = scale8(cb, base_bright);
+            strip.clear();
+            for (std::size_t k = 1; k <= level; ++k) {
+                const std::size_t a = k - 1;          // 0..4 (base toward apex)
+                const std::size_t b = kLedsPerEar - k; // 8..4 (mirrored)
+                // Left ear (0..8) + right ear (9..17) symmetrically.
+                strip.set(a,                   lit_r, lit_g, lit_b);
+                strip.set(kLedsPerEar + a,     lit_r, lit_g, lit_b);
+                if (b != a) {
+                    strip.set(b,                   lit_r, lit_g, lit_b);
+                    strip.set(kLedsPerEar + b,     lit_r, lit_g, lit_b);
+                }
+            }
+            (void)strip.show();
+            vTaskDelayUntil(&last_wake, kPeriodTicks);
+            continue;
         }
 
         const float t = now_ms() / 1000.0f;

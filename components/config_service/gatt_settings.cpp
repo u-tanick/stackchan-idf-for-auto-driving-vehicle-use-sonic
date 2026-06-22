@@ -304,6 +304,12 @@ static const ble_uuid128_t kBargeInEnabledUuid = BLE_UUID128_INIT(
 static const ble_uuid128_t kAudioOutputUuid = BLE_UUID128_INIT(
     0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
     0x2a, 0x4d, 0x1c, 0x7b, 0x29, 0xa0, 0xf0, 0xe3);
+// LipSyncMode — encrypted 1-byte enum (0=Brightness, 1=LevelMeter).
+// Selects the nekomimi LED renderer used while led_mouth_sync_enabled is
+// true. Staged + applied on the next boot.
+static const ble_uuid128_t kLipSyncModeUuid = BLE_UUID128_INIT(
+    0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
+    0x2a, 0x4d, 0x1c, 0x7b, 0x2a, 0xa0, 0xf0, 0xe3);
 // DeviceName — encrypted R/W UTF-8 string (up to 24 bytes). Operator-set
 // override for the BLE advertising name AND the mDNS hostname seed (after
 // RFC-1123 sanitization). Empty means "use auto-generated Stackchan-XXXXXX".
@@ -340,6 +346,7 @@ struct StagingBuffer {
     std::optional<Provider> provider;
     std::optional<OperationMode> operation_mode;
     std::optional<AudioOutput> audio_output;
+    std::optional<LipSyncMode> lip_sync_mode;
     std::optional<bool> barge_in_enabled;
     std::optional<std::string> device_name;
     std::optional<std::string> auth_password;
@@ -384,6 +391,7 @@ static MicLipGainSink g_mic_lip_gain_sink = nullptr;
 static uint16_t g_led_mouth_sync_handle = 0;
 static uint16_t g_operation_mode_handle = 0;
 static uint16_t g_audio_output_handle = 0;
+static uint16_t g_lip_sync_mode_handle = 0;
 static uint16_t g_barge_in_enabled_handle = 0;
 static uint16_t g_device_name_handle = 0;
 static uint16_t g_auth_password_handle = 0;
@@ -640,6 +648,17 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
                 return BLE_ATT_ERR_UNLIKELY;
             }
             const std::uint8_t byte = g_active.led_mouth_sync_enabled ? 1 : 0;
+            const bool ok = append_encrypted(ctxt->om, {&byte, 1});
+            xSemaphoreGive(g_mutex);
+            return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
+        }
+        if (attr_handle == g_lip_sync_mode_handle) {
+            xSemaphoreTake(g_mutex, portMAX_DELAY);
+            if (!g_session.is_established()) {
+                xSemaphoreGive(g_mutex);
+                return BLE_ATT_ERR_UNLIKELY;
+            }
+            const std::uint8_t byte = static_cast<std::uint8_t>(g_active.lip_sync_mode);
             const bool ok = append_encrypted(ctxt->om, {&byte, 1});
             xSemaphoreGive(g_mutex);
             return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
@@ -1107,6 +1126,16 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             xSemaphoreGive(g_mutex);
             return 0;
         }
+        if (attr_handle == g_lip_sync_mode_handle) {
+            if (pt.size() != 1) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            if (pt[0] > static_cast<std::uint8_t>(LipSyncMode::LevelMeter)) {
+                return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            }
+            xSemaphoreTake(g_mutex, portMAX_DELAY);
+            g_staging.lip_sync_mode = static_cast<LipSyncMode>(pt[0]);
+            xSemaphoreGive(g_mutex);
+            return 0;
+        }
         if (attr_handle == g_operation_mode_handle) {
             if (pt.size() != 1) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
             if (pt[0] > static_cast<std::uint8_t>(OperationMode::Conversation)) {
@@ -1428,6 +1457,7 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             if (g_staging.led_mouth_sync_enabled) merged.led_mouth_sync_enabled = *g_staging.led_mouth_sync_enabled;
             if (g_staging.operation_mode) merged.operation_mode = *g_staging.operation_mode;
             if (g_staging.audio_output) merged.audio_output = *g_staging.audio_output;
+            if (g_staging.lip_sync_mode) merged.lip_sync_mode = *g_staging.lip_sync_mode;
             if (g_staging.barge_in_enabled) merged.barge_in_enabled = *g_staging.barge_in_enabled;
             if (g_staging.device_name) merged.device_name = *g_staging.device_name;
             if (g_staging.auth_password) merged.auth_password = *g_staging.auth_password;
@@ -1621,6 +1651,14 @@ static ble_gatt_chr_def kChrs[] = {
         // W = stage new value for Apply (reboot).
         .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
         .val_handle = &g_audio_output_handle,
+    },
+    {
+        .uuid = &kLipSyncModeUuid.u,
+        .access_cb = gatt_access_cb,
+        // R = current lip_sync_mode byte (0=Brightness, 1=LevelMeter);
+        // W = stage new value for Apply (reboot).
+        .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+        .val_handle = &g_lip_sync_mode_handle,
     },
     {
         .uuid = &kBargeInEnabledUuid.u,
