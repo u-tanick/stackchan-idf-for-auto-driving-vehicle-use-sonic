@@ -1,5 +1,10 @@
 dependencies:
   espressif/esp_audio_codec: "^2.5.0"
+  # esp-dsp: FFT for the mic lip-sync band-energy estimator
+  # (main/mic_lip_sync_task.cpp). 256-point radix-2 float FFT at 16 kHz
+  # runs in ~150 µs on the ESP32-S3 HiFi SIMD path so fits the 16 ms
+  # chunk budget.
+  espressif/esp-dsp: "^1.5.0"
   # GC0308 DVP camera + QR decoder for the connpass-QR feature. Both are
   # gated on the CONFIG_STACKCHAN_CAMERA_ENABLED Kconfig knob (see
   # components/board/Kconfig) so the atoms3r profile, which has no GC0308,
