@@ -3,6 +3,7 @@
 
 #include "led_task.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 
@@ -104,13 +105,16 @@ void led_task_entry(void* arg)
 
         // When the user opts into mouth-driven LED behaviour there are two
         // renderers depending on `lip_sync_mode`:
-        //   Brightness (default, legacy): scale the base animation's overall
+        //   Brightness (default): scale the base animation's overall
         //     brightness by mouth_open, with a floor so the strip never
         //     fully extinguishes between phrases. The user-set base_bright
         //     becomes the ceiling.
-        //   LevelMeter: short-circuit the base animation entirely and draw
-        //     a 5-step VU-meter up the ear triangle. base_bright × led_color
-        //     paints the lit pairs; un-lit pairs are dark.
+        //   LevelMeter: render the base animation (color from mode = solid /
+        //     breath / gradient) normally, then mask off LED pairs above
+        //     the current mouth_open level. The base colour pattern is
+        //     preserved — only the lit/unlit set changes with the audio
+        //     level. mouth_open does NOT additionally scale brightness in
+        //     this mode (the meter visualises the level instead).
         // All mouth_open writers (mic lip-sync, jtts babble, conversation
         // playback) feed through the same atomic.
         const bool mouth_sync = state.led_mouth_sync_enabled.load(std::memory_order_relaxed);
@@ -129,35 +133,6 @@ void led_task_entry(void* arg)
                                      (kMouthFloor + (1.0f - kMouthFloor) * mouth);
                 bright = static_cast<std::uint8_t>(scaled < 0 ? 0 : (scaled > 255 ? 255 : scaled));
             }
-        }
-
-        // Level-meter renderer short-circuits the base animation: the meter
-        // visually replaces the strip's overall colour pattern, so honouring
-        // mode/breath/gradient on top would look noisy. Use the user-set
-        // colour (or white when none) at full base_bright on lit pairs.
-        if (level_meter_active) {
-            std::size_t level = 0;
-            for (std::size_t k = 0; k < 5; ++k) {
-                if (mouth >= kLevelThresholds[k]) level = k + 1;
-            }
-            const std::uint8_t lit_r = scale8(cr, base_bright);
-            const std::uint8_t lit_g = scale8(cg, base_bright);
-            const std::uint8_t lit_b = scale8(cb, base_bright);
-            strip.clear();
-            for (std::size_t k = 1; k <= level; ++k) {
-                const std::size_t a = k - 1;          // 0..4 (base toward apex)
-                const std::size_t b = kLedsPerEar - k; // 8..4 (mirrored)
-                // Left ear (0..8) + right ear (9..17) symmetrically.
-                strip.set(a,                   lit_r, lit_g, lit_b);
-                strip.set(kLedsPerEar + a,     lit_r, lit_g, lit_b);
-                if (b != a) {
-                    strip.set(b,                   lit_r, lit_g, lit_b);
-                    strip.set(kLedsPerEar + b,     lit_r, lit_g, lit_b);
-                }
-            }
-            (void)strip.show();
-            vTaskDelayUntil(&last_wake, kPeriodTicks);
-            continue;
         }
 
         const float t = now_ms() / 1000.0f;
@@ -197,6 +172,36 @@ void led_task_entry(void* arg)
         default:
             strip.clear();
             break;
+        }
+
+        // Level-meter mask: after the base animation has painted every LED
+        // (solid colour / breath / gradient), zero out the LED pairs above
+        // the current mouth_open level so only the bottom `level` rows of
+        // the ear triangle stay lit. Hue/animation pattern of those lit
+        // LEDs comes from the base mode untouched — the meter only changes
+        // the lit/unlit set.
+        if (level_meter_active) {
+            std::size_t level = 0;
+            for (std::size_t k = 0; k < 5; ++k) {
+                if (mouth >= kLevelThresholds[k]) level = k + 1;
+            }
+            // Build a 18-bit lit mask. Level k lights the (k-1, 9-k) pair on
+            // each ear; level 5 lights only the apex (single LED at index 4
+            // / 13). Anything outside the mask gets zeroed.
+            std::array<bool, 18> lit{};
+            for (std::size_t k = 1; k <= level; ++k) {
+                const std::size_t a = k - 1;            // 0..4
+                const std::size_t b = kLedsPerEar - k;  // 8..4
+                lit[a] = true;
+                lit[kLedsPerEar + a] = true;
+                if (b != a) {
+                    lit[b] = true;
+                    lit[kLedsPerEar + b] = true;
+                }
+            }
+            for (std::size_t i = 0; i < n && i < lit.size(); ++i) {
+                if (!lit[i]) strip.set(i, 0, 0, 0);
+            }
         }
 
         (void)strip.show();
