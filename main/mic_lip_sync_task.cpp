@@ -61,23 +61,33 @@ std::array<float, kFftSize * 2> g_fft_io{};
 constexpr float kAttack = 0.55f;
 constexpr float kRelease = 0.20f;
 
-// Voice-band log-energy normalisation window, in raw dBFS (relative to
-// i16 full-scale = 32768). Empirically, the CoreS3 internal mic puts a
-// quiet room at ~-58 dBFS and a loud speech peak ~-25 dBFS. Linearly
-// scaling that [-55, -22] range to [0, 1] picks up consonants at the
-// low end without saturating on loud vowels. The user-visible "input
-// gain" slider shifts the dBFS curve up (more sensitive) — equivalent
-// to lowering kFloorDb.
-constexpr float kFloorDb = -55.0f;
-constexpr float kCeilDb  = -22.0f;
+// Voice-band log-energy normalisation window, in band-limited dBFS (the
+// time-domain RMS that would carry the same in-band energy, expressed
+// relative to i16 full-scale). Derived from the old RMS-based bounds
+// (kMinRms=200 / kMaxRms=5000 in i16 units → -44 / -16 dBFS on the same
+// scale) so the calibration starts roughly equivalent to the previous
+// implementation. Tweak after watching the diag log on real audio.
+constexpr float kFloorDb = -44.0f;
+constexpr float kCeilDb  = -16.0f;
 
 // Spectral-flux onset detector contribution. Flux is sum of positive
 // frame-to-frame magnitude deltas in the voice band, normalised so a
 // brisk /t/ /s/ /sh/ onset reaches ~1.0. Mixed via OR (max) with the
 // envelope so quiet-but-fast onsets still pop the mouth open.
-constexpr float kFluxFloor = 0.02f;
-constexpr float kFluxCeil  = 0.20f;
-constexpr float kFluxWeight = 0.7f;
+// Calibrated against actual diag output: idle room shows flux ≈ 1..2,
+// speech onsets reach 5..40 (HVAC + servo + the FFT bin LSB noise floor
+// already drift around 1, so floor=3 cleanly suppresses idle false
+// positives; ceil=25 saturates on a brisk word boundary).
+constexpr float kFluxFloor = 3.0f;
+constexpr float kFluxCeil  = 25.0f;
+constexpr float kFluxWeight = 0.6f;
+
+// Hann window energy correction factor: sum(w[n]²)/N ≈ 0.375. We multiply
+// by 2/(N²·0.375) to recover the equivalent time-domain band-limited
+// power from the FFT bin magnitudes (Parseval + window compensation +
+// factor 2 for the symmetric negative-frequency bins we're not summing).
+constexpr float kEnergyScale = 2.0f /
+    (static_cast<float>(kFftSize) * static_cast<float>(kFftSize) * 0.375f);
 
 bool g_fft_ready = false;
 
@@ -146,21 +156,37 @@ float estimate_mouth_open(const std::int16_t* buf, std::size_t n, float gain)
     }
     g_prev_mag = mag;
 
-    // Convert sum of squared magnitudes → dBFS-ish. Add a tiny epsilon to
-    // avoid -inf at perfect silence.
-    const float band_energy = std::sqrt(band_sumsq) + 1e-9f;
-    const float db = 20.0f * std::log10(band_energy);
+    // Convert FFT band sum-of-squares → band-limited time-domain RMS via
+    // Parseval (with Hann-window energy correction). 20*log10 puts it on
+    // a dBFS scale comparable to the legacy kMinRms / kMaxRms thresholds.
+    const float band_rms = std::sqrt(band_sumsq * kEnergyScale) + 1e-9f;
+    const float db = 20.0f * std::log10(band_rms);
     float env = (db - kFloorDb) / (kCeilDb - kFloorDb);
     if (env < 0.0f) env = 0.0f;
     if (env > 1.0f) env = 1.0f;
 
-    // 6. Flux normalisation + OR mix.
+    // 6. Flux normalisation + OR mix. Flux is in the same magnitude units
+    // as `mag[k]` (post-Hann FFT bin), not dBFS — keep its thresholds in
+    // that domain.
     float flux_n = (flux - kFluxFloor) / (kFluxCeil - kFluxFloor);
     if (flux_n < 0.0f) flux_n = 0.0f;
     if (flux_n > 1.0f) flux_n = 1.0f;
     float combined = env;
     const float flux_contrib = kFluxWeight * flux_n;
     if (flux_contrib > combined) combined = flux_contrib;
+
+    // Diagnostic: log raw band-RMS / dBFS / flux every ~1 s so we can
+    // re-tune kFloorDb / kCeilDb / kFluxCeil to the actual dynamic range
+    // observed on this mic + room combo. Throttled by a static counter to
+    // keep the log readable; remove or gate behind a Kconfig once the
+    // calibration is dialled in.
+    static int log_counter = 0;
+    if (++log_counter >= 30) {  // ~30 * 16ms ≈ 0.5 s
+        log_counter = 0;
+        ESP_LOGI(kTag,
+                 "diag: band_rms=%.5f db=%.1f env=%.2f flux_raw=%.4f flux_n=%.2f combined=%.2f gain=%.2f",
+                 band_rms, db, env, flux, flux_n, combined, gain);
+    }
     return combined;
 }
 
