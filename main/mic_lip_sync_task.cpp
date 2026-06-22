@@ -227,13 +227,14 @@ float estimate_mouth_open(const std::int16_t* buf, std::size_t n, float gain, bo
 
     // Diagnostic: log raw band-RMS / dBFS / flux every ~1 s so we can
     // re-tune kFloorDb / kCeilDb / kFluxCeil to the actual dynamic range
-    // observed on this mic + room combo. Throttled by a static counter to
-    // keep the log readable; remove or gate behind a Kconfig once the
-    // calibration is dialled in.
+    // observed on this mic + room combo. ESP_LOGD so release builds
+    // (CONFIG_LOG_DEFAULT_LEVEL=INFO) stay quiet; bump the per-tag log
+    // level to DEBUG via `esp_log_level_set("mic-lip", ESP_LOG_DEBUG)`
+    // or menuconfig when re-tuning.
     static int log_counter = 0;
     if (++log_counter >= 30) {  // ~30 * 16ms ≈ 0.5 s
         log_counter = 0;
-        ESP_LOGI(kTag,
+        ESP_LOGD(kTag,
                  "diag: db=%.1f floor=%.1f env=%.2f flux_raw=%.2f flux_n=%.2f combined=%.2f gain=%.2f agc=%d",
                  db, g_noise_floor_db, env, flux, flux_n, combined, gain,
                  agc_enabled ? 1 : 0);

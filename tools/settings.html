@@ -373,6 +373,20 @@
      it. Surfaced by ensureAuthenticated() when the device has an auth
      password set; replaces window.prompt() which is plaintext + invisible
      to password managers. -->
+<!-- Generic error popup. Surfaced for BLE connect failures (and any
+     other catch-block hit-points that the user shouldn't have to scroll
+     the log panel to discover). The log entry is still written for
+     post-mortem; this just makes the immediate failure unmissable. -->
+<div id="error-modal-backdrop" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1001;align-items:center;justify-content:center">
+  <div style="background:white;padding:1.5rem;border-radius:8px;min-width:300px;max-width:90vw;box-shadow:0 4px 24px rgba(0,0,0,0.3)">
+    <h2 id="error-modal-title" style="margin:0 0 0.5rem 0;font-size:1.1rem;color:#c62828">エラー</h2>
+    <p id="error-modal-body" style="margin:0 0 1rem 0;white-space:pre-wrap;word-break:break-word"></p>
+    <div style="display:flex;justify-content:flex-end">
+      <button type="button" id="error-modal-ok"
+              style="background:#2563eb;color:white;border:none;padding:0.5rem 1rem;border-radius:4px;cursor:pointer;font-weight:600">OK</button>
+    </div>
+  </div>
+</div>
 <div id="auth-modal-backdrop" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center">
   <!-- method="dialog" makes the form a no-op submitter (no navigation,
        no GET), but Chrome / Edge / Safari password managers still see a
@@ -1306,6 +1320,29 @@ async function setupSession(saltBytes = new Uint8Array(0)) {
 // password field has autocomplete="current-password" + a hidden
 // username field so browser password managers can save / fill the
 // credential per origin.
+// Show a blocking error popup. Returns a Promise that resolves when the
+// user dismisses it. Always writes a matching log('err') so the post-
+// mortem trace is still in the log panel.
+function showErrorPopup(message, title) {
+  log(message, 'err');
+  return new Promise((resolve) => {
+    const backdrop = document.getElementById('error-modal-backdrop');
+    const titleEl  = document.getElementById('error-modal-title');
+    const bodyEl   = document.getElementById('error-modal-body');
+    const okEl     = document.getElementById('error-modal-ok');
+    titleEl.textContent = title || 'エラー';
+    bodyEl.textContent  = message;
+    backdrop.style.display = 'flex';
+    setTimeout(() => okEl.focus(), 0);
+    const onOk = () => {
+      backdrop.style.display = 'none';
+      okEl.removeEventListener('click', onOk);
+      resolve();
+    };
+    okEl.addEventListener('click', onOk);
+  });
+}
+
 // Try the Credential Management API first — explicit, doesn't rely on
 // browser form heuristics. Returns the stored password or null when no
 // credential is saved / API unsupported. mediation:'optional' means the
@@ -2811,11 +2848,13 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
     setBleUi(true);
     updateSvCaptureUi();
   } catch (e) {
-    log(`接続失敗: ${e.message}`, 'err');
     setBleUi(false);
     document.getElementById('ble-dot').className = 'dot';
     document.getElementById('ble-label').textContent = '未接続';
     document.getElementById('btn-connect').disabled = false;
+    // Surface as a modal so the user doesn't have to scroll the log
+    // panel — fires await so the prompt blocks until dismissed.
+    await showErrorPopup(`接続失敗: ${e.message}`, 'BLE 接続エラー');
   }
 });
 
