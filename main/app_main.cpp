@@ -504,6 +504,44 @@ void demo_loop(const std::string& jtts_config_json, bool has_battery, bool is_at
                     g_state->barge_in_request.store(true, std::memory_order_relaxed);
                 }
             }
+
+            // StopWatch: while the user keeps a finger pressed in the
+            // outer ring of the 466×466 round panel, bias the avatar's
+            // gaze toward the touch point — the eyes follow the finger
+            // as it slides around the rim. Center / device-UI region
+            // taps are unaffected. saccade keeps running in parallel
+            // (the VM sums saccade + gaze_target), so the eyes wander
+            // naturally around the commanded direction rather than
+            // locking dead-stop. Released → reset to (0, 0) and the
+            // saccade-only behaviour resumes.
+            if (g_board != nullptr && g_board->kind() == stackchan::board::BoardKind::StopWatch) {
+                constexpr float kCenter = 233.0f;          // 466 / 2
+                constexpr float kOuterR = 233.0f;          // panel edge
+                constexpr float kInnerR = 180.0f;          // ring inner edge
+                constexpr float kGazeGain = 3.0f;          // DSL multiplier
+                                                            // is *3 → 9 px peak
+                bool follow_active = false;
+                if (td.isPressed() && !app::ui::active()) {
+                    const float dx = static_cast<float>(td.x) - kCenter;
+                    const float dy = static_cast<float>(td.y) - kCenter;
+                    const float r  = std::sqrt(dx * dx + dy * dy);
+                    if (r >= kInnerR && r <= kOuterR) {
+                        // Normalise direction onto the unit circle, then
+                        // amplify by kGazeGain so the offset is visible
+                        // through the VM's gaze * 3 multiplier.
+                        const float inv = 1.0f / r;
+                        g_state->gaze_target_h.store(dx * inv * kGazeGain,
+                                                     std::memory_order_relaxed);
+                        g_state->gaze_target_v.store(dy * inv * kGazeGain,
+                                                     std::memory_order_relaxed);
+                        follow_active = true;
+                    }
+                }
+                if (!follow_active) {
+                    g_state->gaze_target_h.store(0.0f, std::memory_order_relaxed);
+                    g_state->gaze_target_v.store(0.0f, std::memory_order_relaxed);
+                }
+            }
         }
 
         const bool conv_active = g_state->conversation_active.load(std::memory_order_relaxed);

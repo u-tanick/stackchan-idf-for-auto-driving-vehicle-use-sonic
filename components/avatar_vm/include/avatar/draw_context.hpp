@@ -15,8 +15,16 @@ namespace stackchan::avatar {
 struct DrawContext {
     Expression expression{Expression::Neutral};
     float breath{0.0f};
+    // External / commanded gaze target — written by Avatar::set_gaze (e.g.
+    // touch-follow, future API gesture). Saccade is added on top so the
+    // eyes still wander while pointing roughly at the target.
     float gaze_horizontal{0.0f};
     float gaze_vertical{0.0f};
+    // Animator-driven saccade offset, summed with the target above by
+    // Var::GazeH / Var::GazeV in the VM. Updated by FaceAnimator::
+    // saccade_tick; kept zero when saccade is disabled.
+    float gaze_saccade_h{0.0f};
+    float gaze_saccade_v{0.0f};
     float eye_open_ratio{1.0f};
     float mouth_open_ratio{0.0f};
     Palette palette{kDefaultPalette};

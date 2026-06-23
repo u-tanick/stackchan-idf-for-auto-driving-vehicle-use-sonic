@@ -145,6 +145,15 @@ public:
     // led_mouth_sync_enabled is true. Seeded from cfg.lip_sync_mode at boot;
     // live-writable via BLE/HTTP (no reboot needed).
     std::atomic<std::uint8_t> lip_sync_mode{0};
+    // External gaze target (Avatar::set_gaze inputs). Updated by the
+    // touch-driven gaze-follow path in demo_loop; read by render_task
+    // every frame and forwarded to avatar.set_gaze. Animator-driven
+    // saccade is added on top inside the avatar VM, so a non-zero
+    // target biases the eyes toward (cos θ, sin θ) of the touch
+    // direction while the eyes still wander naturally. Both default
+    // 0 = no commanded gaze, animator runs alone.
+    std::atomic<float> gaze_target_h{0.0f};
+    std::atomic<float> gaze_target_v{0.0f};
 
     // Touch barge-in master switch. Read on every nadenade-detect tick in
     // demo_loop; when false the screen-tap path that sets

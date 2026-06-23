@@ -20,8 +20,12 @@ void FaceAnimator::saccade_tick(std::uint32_t now_ms, DrawContext& ctx)
 {
     XorShift32 rng{ctx.rng_state};
     const float amp = params.gaze_amplitude;
-    ctx.gaze_horizontal = rng.next_range(-amp, amp);
-    ctx.gaze_vertical = rng.next_range(-amp, amp);
+    // Write into the saccade-only channel; the VM sums this with
+    // ctx.gaze_horizontal / gaze_vertical (the external target) so a
+    // commanded gaze (e.g. touch-follow) still has the eyes wandering
+    // a bit around the target rather than locking dead-stop.
+    ctx.gaze_saccade_h = rng.next_range(-amp, amp);
+    ctx.gaze_saccade_v = rng.next_range(-amp, amp);
     const std::uint32_t lo = params.saccade_min_ms;
     const std::uint32_t hi = params.saccade_max_ms >= lo ? params.saccade_max_ms : lo;
     const std::uint32_t delay = rng.next_inclusive(lo, hi);
@@ -62,6 +66,11 @@ void FaceAnimator::tick(std::uint32_t now_ms, DrawContext& ctx)
         if (now_ms >= saccade_next_ms_) {
             saccade_tick(now_ms, ctx);
         }
+    } else {
+        // No saccade contribution — leave only the externally-commanded
+        // gaze target visible.
+        ctx.gaze_saccade_h = 0.0f;
+        ctx.gaze_saccade_v = 0.0f;
     }
     if (params.blink_enabled) {
         if (now_ms >= blink_next_ms_) {

@@ -57,8 +57,12 @@ inline float read_var(Var v, const avatar::Canvas& canvas, const avatar::DrawCon
     case Var::NowMs: return static_cast<float>(ctx.now_ms);
     case Var::Breath: return ctx.breath;
     case Var::EyeOpen: return ctx.eye_open_ratio;
-    case Var::GazeH: return ctx.gaze_horizontal;
-    case Var::GazeV: return ctx.gaze_vertical;
+    // gaze_h / gaze_v in the DSL is the sum of the externally-commanded
+    // target (set via Avatar::set_gaze, e.g. StopWatch touch-follow) and
+    // the animator's saccade offset. This lets the eyes wander around a
+    // commanded target rather than locking dead-stop on it.
+    case Var::GazeH: return ctx.gaze_horizontal + ctx.gaze_saccade_h;
+    case Var::GazeV: return ctx.gaze_vertical + ctx.gaze_saccade_v;
     case Var::MouthOpen: return ctx.mouth_open_ratio;
     case Var::Expr: return expression_to_f(ctx.expression);
     case Var::Primary: return static_cast<float>(ctx.palette.primary);

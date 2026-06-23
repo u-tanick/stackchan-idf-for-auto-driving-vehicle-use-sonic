@@ -173,6 +173,8 @@ void render_task_entry(void* arg)
             last_expression = expr;
         }
         avatar.set_mouth_open(args.state->mouth_open.load(std::memory_order_relaxed));
+        avatar.set_gaze(args.state->gaze_target_h.load(std::memory_order_relaxed),
+                        args.state->gaze_target_v.load(std::memory_order_relaxed));
 
         const std::uint32_t balloon_version = args.state->balloon_version();
         if (balloon_version != last_balloon_version) {
