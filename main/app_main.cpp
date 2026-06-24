@@ -1162,6 +1162,13 @@ extern "C" void app_main()
     // the entire audio session is silently dropped — every subsequent
     // audio_data write sees g_audio_sink == nullptr and bails.
     g_state = new stackchan::app::SharedState{};
+    // Seed the speaker volume atom from NVS. apply_speaker_volume was
+    // already called before g_state existed (the boot arpeggio block,
+    // line ~1093) so M5.Speaker is already at the right level — we just
+    // need the atom mirrored so the BLE / WiFi getters and the
+    // device-UI row read the correct value when the user first opens
+    // a settings page.
+    g_state->speaker_volume_pct.store(cfg.speaker_volume_pct, std::memory_order_relaxed);
     // Seed the avatar face tuning from NVS (empty → built-in default face) and
     // register the live BLE update sink, both before config::start brings the
     // GATT service online so an early client write is applied immediately.
