@@ -61,4 +61,8 @@ void set_avatar_bytecode_sink(AvatarBytecodeSink sink);
 void set_mic_lip_gain_getter(MicLipGainGetter getter);
 void set_mic_lip_gain_sink(MicLipGainSink sink);
 
+// Speaker volume getter/sink (BLE chr 0x2c).
+void set_speaker_volume_getter(SpeakerVolumeGetter getter);
+void set_speaker_volume_sink(SpeakerVolumeSink sink);
+
 } // namespace stackchan::config::gatt

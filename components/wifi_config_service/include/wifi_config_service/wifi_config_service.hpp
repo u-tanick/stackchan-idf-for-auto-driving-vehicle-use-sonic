@@ -59,6 +59,12 @@ void set_led_state_sink(config::LedStateSink sink);
 void set_mic_lip_gain_getter(config::MicLipGainGetter getter);
 void set_mic_lip_gain_sink(config::MicLipGainSink sink);
 
+// Speaker volume getter/sink — `GET/POST /api/speaker-volume`. Same
+// closures are also wired into BLE chr (config_service) so the live
+// value is consistent across transports.
+void set_speaker_volume_getter(config::SpeakerVolumeGetter getter);
+void set_speaker_volume_sink(config::SpeakerVolumeSink sink);
+
 // Record the booted board kind (mirrors board::BoardKind cast to byte) so it
 // surfaces in /api/status under the "board" key. The web UI uses this to
 // hide controls that don't apply to the current hardware. See

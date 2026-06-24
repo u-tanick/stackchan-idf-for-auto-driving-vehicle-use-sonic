@@ -49,6 +49,7 @@ constexpr const char* kKeyAuthPassword  = "auth_pwd";   // BLE handshake salt + 
 constexpr const char* kKeyAudioOutput   = "audio_out";  // u8 AudioOutput (Auto/Internal/ModuleAudio)
 constexpr const char* kKeyLipSyncMode   = "lipsync_md"; // u8 LipSyncMode (Brightness/LevelMeter)
 constexpr const char* kKeyMicLipAgc     = "ml_agc";     // u8 bool mic_lip_agc_enabled
+constexpr const char* kKeySpkVolPct     = "spk_vol_pct";// u16 speaker_volume_pct (0..200)
 
 std::string nvs_read_str(nvs_handle_t h, const char* key)
 {
@@ -222,6 +223,15 @@ DeviceConfig load()
         cfg.mic_lip_agc_enabled = (agc != 0);
     } else if (agc_err != ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGW(kTag, "nvs_get_u8(%s): %s", kKeyMicLipAgc, esp_err_to_name(agc_err));
+    }
+    // speaker_volume_pct: u16 0..200, missing key → 100 (factory default).
+    std::uint16_t spkv = cfg.speaker_volume_pct;
+    esp_err_t spkv_err = nvs_get_u16(h, kKeySpkVolPct, &spkv);
+    if (spkv_err == ESP_OK) {
+        if (spkv > 200) spkv = 200;
+        cfg.speaker_volume_pct = spkv;
+    } else if (spkv_err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(kTag, "nvs_get_u16(%s): %s", kKeySpkVolPct, esp_err_to_name(spkv_err));
     }
     nvs_close(h);
     return cfg;
@@ -401,6 +411,25 @@ tl::expected<void, Error> save_mic_lip_gain(std::uint16_t input_pct,
     nvs_close(h);
     if (err != ESP_OK) {
         ESP_LOGW(kTag, "save_mic_lip_gain: %s", esp_err_to_name(err));
+        return tl::unexpected(Error::NvsWrite);
+    }
+    return {};
+}
+
+tl::expected<void, Error> save_speaker_volume(std::uint16_t pct)
+{
+    if (pct > 200) pct = 200;
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(kNs, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        ESP_LOGE(kTag, "nvs_open(%s): %s", kNs, esp_err_to_name(err));
+        return tl::unexpected(Error::NvsWrite);
+    }
+    err = nvs_set_u16(h, kKeySpkVolPct, pct);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err != ESP_OK) {
+        ESP_LOGW(kTag, "save_speaker_volume: %s", esp_err_to_name(err));
         return tl::unexpected(Error::NvsWrite);
     }
     return {};

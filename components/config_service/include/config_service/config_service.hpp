@@ -160,6 +160,13 @@ struct DeviceConfig {
     // mouth response; users can dial down on noisier boards.
     std::uint16_t mic_lip_input_gain_pct = 200;
     std::uint16_t mic_lip_output_gain_pct = 100;
+    // Speaker output gain (integer percent, 0..200, 100 = factory default
+    // per board). Live-applied without reboot via Speaker.setVolume(); the
+    // sink also persists. 0 = mute. The actual M5Unified setVolume byte
+    // is computed as min(255, board_base_volume * pct / 100) so existing
+    // boards that already ship at 255 (StopWatch / Module Audio) just see
+    // no change at 100% and clip at 255 above that.
+    std::uint16_t speaker_volume_pct = 100;
     // Adaptive noise-floor AGC for the mic lip-sync envelope estimator.
     // When true (default), main/mic_lip_sync_task tracks the ambient
     // noise floor and rebases the mouth_open normalisation window on
@@ -374,6 +381,15 @@ using MicLipGainGetter = MicLipGain (*)();
 using MicLipGainSink = void (*)(const MicLipGain& gain);
 void set_mic_lip_gain_getter(MicLipGainGetter getter);
 void set_mic_lip_gain_sink(MicLipGainSink sink);
+
+// Speaker output volume: live u16 integer percent (0..200). BLE chr +
+// HTTP /api/speaker-volume. READ returns the current live value via
+// getter; WRITE applies through the sink which updates SharedState +
+// M5.Speaker.setVolume() + persists via save_speaker_volume.
+using SpeakerVolumeGetter = std::uint16_t (*)();
+using SpeakerVolumeSink   = void (*)(std::uint16_t pct);
+void set_speaker_volume_getter(SpeakerVolumeGetter getter);
+void set_speaker_volume_sink(SpeakerVolumeSink sink);
 
 // Avatar face bytecode live-apply sink — fires after a complete `.avbc` has
 // arrived over BLE chr 0x21 (op=commit) and has been validated + persisted

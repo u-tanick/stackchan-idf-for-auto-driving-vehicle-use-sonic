@@ -633,6 +633,18 @@
 
   <!-- ===== 音声 ===== -->
   <section class="tab-panel" data-tab="audio">
+    <div id="speaker-volume-section">
+      <h2 class="section-title">スピーカー音量</h2>
+      <p class="hint" style="margin-bottom:0.5rem">
+        内蔵 / Module Audio / Atomic Echo Base すべての出力に効きます。
+        スライダーを動かすと <strong>即時反映</strong> + 自動保存 (再起動不要)。
+        100% = ボード ごとの工場既定値、200% でブースト (内部 master volume
+        を 2 倍にして 255 で飽和)。
+      </p>
+      <label for="speaker-volume">音量 <span id="speaker-volume-value">100</span> %</label>
+      <input type="range" id="speaker-volume" min="0" max="200" step="5" value="100" style="width:100%">
+    </div>
+
     <div id="audio-output-section">
       <h2 class="section-title">音声出力</h2>
       <p class="hint">
@@ -1127,6 +1139,9 @@ const CHR_LIP_SYNC_MODE = 'e3f0a02a-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // MicLipAgcEnabled — encrypted 1-byte flag. When 1, mic lip-sync uses
 // adaptive noise-floor tracking. Staged via Apply path (reboot required).
 const CHR_MIC_LIP_AGC = 'e3f0a02b-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+// SpeakerVolume — encrypted R/W. 2-byte payload [pct LE u16] in 0..200
+// (100 = factory default per board). Live-applied (no reboot).
+const CHR_SPEAKER_VOLUME = 'e3f0a02c-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // AvatarBytecode — encrypted RW. Chunked upload of the avatar face .avbc
 // (mirrors `POST /api/avatar-dsl` on the HTTP side). READ returns a status
 // JSON; WRITE accepts a 1-byte op header followed by op-specific payload:
@@ -1192,7 +1207,7 @@ const DIS_CHRS = {
 
 // --- State ---
 let bleDevice = null, bleServer = null, svc = null;
-let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJttsIdleEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrBatGauge = null, chrServoEnabled = null, chrMcpToken = null, chrLtConfig = null, chrServoLimits = null, chrServoRangeMode = null, chrServoPositions = null, chrBoardKind = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null, chrAudioMetrics = null, chrLedState = null, chrMicLipGain = null, chrLedMouthSync = null, chrLipSyncMode = null, chrMicLipAgc = null, chrOperationMode = null, chrAudioOutput = null, chrBargeIn = null, chrDeviceName = null, chrAuthPassword = null, chrAvatarBc = null;
+let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJttsIdleEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrBatGauge = null, chrServoEnabled = null, chrMcpToken = null, chrLtConfig = null, chrServoLimits = null, chrServoRangeMode = null, chrServoPositions = null, chrBoardKind = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null, chrAudioMetrics = null, chrLedState = null, chrMicLipGain = null, chrLedMouthSync = null, chrLipSyncMode = null, chrMicLipAgc = null, chrSpeakerVolume = null, chrOperationMode = null, chrAudioOutput = null, chrBargeIn = null, chrDeviceName = null, chrAuthPassword = null, chrAvatarBc = null;
 let boardKind = null; // null = unknown (older firmware), else 0/1/2 from BOARD_*
 let batteryPollTimer = null;  // setInterval handle while connected
 let jttsInitialJson = '';  // last read JSON, used to detect Apply-time changes
@@ -2441,6 +2456,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
       ['ledMouthSync', CHR_LED_MOUTH_SYNC],
       ['lipSyncMode',  CHR_LIP_SYNC_MODE],
       ['micLipAgc',    CHR_MIC_LIP_AGC],
+      ['speakerVolume', CHR_SPEAKER_VOLUME],
       ['operationMode', CHR_OPERATION_MODE],
       ['audioOutput',   CHR_AUDIO_OUTPUT],
       ['bargeIn',       CHR_BARGE_IN_ENABLED],
@@ -2494,6 +2510,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
     chrLedMouthSync = found.ledMouthSync ?? null;
     chrLipSyncMode = found.lipSyncMode ?? null;
     chrMicLipAgc = found.micLipAgc ?? null;
+    chrSpeakerVolume = found.speakerVolume ?? null;
     chrOperationMode = found.operationMode ?? null;
     chrAudioOutput = found.audioOutput ?? null;
     chrBargeIn = found.bargeIn ?? null;
@@ -2818,6 +2835,10 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
       await loadMicLipGain();
     }
 
+    if (chrSpeakerVolume) {
+      await loadSpeakerVolume();
+    }
+
     // Subscribe to Status notifications — payloads are encrypted too.
     if (chrStatus) {
       await chrStatus.startNotifications();
@@ -2873,7 +2894,7 @@ function onDisconnected() {
   micLipLoaded = false;
   svRangeOn = false;
   svLiveYaw = svLivePitch = -1;
-  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJttsIdleEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrXiaozhiUrl = chrXiaozhiToken = chrFaceConfig = chrBattery = chrBatGauge = chrServoEnabled = chrMcpToken = chrLtConfig = chrServoLimits = chrServoRangeMode = chrServoPositions = chrBoardKind = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = chrAudioMetrics = chrLedState = chrMicLipGain = chrLedMouthSync = chrLipSyncMode = chrMicLipAgc = chrOperationMode = chrAudioOutput = chrBargeIn = chrAvatarBc = null;
+  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJttsIdleEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrXiaozhiUrl = chrXiaozhiToken = chrFaceConfig = chrBattery = chrBatGauge = chrServoEnabled = chrMcpToken = chrLtConfig = chrServoLimits = chrServoRangeMode = chrServoPositions = chrBoardKind = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = chrAudioMetrics = chrLedState = chrMicLipGain = chrLedMouthSync = chrLipSyncMode = chrMicLipAgc = chrSpeakerVolume = chrOperationMode = chrAudioOutput = chrBargeIn = chrAvatarBc = null;
   if (typeof refreshAvbcButton === 'function') refreshAvbcButton();
   boardKind = null;
   aesKey = null;
@@ -3553,6 +3574,44 @@ function scheduleMicLipWrite() {
   micLipWriteTimer = setTimeout(writeMicLipGain, 150);
 }
 
+// Speaker volume (BLE chr 0x2c). 0..200 percent, debounced live write.
+let speakerVolumeWriteTimer = null;
+let speakerVolumeLoaded = false;
+
+async function loadSpeakerVolume() {
+  if (!chrSpeakerVolume || !aesKey) return;
+  try {
+    const b = await readEncrypted(chrSpeakerVolume);
+    if (b.length < 2) return;
+    const pct = b[0] | (b[1] << 8);
+    speakerVolumeLoaded = false;
+    document.getElementById('speaker-volume').value = String(pct);
+    document.getElementById('speaker-volume-value').textContent = String(pct);
+    speakerVolumeLoaded = true;
+  } catch (e) {
+    log(`スピーカー音量 設定の取得失敗: ${e?.message ?? e}`, 'err');
+  }
+}
+
+async function writeSpeakerVolume() {
+  if (!chrSpeakerVolume || !aesKey) return;
+  let pct = parseInt(document.getElementById('speaker-volume').value, 10) || 0;
+  if (pct < 0) pct = 0;
+  if (pct > 200) pct = 200;
+  const payload = new Uint8Array([pct & 0xff, (pct >> 8) & 0xff]);
+  try {
+    await writeEncrypted(chrSpeakerVolume, payload);
+  } catch (e) {
+    log(`スピーカー音量 設定の書き込み失敗: ${e?.message ?? e}`, 'err');
+  }
+}
+
+function scheduleSpeakerVolumeWrite() {
+  if (!speakerVolumeLoaded) return;
+  clearTimeout(speakerVolumeWriteTimer);
+  speakerVolumeWriteTimer = setTimeout(writeSpeakerVolume, 150);
+}
+
 // ===== Audio pipeline metrics (BLE chr 0x1f) =================================
 //
 // One-shot read of the JSON snapshot left by the conversation task at the end
@@ -3726,6 +3785,12 @@ document.getElementById('mic-lip-input').addEventListener('input', (e) => {
 document.getElementById('mic-lip-output').addEventListener('input', (e) => {
   document.getElementById('mic-lip-output-value').textContent = String(e.target.value);
   scheduleMicLipWrite();
+});
+
+// Speaker volume slider: same debounced-write pattern.
+document.getElementById('speaker-volume').addEventListener('input', (e) => {
+  document.getElementById('speaker-volume-value').textContent = String(e.target.value);
+  scheduleSpeakerVolumeWrite();
 });
 
 // ===== Avatar DSL editor + BLE chr 0x21 chunked transport =====================

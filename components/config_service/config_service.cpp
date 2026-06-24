@@ -411,6 +411,16 @@ void set_mic_lip_gain_sink(MicLipGainSink sink)
     gatt::set_mic_lip_gain_sink(sink);
 }
 
+void set_speaker_volume_getter(SpeakerVolumeGetter getter)
+{
+    gatt::set_speaker_volume_getter(getter);
+}
+
+void set_speaker_volume_sink(SpeakerVolumeSink sink)
+{
+    gatt::set_speaker_volume_sink(sink);
+}
+
 void set_board_kind(std::uint8_t kind)
 {
     gatt::set_board_kind(kind);

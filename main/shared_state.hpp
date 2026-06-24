@@ -130,6 +130,12 @@ public:
     // take effect on the next ~16 ms tick without a reboot.
     std::atomic<std::uint16_t> mic_lip_input_gain_pct{200};
     std::atomic<std::uint16_t> mic_lip_output_gain_pct{100};
+    // User-set speaker output volume (integer percent 0..200, 100 =
+    // factory default per board). Seeded from cfg.speaker_volume_pct at
+    // boot; updated live by the BLE/HTTP/device UI sliders, which also
+    // call M5.Speaker.setVolume() + save_speaker_volume() so the change
+    // takes effect immediately and survives reboot.
+    std::atomic<std::uint16_t> speaker_volume_pct{100};
     // Adaptive noise-floor AGC enable. When true (default),
     // main/mic_lip_sync_task rebases its dB window on the tracked
     // ambient noise level; when false, a fixed floor is used. Live —

@@ -257,6 +257,16 @@ void set_mic_lip_gain_sink(config::MicLipGainSink sink)
     http::set_mic_lip_gain_sink(sink);
 }
 
+void set_speaker_volume_getter(config::SpeakerVolumeGetter getter)
+{
+    http::set_speaker_volume_getter(getter);
+}
+
+void set_speaker_volume_sink(config::SpeakerVolumeSink sink)
+{
+    http::set_speaker_volume_sink(sink);
+}
+
 void set_board_kind(std::uint8_t kind)
 {
     http::set_board_kind(kind);

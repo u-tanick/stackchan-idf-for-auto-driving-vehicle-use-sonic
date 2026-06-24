@@ -40,6 +40,10 @@ void set_led_state_sink(config::LedStateSink sink);
 void set_mic_lip_gain_getter(config::MicLipGainGetter getter);
 void set_mic_lip_gain_sink(config::MicLipGainSink sink);
 
+// Speaker volume getter/sink — see wifi_config_service.hpp.
+void set_speaker_volume_getter(config::SpeakerVolumeGetter getter);
+void set_speaker_volume_sink(config::SpeakerVolumeSink sink);
+
 // Record the booted board kind for /api/status. See wifi_config_service.hpp.
 void set_board_kind(std::uint8_t kind);
 

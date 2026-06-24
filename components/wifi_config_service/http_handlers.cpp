@@ -87,6 +87,8 @@ config::LedStateGetter g_led_state_getter = nullptr;
 config::LedStateSink g_led_state_sink = nullptr;
 config::MicLipGainGetter g_mic_lip_gain_getter = nullptr;
 config::MicLipGainSink g_mic_lip_gain_sink = nullptr;
+config::SpeakerVolumeGetter g_speaker_volume_getter = nullptr;
+config::SpeakerVolumeSink g_speaker_volume_sink = nullptr;
 AvatarBytecodeSink g_avatar_bytecode_sink = nullptr;
 McpSayKanaSink g_mcp_say_sink = nullptr;
 LtConfigSink g_lt_config_sink = nullptr;
@@ -1076,6 +1078,36 @@ esp_err_t handle_mic_lip_gain_post(httpd_req_t* req)
     return handle_mic_lip_gain_get(req);
 }
 
+// --- Speaker volume ---
+
+// GET /api/speaker-volume — current percent (0..200).
+esp_err_t handle_speaker_volume_get(httpd_req_t* req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    std::uint16_t pct = 100;
+    if (g_speaker_volume_getter != nullptr) pct = g_speaker_volume_getter();
+    char buf[40];
+    std::snprintf(buf, sizeof(buf), R"({"pct":%u})", static_cast<unsigned>(pct));
+    return send_json(req, std::string{buf});
+}
+
+// POST /api/speaker-volume — body is plain text integer 0..200.
+esp_err_t handle_speaker_volume_post(httpd_req_t* req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    std::string body;
+    if (read_body_str(req, body, 16) != ESP_OK) return ESP_OK;
+    const int v = std::atoi(body.c_str());
+    if (v < 0 || v > 200) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return send_text(req, "speaker volume out of range (0..200)");
+    }
+    if (g_speaker_volume_sink != nullptr) {
+        g_speaker_volume_sink(static_cast<std::uint16_t>(v));
+    }
+    return send_empty(req);
+}
+
 // --- Static root ---
 
 esp_err_t handle_root_get(httpd_req_t* req)
@@ -1159,6 +1191,8 @@ void register_handlers(httpd_handle_t server, const config::DeviceConfig& curren
     add(server, "/api/led-state",        HTTP_POST, handle_led_state_post);
     add(server, "/api/mic-lip-gain",     HTTP_GET,  handle_mic_lip_gain_get);
     add(server, "/api/mic-lip-gain",     HTTP_POST, handle_mic_lip_gain_post);
+    add(server, "/api/speaker-volume",   HTTP_GET,  handle_speaker_volume_get);
+    add(server, "/api/speaker-volume",   HTTP_POST, handle_speaker_volume_post);
     add(server, "/api/device-name",     HTTP_POST, handle_device_name_post);
     add(server, "/api/auth-password",   HTTP_POST, handle_auth_password_post);
     // Claude Code Channel adapter API (Bearer-gated). Empty
@@ -1251,6 +1285,22 @@ void set_mic_lip_gain_sink(config::MicLipGainSink sink)
     if (g_mutex == nullptr) { g_mic_lip_gain_sink = sink; return; }
     xSemaphoreTake(g_mutex, portMAX_DELAY);
     g_mic_lip_gain_sink = sink;
+    xSemaphoreGive(g_mutex);
+}
+
+void set_speaker_volume_getter(config::SpeakerVolumeGetter getter)
+{
+    if (g_mutex == nullptr) { g_speaker_volume_getter = getter; return; }
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_speaker_volume_getter = getter;
+    xSemaphoreGive(g_mutex);
+}
+
+void set_speaker_volume_sink(config::SpeakerVolumeSink sink)
+{
+    if (g_mutex == nullptr) { g_speaker_volume_sink = sink; return; }
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_speaker_volume_sink = sink;
     xSemaphoreGive(g_mutex);
 }
 

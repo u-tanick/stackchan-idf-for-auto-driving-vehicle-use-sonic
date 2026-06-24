@@ -25,4 +25,9 @@ tl::expected<void, Error> save_led_state(std::uint8_t mode, std::uint32_t color,
 tl::expected<void, Error> save_mic_lip_gain(std::uint16_t input_pct,
                                             std::uint16_t output_pct);
 
+// Persist just the speaker volume percent (0..200). Same single-writer
+// pattern as save_mic_lip_gain — slider updates skip the full save()
+// Apply path so they take effect immediately and survive reboot.
+tl::expected<void, Error> save_speaker_volume(std::uint16_t pct);
+
 } // namespace stackchan::config::store

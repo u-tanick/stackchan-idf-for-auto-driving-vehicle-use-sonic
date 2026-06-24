@@ -436,6 +436,27 @@ void draw_control()
     const bool servo_on = g_state->servo_enabled.load(std::memory_order_relaxed);
     draw_toggle_row(0, "サーボ（脱力/復帰）", servo_on);
     draw_button(1, "姿勢をリセット", g_cv->color565(60, 120, 200));
+
+    // Speaker volume row: 3 hit zones — left third = -10 %, right third =
+    // +10 %, center shows the current value. Live (no reboot) — applied
+    // by demo_loop on the next iteration.
+    const std::uint16_t pct = g_state->speaker_volume_pct.load(std::memory_order_relaxed);
+    int rx, ry, rw, rh;
+    row_rect(2, rx, ry, rw, rh);
+    g_cv->fillRoundRect(rx, ry, rw, rh, 6, g_cv->color565(40, 44, 54));
+    g_cv->setFont(kFontBody);
+    g_cv->setTextDatum(lgfx::textdatum_t::middle_left);
+    g_cv->setTextColor(g_cv->color565(245, 245, 245));
+    g_cv->drawString("音量", rx + 12, ry + rh / 2);
+    // − / + visual hints on the row edges so the user knows they can tap
+    // there to nudge the value.
+    g_cv->setTextDatum(lgfx::textdatum_t::middle_center);
+    g_cv->drawString("−", rx + rw / 6, ry + rh / 2);
+    g_cv->drawString("+", rx + (5 * rw) / 6, ry + rh / 2);
+    // Value in the middle, big enough to read at a glance.
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%u %%", static_cast<unsigned>(pct));
+    g_cv->drawString(buf, rx + rw / 2, ry + rh / 2);
 }
 
 // --- 範囲設定 (servo range-setting) page --------------------------------------
@@ -884,6 +905,25 @@ void handle_tap(int x, int y)
         } else if (hit_row(1)) {
             g_state->target_yaw_deg.store(0.0f, std::memory_order_relaxed);
             g_state->target_pitch_deg.store(0.0f, std::memory_order_relaxed);
+        } else if (hit_row(2)) {
+            // Speaker-volume nudge row: left third = -10 %, right third
+            // = +10 %, center = no-op (avoids accidental tap). Bumps
+            // SharedState; demo_loop watches the atom and pushes the
+            // change through apply_speaker_volume_sink (M5.Speaker
+            // setVolume + NVS).
+            int rx, ry, rw, rh;
+            row_rect(2, rx, ry, rw, rh);
+            std::uint16_t pct = g_state->speaker_volume_pct.load(std::memory_order_relaxed);
+            const int local_x = x - rx;
+            if (local_x < rw / 3) {
+                pct = (pct >= 10) ? (pct - 10) : 0;
+                g_state->speaker_volume_pct.store(pct, std::memory_order_relaxed);
+                g_dirty.store(true, std::memory_order_relaxed);
+            } else if (local_x >= (2 * rw) / 3) {
+                pct = (pct <= 190) ? (pct + 10) : 200;
+                g_state->speaker_volume_pct.store(pct, std::memory_order_relaxed);
+                g_dirty.store(true, std::memory_order_relaxed);
+            }
         }
     } else if (page == kRange) {
         const RangeLayout L = layout_range();

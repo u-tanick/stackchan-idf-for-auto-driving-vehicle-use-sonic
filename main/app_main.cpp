@@ -89,6 +89,28 @@ stackchan::board::Si12tTouch* g_touch = nullptr;
 // StopWatch). Set once after Board::begin() before any task starts.
 stackchan::board::Board* g_board = nullptr;
 
+// Per-board factory speaker volume (the "100 %" reference for the user
+// gain). Captured once at boot; the live-apply sink multiplies by the
+// user's percent and clamps to 255. Default 128 = M5Unified's CoreS3
+// half-scale until the boot path overwrites it.
+std::uint8_t g_speaker_base_volume = 128;
+
+// Live-apply the user's speaker_volume_pct (0..200) to the M5.Speaker
+// master volume and mirror into SharedState. Called from boot and from
+// the BLE / HTTP / device-UI sinks so the effect is immediate. No NVS
+// write here — the caller handles persistence (save_speaker_volume).
+void apply_speaker_volume(std::uint16_t pct) noexcept
+{
+    if (pct > 200) pct = 200;
+    int v = static_cast<int>(g_speaker_base_volume) * static_cast<int>(pct) / 100;
+    if (v > 255) v = 255;
+    if (v < 0) v = 0;
+    M5.Speaker.setVolume(static_cast<std::uint8_t>(v));
+    if (g_state != nullptr) {
+        g_state->speaker_volume_pct.store(pct, std::memory_order_relaxed);
+    }
+}
+
 // Live face-config sink: invoked from the BLE host task on each FaceConfig
 // WRITE. Just stashes the raw JSON in SharedState (cheap, host-task-safe); the
 // render task parses + applies it. config_service guarantees g_state is set
@@ -208,6 +230,19 @@ void apply_mic_lip_gain(const stackchan::config::MicLipGain& g)
     g_state->mic_lip_input_gain_pct.store(in_pct, std::memory_order_relaxed);
     g_state->mic_lip_output_gain_pct.store(out_pct, std::memory_order_relaxed);
     (void)stackchan::config::store::save_mic_lip_gain(in_pct, out_pct);
+}
+
+std::uint16_t read_speaker_volume_pct()
+{
+    if (g_state == nullptr) return 100;
+    return g_state->speaker_volume_pct.load(std::memory_order_relaxed);
+}
+
+void apply_speaker_volume_sink(std::uint16_t pct)
+{
+    if (pct > 200) pct = 200;
+    apply_speaker_volume(pct);  // sets M5.Speaker.setVolume + SharedState
+    (void)stackchan::config::store::save_speaker_volume(pct);
 }
 
 // Render the last-turn audio metrics as JSON for BLE chr 0x1f + HTTP
@@ -382,6 +417,13 @@ void demo_loop(const std::string& jtts_config_json, bool has_battery, bool is_at
     std::uint32_t stroke_active_ms = 0;   // last time any zone was non-zero
     std::uint32_t next_nadenade_ms = 0;   // earliest time we'll trigger again
 
+    // Last-applied speaker volume percent. Watches the SharedState atom
+    // so the device-UI's −/+ nudge buttons re-apply via the same
+    // setVolume + NVS path the BLE / WiFi sinks use. Seeded from the
+    // current atom (set by boot's apply_speaker_volume_sink call).
+    std::uint16_t last_speaker_volume_pct =
+        g_state->speaker_volume_pct.load(std::memory_order_relaxed);
+
     // Set true by the (render-task) completion callback so demo_loop knows
     // the previous balloon finished. Atomics keep it thread-safe.
     static std::atomic<bool> balloon_in_flight{false};
@@ -408,6 +450,18 @@ void demo_loop(const std::string& jtts_config_json, bool has_battery, bool is_at
         M5.update();
 
         const std::uint32_t now_ms = static_cast<std::uint32_t>(esp_timer_get_time() / 1000);
+
+        // Live-apply speaker_volume_pct changes from the device-UI (BLE /
+        // HTTP sinks already apply directly). Cheap atomic compare per
+        // iteration; only triggers M5.Speaker.setVolume + NVS write on
+        // an actual change.
+        {
+            const std::uint16_t cur = g_state->speaker_volume_pct.load(std::memory_order_relaxed);
+            if (cur != last_speaker_volume_pct) {
+                last_speaker_volume_pct = cur;
+                apply_speaker_volume_sink(cur);
+            }
+        }
 
         // IMU shake → cycle to a random expression. Runs before the
         // touch/UI block so a shake during conv idle interrupts the
@@ -1026,11 +1080,17 @@ extern "C" void app_main()
     // jack directly at line level, so we need full digital gain on the
     // ESP side. Otherwise the user has to crank their downstream
     // powered-speaker / headphone amp uncomfortably high.
-    const std::uint8_t spk_volume = (board.kind() == stackchan::board::BoardKind::StopWatch ||
-                                     has_audio_module)
-                                        ? 255
-                                        : 128;
-    M5.Speaker.setVolume(spk_volume);
+    // Per-board factory volume (the "100%" reference for the user gain
+    // slider). StopWatch / Module Audio paths are weaker downstream so
+    // they ship at full digital scale; everything else starts at half.
+    const std::uint8_t spk_base_volume =
+        (board.kind() == stackchan::board::BoardKind::StopWatch || has_audio_module)
+            ? 255
+            : 128;
+    g_speaker_base_volume = spk_base_volume;
+    // Apply the user's gain (cfg already loaded above). 0..200 % → byte
+    // is clamped at 255 so boards already at 255 are unchanged at 100 %.
+    apply_speaker_volume(cfg.speaker_volume_pct);
     for (float freq : {523.25f, 659.25f, 783.99f}) { // C5 – E5 – G5
         M5.Speaker.tone(freq, 150);
         vTaskDelay(pdMS_TO_TICKS(180));
@@ -1148,6 +1208,8 @@ extern "C" void app_main()
     stackchan::config::set_led_state_sink(&apply_led_patch);
     stackchan::config::set_mic_lip_gain_getter(&read_mic_lip_gain);
     stackchan::config::set_mic_lip_gain_sink(&apply_mic_lip_gain);
+    stackchan::config::set_speaker_volume_getter(&read_speaker_volume_pct);
+    stackchan::config::set_speaker_volume_sink(&apply_speaker_volume_sink);
     // Tell the settings services which board we're on so the web UIs can hide
     // sections that don't apply (e.g. servo config on Atom-nyan). Must happen
     // before config::start / wifi_config setup so the first central read sees
@@ -1180,6 +1242,8 @@ extern "C" void app_main()
     stackchan::wifi_config::set_led_state_sink(&apply_led_patch);
     stackchan::wifi_config::set_mic_lip_gain_getter(&read_mic_lip_gain);
     stackchan::wifi_config::set_mic_lip_gain_sink(&apply_mic_lip_gain);
+    stackchan::wifi_config::set_speaker_volume_getter(&read_speaker_volume_pct);
+    stackchan::wifi_config::set_speaker_volume_sink(&apply_speaker_volume_sink);
     stackchan::wifi_config::set_board_kind(static_cast<std::uint8_t>(board.kind()));
     // (Channel /mcp/events bring-up happens AFTER start_conversation_task so
     //  the conv-task gets first dibs on contiguous internal RAM for its 3 ×

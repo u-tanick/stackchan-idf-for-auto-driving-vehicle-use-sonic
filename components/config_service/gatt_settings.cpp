@@ -317,6 +317,11 @@ static const ble_uuid128_t kLipSyncModeUuid = BLE_UUID128_INIT(
 static const ble_uuid128_t kMicLipAgcUuid = BLE_UUID128_INIT(
     0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
     0x2a, 0x4d, 0x1c, 0x7b, 0x2b, 0xa0, 0xf0, 0xe3);
+// SpeakerVolume — encrypted R/W. 2-byte payload [pct LE u16] (0..200,
+// 100 = factory default). Live-applied via sink (no reboot).
+static const ble_uuid128_t kSpeakerVolumeUuid = BLE_UUID128_INIT(
+    0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
+    0x2a, 0x4d, 0x1c, 0x7b, 0x2c, 0xa0, 0xf0, 0xe3);
 // DeviceName — encrypted R/W UTF-8 string (up to 24 bytes). Operator-set
 // override for the BLE advertising name AND the mDNS hostname seed (after
 // RFC-1123 sanitization). Empty means "use auto-generated Stackchan-XXXXXX".
@@ -394,6 +399,9 @@ static uint16_t g_led_state_handle = 0;
 static LedStateGetter g_led_state_getter = nullptr;
 static LedStateSink g_led_state_sink = nullptr;
 static uint16_t g_mic_lip_gain_handle = 0;
+static uint16_t g_speaker_volume_handle = 0;
+static SpeakerVolumeGetter g_speaker_volume_getter = nullptr;
+static SpeakerVolumeSink   g_speaker_volume_sink   = nullptr;
 static MicLipGainGetter g_mic_lip_gain_getter = nullptr;
 static MicLipGainSink g_mic_lip_gain_sink = nullptr;
 static uint16_t g_led_mouth_sync_handle = 0;
@@ -895,6 +903,23 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             xSemaphoreGive(g_mutex);
             return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
         }
+        if (attr_handle == g_speaker_volume_handle) {
+            std::uint16_t pct = 100;
+            SpeakerVolumeGetter getter = g_speaker_volume_getter;
+            if (getter != nullptr) pct = getter();
+            xSemaphoreTake(g_mutex, portMAX_DELAY);
+            if (!g_session.is_established()) {
+                xSemaphoreGive(g_mutex);
+                return BLE_ATT_ERR_UNLIKELY;
+            }
+            // 2-byte payload [pct LE u16].
+            const std::array<std::uint8_t, 2> payload{
+                static_cast<std::uint8_t>(pct & 0xff),
+                static_cast<std::uint8_t>((pct >> 8) & 0xff)};
+            const bool ok = append_encrypted(ctxt->om, {payload.data(), payload.size()});
+            xSemaphoreGive(g_mutex);
+            return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
+        }
         if (attr_handle == g_avatar_bc_handle) {
             xSemaphoreTake(g_mutex, portMAX_DELAY);
             if (!g_session.is_established()) {
@@ -1360,6 +1385,17 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             if (sink != nullptr) sink(g);
             return 0;
         }
+        if (attr_handle == g_speaker_volume_handle) {
+            // 2-byte payload [pct LE u16] (0..200). Sink applies live +
+            // persists via save_speaker_volume.
+            if (pt.size() != 2) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            std::uint16_t pct = static_cast<std::uint16_t>(pt[0]) |
+                                (static_cast<std::uint16_t>(pt[1]) << 8);
+            if (pct > 200) pct = 200;
+            SpeakerVolumeSink sink = g_speaker_volume_sink;
+            if (sink != nullptr) sink(pct);
+            return 0;
+        }
         if (attr_handle == g_avatar_bc_handle) {
             // Avatar bytecode chunked upload. Wire framing: [op:u8][...].
             if (pt.empty()) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
@@ -1658,6 +1694,13 @@ static ble_gatt_chr_def kChrs[] = {
         // R = [input_pct LE u16][output_pct LE u16]; W = same. Live apply.
         .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
         .val_handle = &g_mic_lip_gain_handle,
+    },
+    {
+        .uuid = &kSpeakerVolumeUuid.u,
+        .access_cb = gatt_access_cb,
+        // R / W = [pct LE u16] in 0..200 (100 = factory default). Live apply.
+        .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+        .val_handle = &g_speaker_volume_handle,
     },
     {
         .uuid = &kLedMouthSyncUuid.u,
@@ -1994,6 +2037,16 @@ void set_mic_lip_gain_getter(MicLipGainGetter getter)
 void set_mic_lip_gain_sink(MicLipGainSink sink)
 {
     g_mic_lip_gain_sink = sink;
+}
+
+void set_speaker_volume_getter(SpeakerVolumeGetter getter)
+{
+    g_speaker_volume_getter = getter;
+}
+
+void set_speaker_volume_sink(SpeakerVolumeSink sink)
+{
+    g_speaker_volume_sink = sink;
 }
 
 void set_board_kind(std::uint8_t kind)

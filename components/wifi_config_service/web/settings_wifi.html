@@ -468,6 +468,17 @@
 
   <!-- ===== 音声 ===== -->
   <section class="tab-panel" data-tab="audio">
+    <div id="speaker-volume-section">
+      <h2 class="section-title">スピーカー音量</h2>
+      <p class="hint" style="margin-bottom:0.5rem">
+        内蔵 / Module Audio / Atomic Echo Base すべての出力に効きます。
+        スライダーを動かすと <strong>即時反映</strong> + 自動保存 (再起動不要)。
+        100% = ボード ごとの工場既定値、200% でブースト。
+      </p>
+      <label for="speaker-volume">音量 <span id="speaker-volume-value">100</span> %</label>
+      <input type="range" id="speaker-volume" min="0" max="200" step="5" value="100" style="width:100%">
+    </div>
+
     <div id="audio-output-section">
       <h2 class="section-title">音声出力</h2>
       <p class="hint" style="margin-bottom:0.5rem">
@@ -1589,6 +1600,55 @@ $('mic-lip-output').addEventListener('input', (e) => {
 });
 
 loadMicLipGain();
+
+// ===== Speaker volume =======================================================
+// One slider 0..200 %. Same debounced live-write pattern.
+let speakerVolumeWriteTimer = null;
+let speakerVolumeLoaded = false;
+
+async function loadSpeakerVolume() {
+  try {
+    const r = await fetch('/api/speaker-volume');
+    if (!r.ok) return;
+    const j = await r.json();
+    const pct = (j && Number.isFinite(j.pct)) ? j.pct : 100;
+    speakerVolumeLoaded = false;
+    $('speaker-volume').value = String(pct);
+    $('speaker-volume-value').textContent = String(pct);
+    speakerVolumeLoaded = true;
+  } catch (e) {
+    log(`speaker-volume 読み出し失敗: ${e.message}`, 'err');
+  }
+}
+
+async function writeSpeakerVolume() {
+  let pct = parseInt($('speaker-volume').value, 10);
+  if (!Number.isFinite(pct)) pct = 100;
+  if (pct < 0) pct = 0;
+  if (pct > 200) pct = 200;
+  try {
+    await fetch('/api/speaker-volume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: String(pct),
+    });
+  } catch (e) {
+    log(`speaker-volume 書き込み失敗: ${e.message}`, 'err');
+  }
+}
+
+function scheduleSpeakerVolumeWrite() {
+  if (!speakerVolumeLoaded) return;
+  clearTimeout(speakerVolumeWriteTimer);
+  speakerVolumeWriteTimer = setTimeout(writeSpeakerVolume, 150);
+}
+
+$('speaker-volume').addEventListener('input', (e) => {
+  $('speaker-volume-value').textContent = String(e.target.value);
+  scheduleSpeakerVolumeWrite();
+});
+
+loadSpeakerVolume();
 
 // ===== Tab switching ========================================================
 // Activates a `.tab-panel` by its data-tab name and persists the choice to
