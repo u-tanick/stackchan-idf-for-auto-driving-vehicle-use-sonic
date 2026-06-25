@@ -267,6 +267,11 @@ void set_speaker_volume_sink(config::SpeakerVolumeSink sink)
     http::set_speaker_volume_sink(sink);
 }
 
+void set_jtts_say_kana_sink(config::JttsSayKanaSink sink)
+{
+    http::set_jtts_say_kana_sink(sink);
+}
+
 void set_board_kind(std::uint8_t kind)
 {
     http::set_board_kind(kind);

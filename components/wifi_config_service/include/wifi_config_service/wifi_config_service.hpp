@@ -65,6 +65,10 @@ void set_mic_lip_gain_sink(config::MicLipGainSink sink);
 void set_speaker_volume_getter(config::SpeakerVolumeGetter getter);
 void set_speaker_volume_sink(config::SpeakerVolumeSink sink);
 
+// JTTS test-say sink — `POST /api/jtts-say`. Body is UTF-8 kana text;
+// the same sink is also wired to the BLE jtts-say chr.
+void set_jtts_say_kana_sink(config::JttsSayKanaSink sink);
+
 // Record the booted board kind (mirrors board::BoardKind cast to byte) so it
 // surfaces in /api/status under the "board" key. The web UI uses this to
 // hide controls that don't apply to the current hardware. See

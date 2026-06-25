@@ -391,6 +391,14 @@ using SpeakerVolumeSink   = void (*)(std::uint16_t pct);
 void set_speaker_volume_getter(SpeakerVolumeGetter getter);
 void set_speaker_volume_sink(SpeakerVolumeSink sink);
 
+// JTTS test-speak sink — UTF-8 (kana) bytes get spawned onto a worker
+// task that synthesises + plays through M5.Speaker. Used by the BLE
+// chr 0x2d and HTTP POST /api/jtts-say "speak this" buttons on the
+// settings pages so the user can audition jtts voicing without the
+// full MCP token path /mcp/say requires.
+using JttsSayKanaSink = void (*)(std::string_view kana);
+void set_jtts_say_kana_sink(JttsSayKanaSink sink);
+
 // Avatar face bytecode live-apply sink — fires after a complete `.avbc` has
 // arrived over BLE chr 0x21 (op=commit) and has been validated + persisted
 // to NVS by config_service. len=0 (data=nullptr) means "revert to firmware

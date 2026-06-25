@@ -645,6 +645,17 @@
       <input type="range" id="speaker-volume" min="0" max="200" step="5" value="100" style="width:100%">
     </div>
 
+    <div id="jtts-say-section">
+      <h2 class="section-title">jtts 試し発話</h2>
+      <p class="hint" style="margin-bottom:0.5rem">
+        ひらがな / カタカナで入力して「話す」ボタンを押すと jtts で読み上げます。
+        漢字や英字は変換されないので、フリガナを直接入力してください。
+        音量や音声出力の確認に便利。
+      </p>
+      <input type="text" id="jtts-say-text" maxlength="64" placeholder="（例）こんにちは すたっくちゃん です">
+      <button type="button" id="btn-jtts-say" class="primary" disabled style="margin-top:0.5rem">話す</button>
+    </div>
+
     <div id="audio-output-section">
       <h2 class="section-title">音声出力</h2>
       <p class="hint">
@@ -1142,6 +1153,9 @@ const CHR_MIC_LIP_AGC = 'e3f0a02b-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // SpeakerVolume — encrypted R/W. 2-byte payload [pct LE u16] in 0..200
 // (100 = factory default per board). Live-applied (no reboot).
 const CHR_SPEAKER_VOLUME = 'e3f0a02c-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+// JttsSay — encrypted WRITE-only. UTF-8 kana bytes; the device spawns
+// a worker to synthesise + play through M5.Speaker. Test trigger only.
+const CHR_JTTS_SAY = 'e3f0a02d-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // AvatarBytecode — encrypted RW. Chunked upload of the avatar face .avbc
 // (mirrors `POST /api/avatar-dsl` on the HTTP side). READ returns a status
 // JSON; WRITE accepts a 1-byte op header followed by op-specific payload:
@@ -1207,7 +1221,7 @@ const DIS_CHRS = {
 
 // --- State ---
 let bleDevice = null, bleServer = null, svc = null;
-let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJttsIdleEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrBatGauge = null, chrServoEnabled = null, chrMcpToken = null, chrLtConfig = null, chrServoLimits = null, chrServoRangeMode = null, chrServoPositions = null, chrBoardKind = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null, chrAudioMetrics = null, chrLedState = null, chrMicLipGain = null, chrLedMouthSync = null, chrLipSyncMode = null, chrMicLipAgc = null, chrSpeakerVolume = null, chrOperationMode = null, chrAudioOutput = null, chrBargeIn = null, chrDeviceName = null, chrAuthPassword = null, chrAvatarBc = null;
+let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJttsIdleEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrBatGauge = null, chrServoEnabled = null, chrMcpToken = null, chrLtConfig = null, chrServoLimits = null, chrServoRangeMode = null, chrServoPositions = null, chrBoardKind = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null, chrAudioMetrics = null, chrLedState = null, chrMicLipGain = null, chrLedMouthSync = null, chrLipSyncMode = null, chrMicLipAgc = null, chrSpeakerVolume = null, chrJttsSay = null, chrOperationMode = null, chrAudioOutput = null, chrBargeIn = null, chrDeviceName = null, chrAuthPassword = null, chrAvatarBc = null;
 let boardKind = null; // null = unknown (older firmware), else 0/1/2 from BOARD_*
 let batteryPollTimer = null;  // setInterval handle while connected
 let jttsInitialJson = '';  // last read JSON, used to detect Apply-time changes
@@ -1239,6 +1253,10 @@ function setBleUi(connected) {
   applyBtn.textContent = '保存 & 再起動';
   document.getElementById('btn-disconnect').disabled = !connected;
   document.getElementById('btn-connect').disabled = connected;
+  // Enable the jtts-say test button only while connected AND the chr
+  // is present (older firmware won't expose it).
+  const sayBtn = document.getElementById('btn-jtts-say');
+  if (sayBtn) sayBtn.disabled = !(connected && chrJttsSay);
   // OTA button gating moved to refreshOtaButton() — it now also considers
   // the release dropdown and the connection's actual chr availability.
   if (typeof refreshOtaButton === 'function') refreshOtaButton();
@@ -2457,6 +2475,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
       ['lipSyncMode',  CHR_LIP_SYNC_MODE],
       ['micLipAgc',    CHR_MIC_LIP_AGC],
       ['speakerVolume', CHR_SPEAKER_VOLUME],
+      ['jttsSay',       CHR_JTTS_SAY],
       ['operationMode', CHR_OPERATION_MODE],
       ['audioOutput',   CHR_AUDIO_OUTPUT],
       ['bargeIn',       CHR_BARGE_IN_ENABLED],
@@ -2511,6 +2530,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
     chrLipSyncMode = found.lipSyncMode ?? null;
     chrMicLipAgc = found.micLipAgc ?? null;
     chrSpeakerVolume = found.speakerVolume ?? null;
+    chrJttsSay = found.jttsSay ?? null;
     chrOperationMode = found.operationMode ?? null;
     chrAudioOutput = found.audioOutput ?? null;
     chrBargeIn = found.bargeIn ?? null;
@@ -2894,7 +2914,7 @@ function onDisconnected() {
   micLipLoaded = false;
   svRangeOn = false;
   svLiveYaw = svLivePitch = -1;
-  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJttsIdleEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrXiaozhiUrl = chrXiaozhiToken = chrFaceConfig = chrBattery = chrBatGauge = chrServoEnabled = chrMcpToken = chrLtConfig = chrServoLimits = chrServoRangeMode = chrServoPositions = chrBoardKind = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = chrAudioMetrics = chrLedState = chrMicLipGain = chrLedMouthSync = chrLipSyncMode = chrMicLipAgc = chrSpeakerVolume = chrOperationMode = chrAudioOutput = chrBargeIn = chrAvatarBc = null;
+  chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJttsIdleEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrXiaozhiUrl = chrXiaozhiToken = chrFaceConfig = chrBattery = chrBatGauge = chrServoEnabled = chrMcpToken = chrLtConfig = chrServoLimits = chrServoRangeMode = chrServoPositions = chrBoardKind = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = chrAudioMetrics = chrLedState = chrMicLipGain = chrLedMouthSync = chrLipSyncMode = chrMicLipAgc = chrSpeakerVolume = chrJttsSay = chrOperationMode = chrAudioOutput = chrBargeIn = chrAvatarBc = null;
   if (typeof refreshAvbcButton === 'function') refreshAvbcButton();
   boardKind = null;
   aesKey = null;
@@ -3791,6 +3811,38 @@ document.getElementById('mic-lip-output').addEventListener('input', (e) => {
 document.getElementById('speaker-volume').addEventListener('input', (e) => {
   document.getElementById('speaker-volume-value').textContent = String(e.target.value);
   scheduleSpeakerVolumeWrite();
+});
+
+// JTTS test-speak: encrypt + write the kana text to chr 0x2d. Device
+// spawns a worker that synthesises + plays through M5.Speaker.
+async function sayJtts(text) {
+  if (!chrJttsSay || !aesKey) return;
+  text = text.trim();
+  if (!text) return;
+  // Match the device-side 192-byte cap (encrypted overhead leaves
+  // plenty of margin under the 484 B encrypted-write max).
+  const utf8 = enc.encode(text);
+  if (utf8.length > 192) {
+    log('jtts 試し発話: 192 バイトを超えています', 'err');
+    return;
+  }
+  try {
+    await writeEncrypted(chrJttsSay, utf8);
+    log(`jtts 試し発話: 「${text}」`, 'ok');
+  } catch (e) {
+    log(`jtts 試し発話 失敗: ${e?.message ?? e}`, 'err');
+  }
+}
+
+document.getElementById('btn-jtts-say').addEventListener('click', () => {
+  const text = document.getElementById('jtts-say-text').value;
+  sayJtts(text);
+});
+document.getElementById('jtts-say-text').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    sayJtts(e.target.value);
+  }
 });
 
 // ===== Avatar DSL editor + BLE chr 0x21 chunked transport =====================

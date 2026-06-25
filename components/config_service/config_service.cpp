@@ -421,6 +421,11 @@ void set_speaker_volume_sink(SpeakerVolumeSink sink)
     gatt::set_speaker_volume_sink(sink);
 }
 
+void set_jtts_say_kana_sink(JttsSayKanaSink sink)
+{
+    gatt::set_jtts_say_kana_sink(sink);
+}
+
 void set_board_kind(std::uint8_t kind)
 {
     gatt::set_board_kind(kind);

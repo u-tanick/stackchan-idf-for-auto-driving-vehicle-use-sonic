@@ -65,4 +65,7 @@ void set_mic_lip_gain_sink(MicLipGainSink sink);
 void set_speaker_volume_getter(SpeakerVolumeGetter getter);
 void set_speaker_volume_sink(SpeakerVolumeSink sink);
 
+// JTTS test-say sink (BLE chr 0x2d).
+void set_jtts_say_kana_sink(JttsSayKanaSink sink);
+
 } // namespace stackchan::config::gatt

@@ -245,6 +245,60 @@ void apply_speaker_volume_sink(std::uint16_t pct)
     (void)stackchan::config::store::save_speaker_volume(pct);
 }
 
+// Spawn a PSRAM-stack worker that synthesises `kana_utf8` via jtts and
+// pushes it through M5.Speaker.playRaw. Shared by /mcp/say (external MCP
+// gate) and the settings-page test-speak buttons (BLE chr + /api/jtts-say,
+// HTTP-auth gate). Returns immediately; the heap-owned string is freed
+// either by the worker or on task-create failure here.
+void start_say_worker(std::string_view kana_utf8)
+{
+    auto* owned = new std::string{kana_utf8};
+    // 12 KiB stack in PSRAM. See the long rationale on the original
+    // /mcp/say wiring (steady-state internal-RAM largest is ~10 KiB after
+    // conversation_task TLS, so an internal-RAM 12 KiB stack alloc would
+    // silently fail). The worker only touches PSRAM-friendly surfaces
+    // (jtts buffers, PCM vector, M5.Speaker.playRaw enqueue).
+    constexpr UBaseType_t kCaps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    const BaseType_t rc = xTaskCreatePinnedToCoreWithCaps(
+        +[](void* arg) {
+            std::unique_ptr<std::string> kana_text{static_cast<std::string*>(arg)};
+            std::u32string kana = stackchan::app::decode_utf8(*kana_text);
+            if (kana.empty()) {
+                ESP_LOGW(kTag, "say: empty / invalid utf8");
+                vTaskDeleteWithCaps(nullptr);
+                return;
+            }
+            constexpr std::uint32_t kRate = 16000;
+            stackchan::jtts::Options opt;
+            opt.voice = stackchan::jtts::Voice::Female;
+            opt.sample_rate_hz = kRate;
+            std::vector<std::int16_t> pcm;
+            if (auto r = stackchan::jtts::synthesize(kana, pcm, opt); !r) {
+                ESP_LOGW(kTag, "say synth fail: %s",
+                         stackchan::jtts::to_string(r.error()));
+                vTaskDeleteWithCaps(nullptr);
+                return;
+            }
+            if (pcm.empty()) {
+                vTaskDeleteWithCaps(nullptr);
+                return;
+            }
+            while (M5.Speaker.isPlaying()) vTaskDelay(pdMS_TO_TICKS(20));
+            M5.Speaker.playRaw(pcm.data(), pcm.size(), kRate, /*stereo=*/false);
+            while (M5.Speaker.isPlaying()) vTaskDelay(pdMS_TO_TICKS(20));
+            stackchan::wifi_config::mcp_events::publish_say_done();
+            vTaskDeleteWithCaps(nullptr);
+        },
+        // Pin to CPU 0 — CPU 1 hosts speaker/mic/render/servo and a
+        // 12 KiB stack alloc here starves render (observed 2026-06-07).
+        "say_worker", 12 * 1024, owned, tskIDLE_PRIORITY + 2, nullptr, 0, kCaps);
+    if (rc != pdPASS) {
+        ESP_LOGE(kTag, "say worker task create FAILED (PSRAM largest=%u)",
+                 static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
+        delete owned;
+    }
+}
+
 // Render the last-turn audio metrics as JSON for BLE chr 0x1f + HTTP
 // `GET /api/metrics/audio`. Same getter is wired to both transports so
 // clients see the same payload regardless of how they connect. Returns
@@ -1339,71 +1393,13 @@ extern "C" void app_main()
     });
 
     stackchan::wifi_config::set_mcp_say_kana_sink(
-        [](std::string_view kana_utf8) {
-            // Heap-copy the bytes — `kana_utf8` is owned by the HTTP request
-            // and won't survive the handler return. The task frees it.
-            auto* owned = new std::string{kana_utf8};
-            // 12 KiB stack in PSRAM (not internal RAM): steady-state internal-
-            // RAM largest is ~10 KiB after conversation_task brings up TLS, so
-            // an internal-RAM 12 KiB stack alloc silently fails (the firmware
-            // returns {"ok":true} but the worker is never scheduled, and the
-            // owned string leaks). The worker only touches PSRAM-friendly
-            // surfaces — jtts working buffers, PCM vector, M5.Speaker
-            // playRaw enqueue — none of which disable cache, so PSRAM stack
-            // is safe; vTaskDeleteWithCaps frees the stack at self-delete.
-            constexpr UBaseType_t kCaps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
-            const BaseType_t rc = xTaskCreatePinnedToCoreWithCaps(
-                +[](void* arg) {
-                    std::unique_ptr<std::string> kana_text{static_cast<std::string*>(arg)};
-                    std::u32string kana = stackchan::app::decode_utf8(*kana_text);
-                    if (kana.empty()) {
-                        ESP_LOGW(kTag, "/mcp/say: empty / invalid utf8");
-                        vTaskDeleteWithCaps(nullptr);
-                        return;
-                    }
-                    constexpr std::uint32_t kRate = 16000;
-                    stackchan::jtts::Options opt;
-                    opt.voice = stackchan::jtts::Voice::Female;
-                    opt.sample_rate_hz = kRate;
-                    std::vector<std::int16_t> pcm;
-                    if (auto r = stackchan::jtts::synthesize(kana, pcm, opt); !r) {
-                        ESP_LOGW(kTag, "/mcp/say synth fail: %s",
-                                 stackchan::jtts::to_string(r.error()));
-                        vTaskDeleteWithCaps(nullptr);
-                        return;
-                    }
-                    if (pcm.empty()) {
-                        vTaskDeleteWithCaps(nullptr);
-                        return;
-                    }
-                    // Wait for any in-flight audio to finish so we don't
-                    // splice mid-utterance. playRaw queues internally so it
-                    // returns quickly, but we still wait here on the worker
-                    // to avoid two /mcp/say calls clobbering each other.
-                    while (M5.Speaker.isPlaying()) vTaskDelay(pdMS_TO_TICKS(20));
-                    M5.Speaker.playRaw(pcm.data(), pcm.size(), kRate, /*stereo=*/false);
-                    // Wait for the speaker queue to drain so the say_done event
-                    // matches the audible completion point (Claude can chain
-                    // "wait until done, then ...").
-                    while (M5.Speaker.isPlaying()) vTaskDelay(pdMS_TO_TICKS(20));
-                    stackchan::wifi_config::mcp_events::publish_say_done();
-                    vTaskDeleteWithCaps(nullptr);
-                },
-                // Pin to CPU 0 (not 1). CPU 1 hosts speaker/mic (prio 6),
-                // render (5), servo (4) — adding a 12 KiB PSRAM-stack worker
-                // there starves render long enough that touch taps get lost
-                // and IDLE1 trips task_wdt (observed 2026-06-07). CPU 0 has
-                // httpd + NimBLE event tasks but much more headroom.
-                "mcp_say", 12 * 1024, owned, tskIDLE_PRIORITY + 2, nullptr, 0, kCaps);
-            if (rc != pdPASS) {
-                // Without this log the firmware silently swallows the request
-                // (handler already returned 200 OK to the adapter). Surface
-                // the failure mode + the PSRAM headroom to diagnose later.
-                ESP_LOGE(kTag, "/mcp/say worker task create FAILED (PSRAM largest=%u)",
-                         static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
-                delete owned;
-            }
-        });
+        [](std::string_view kana_utf8) { start_say_worker(kana_utf8); });
+    // Settings-page "speak this" test buttons — same body as /mcp/say
+    // but gated by the page's existing auth (BLE session crypto or
+    // HTTP Basic) instead of the MCP token, so the owner can test
+    // jtts without setting up MCP.
+    stackchan::config::set_jtts_say_kana_sink(&start_say_worker);
+    stackchan::wifi_config::set_jtts_say_kana_sink(&start_say_worker);
 
     // Wi-Fi live audio (RTP/L16 today). Like the BLE sink, mutually exclusive
     // with the conversation backend, so it self-disables when voice chat is on.

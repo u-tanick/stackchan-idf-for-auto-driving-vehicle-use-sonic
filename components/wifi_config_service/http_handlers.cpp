@@ -89,6 +89,7 @@ config::MicLipGainGetter g_mic_lip_gain_getter = nullptr;
 config::MicLipGainSink g_mic_lip_gain_sink = nullptr;
 config::SpeakerVolumeGetter g_speaker_volume_getter = nullptr;
 config::SpeakerVolumeSink g_speaker_volume_sink = nullptr;
+config::JttsSayKanaSink g_jtts_say_sink = nullptr;
 AvatarBytecodeSink g_avatar_bytecode_sink = nullptr;
 McpSayKanaSink g_mcp_say_sink = nullptr;
 LtConfigSink g_lt_config_sink = nullptr;
@@ -1108,6 +1109,27 @@ esp_err_t handle_speaker_volume_post(httpd_req_t* req)
     return send_empty(req);
 }
 
+// POST /api/jtts-say — body is plain UTF-8 (kana) text. Test the
+// jtts voice from the settings page. Same auth as the other /api/*
+// endpoints (HTTP Basic via require_auth), so no MCP token needed —
+// distinct from /mcp/say which is for external automation.
+esp_err_t handle_jtts_say_post(httpd_req_t* req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    constexpr std::size_t kMaxJttsBytes = 192;
+    std::string body;
+    if (read_body_str(req, body, kMaxJttsBytes) != ESP_OK) return ESP_OK;
+    if (body.empty()) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return send_text(req, "empty body");
+    }
+    if (g_jtts_say_sink == nullptr) {
+        return send_error(req, "503 Service Unavailable", "jtts sink not registered");
+    }
+    g_jtts_say_sink(body);
+    return send_empty(req);
+}
+
 // --- Static root ---
 
 esp_err_t handle_root_get(httpd_req_t* req)
@@ -1193,6 +1215,7 @@ void register_handlers(httpd_handle_t server, const config::DeviceConfig& curren
     add(server, "/api/mic-lip-gain",     HTTP_POST, handle_mic_lip_gain_post);
     add(server, "/api/speaker-volume",   HTTP_GET,  handle_speaker_volume_get);
     add(server, "/api/speaker-volume",   HTTP_POST, handle_speaker_volume_post);
+    add(server, "/api/jtts-say",         HTTP_POST, handle_jtts_say_post);
     add(server, "/api/device-name",     HTTP_POST, handle_device_name_post);
     add(server, "/api/auth-password",   HTTP_POST, handle_auth_password_post);
     // Claude Code Channel adapter API (Bearer-gated). Empty
@@ -1301,6 +1324,14 @@ void set_speaker_volume_sink(config::SpeakerVolumeSink sink)
     if (g_mutex == nullptr) { g_speaker_volume_sink = sink; return; }
     xSemaphoreTake(g_mutex, portMAX_DELAY);
     g_speaker_volume_sink = sink;
+    xSemaphoreGive(g_mutex);
+}
+
+void set_jtts_say_kana_sink(config::JttsSayKanaSink sink)
+{
+    if (g_mutex == nullptr) { g_jtts_say_sink = sink; return; }
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_jtts_say_sink = sink;
     xSemaphoreGive(g_mutex);
 }
 

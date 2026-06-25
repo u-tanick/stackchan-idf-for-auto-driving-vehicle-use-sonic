@@ -44,6 +44,9 @@ void set_mic_lip_gain_sink(config::MicLipGainSink sink);
 void set_speaker_volume_getter(config::SpeakerVolumeGetter getter);
 void set_speaker_volume_sink(config::SpeakerVolumeSink sink);
 
+// JTTS test-say sink — see wifi_config_service.hpp.
+void set_jtts_say_kana_sink(config::JttsSayKanaSink sink);
+
 // Record the booted board kind for /api/status. See wifi_config_service.hpp.
 void set_board_kind(std::uint8_t kind);
 

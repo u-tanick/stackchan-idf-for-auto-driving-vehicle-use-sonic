@@ -322,6 +322,13 @@ static const ble_uuid128_t kMicLipAgcUuid = BLE_UUID128_INIT(
 static const ble_uuid128_t kSpeakerVolumeUuid = BLE_UUID128_INIT(
     0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
     0x2a, 0x4d, 0x1c, 0x7b, 0x2c, 0xa0, 0xf0, 0xe3);
+// JttsSay — encrypted WRITE-only. UTF-8 (kana) text bytes; sink kicks
+// off a worker task that runs jtts::synthesize + M5.Speaker.playRaw.
+// Used by the settings page "話す" test button so the user can audition
+// the jtts voice without the full MCP token gate /mcp/say requires.
+static const ble_uuid128_t kJttsSayUuid = BLE_UUID128_INIT(
+    0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
+    0x2a, 0x4d, 0x1c, 0x7b, 0x2d, 0xa0, 0xf0, 0xe3);
 // DeviceName — encrypted R/W UTF-8 string (up to 24 bytes). Operator-set
 // override for the BLE advertising name AND the mDNS hostname seed (after
 // RFC-1123 sanitization). Empty means "use auto-generated Stackchan-XXXXXX".
@@ -402,6 +409,8 @@ static uint16_t g_mic_lip_gain_handle = 0;
 static uint16_t g_speaker_volume_handle = 0;
 static SpeakerVolumeGetter g_speaker_volume_getter = nullptr;
 static SpeakerVolumeSink   g_speaker_volume_sink   = nullptr;
+static uint16_t g_jtts_say_handle = 0;
+static JttsSayKanaSink g_jtts_say_sink = nullptr;
 static MicLipGainGetter g_mic_lip_gain_getter = nullptr;
 static MicLipGainSink g_mic_lip_gain_sink = nullptr;
 static uint16_t g_led_mouth_sync_handle = 0;
@@ -1396,6 +1405,20 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             if (sink != nullptr) sink(pct);
             return 0;
         }
+        if (attr_handle == g_jtts_say_handle) {
+            // UTF-8 (kana) bytes. Empty / too-long writes are rejected;
+            // the sink owns the rest (spawns a worker that runs jtts +
+            // M5.Speaker.playRaw). 192 B cap matches the existing
+            // /mcp/say behaviour (kMaxMcpSayBytes).
+            constexpr std::size_t kMaxJttsBytes = 192;
+            if (pt.empty() || pt.size() > kMaxJttsBytes) {
+                return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            }
+            std::string_view kana{reinterpret_cast<const char*>(pt.data()), pt.size()};
+            JttsSayKanaSink sink = g_jtts_say_sink;
+            if (sink != nullptr) sink(kana);
+            return 0;
+        }
         if (attr_handle == g_avatar_bc_handle) {
             // Avatar bytecode chunked upload. Wire framing: [op:u8][...].
             if (pt.empty()) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
@@ -1701,6 +1724,14 @@ static ble_gatt_chr_def kChrs[] = {
         // R / W = [pct LE u16] in 0..200 (100 = factory default). Live apply.
         .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
         .val_handle = &g_speaker_volume_handle,
+    },
+    {
+        .uuid = &kJttsSayUuid.u,
+        .access_cb = gatt_access_cb,
+        // W only — UTF-8 (kana) bytes. Sink spawns the synth+playback
+        // worker. No read (idempotent test trigger).
+        .flags = BLE_GATT_CHR_F_WRITE,
+        .val_handle = &g_jtts_say_handle,
     },
     {
         .uuid = &kLedMouthSyncUuid.u,
@@ -2047,6 +2078,11 @@ void set_speaker_volume_getter(SpeakerVolumeGetter getter)
 void set_speaker_volume_sink(SpeakerVolumeSink sink)
 {
     g_speaker_volume_sink = sink;
+}
+
+void set_jtts_say_kana_sink(JttsSayKanaSink sink)
+{
+    g_jtts_say_sink = sink;
 }
 
 void set_board_kind(std::uint8_t kind)

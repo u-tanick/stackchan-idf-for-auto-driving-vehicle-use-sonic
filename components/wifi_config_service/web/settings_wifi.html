@@ -479,6 +479,17 @@
       <input type="range" id="speaker-volume" min="0" max="200" step="5" value="100" style="width:100%">
     </div>
 
+    <div id="jtts-say-section">
+      <h2 class="section-title">jtts 試し発話</h2>
+      <p class="hint" style="margin-bottom:0.5rem">
+        ひらがな / カタカナで入力して「話す」ボタンを押すと jtts で読み上げます。
+        漢字や英字は変換されないので、フリガナを直接入力してください。
+        音量や音声出力の確認に便利。
+      </p>
+      <input type="text" id="jtts-say-text" maxlength="64" placeholder="（例）こんにちは すたっくちゃん です">
+      <button type="button" id="btn-jtts-say" class="primary" style="margin-top:0.5rem">話す</button>
+    </div>
+
     <div id="audio-output-section">
       <h2 class="section-title">音声出力</h2>
       <p class="hint" style="margin-bottom:0.5rem">
@@ -1649,6 +1660,37 @@ $('speaker-volume').addEventListener('input', (e) => {
 });
 
 loadSpeakerVolume();
+
+// ===== JTTS test-speak =====================================================
+// Plain text POST — body is the kana phrase. The device gates this on
+// the same HTTP Basic Auth as the rest of /api/*, distinct from
+// /mcp/say which needs the MCP token.
+async function sayJtts(text) {
+  text = text.trim();
+  if (!text) return;
+  try {
+    const r = await fetch('/api/jtts-say', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+      body: text,
+    });
+    if (r.ok) {
+      log(`jtts 試し発話: 「${text}」`, 'ok');
+    } else {
+      log(`jtts 試し発話 失敗: HTTP ${r.status}`, 'err');
+    }
+  } catch (e) {
+    log(`jtts 試し発話 失敗: ${e.message}`, 'err');
+  }
+}
+
+$('btn-jtts-say').addEventListener('click', () => sayJtts($('jtts-say-text').value));
+$('jtts-say-text').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    sayJtts(e.target.value);
+  }
+});
 
 // ===== Tab switching ========================================================
 // Activates a `.tab-panel` by its data-tab name and persists the choice to
