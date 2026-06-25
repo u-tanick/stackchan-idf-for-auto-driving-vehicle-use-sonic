@@ -92,7 +92,40 @@ void build_envelope_from_pcm(const std::vector<std::int16_t>& pcm,
     }
 }
 
+// Pull voice / pitch / mora / formant / gain / vibrato out of a JSON
+// blob into a jtts::Options. Missing fields stay at the input defaults
+// (so caller seeds with default_options() / the current preset). Helper
+// shared between Speech::configure and the file-static loader below.
+void apply_options_json(jtts::Options& opt, const cJSON* root)
+{
+    if (root == nullptr) return;
+    apply_voice(opt, cJSON_GetObjectItemCaseSensitive(root, "voice"));
+    apply_number(opt.f0_hz, cJSON_GetObjectItemCaseSensitive(root, "f0_hz"));
+    apply_number(opt.formant_scale, cJSON_GetObjectItemCaseSensitive(root, "formant_scale"));
+    apply_number(opt.mora_ms, cJSON_GetObjectItemCaseSensitive(root, "mora_ms"));
+    apply_number(opt.gain, cJSON_GetObjectItemCaseSensitive(root, "gain"));
+    apply_number(opt.breathiness, cJSON_GetObjectItemCaseSensitive(root, "breathiness"));
+    apply_number(opt.voicing_mul, cJSON_GetObjectItemCaseSensitive(root, "voicing_mul"));
+    apply_number(opt.frication_mul, cJSON_GetObjectItemCaseSensitive(root, "frication_mul"));
+    apply_number(opt.vibrato_rate_hz, cJSON_GetObjectItemCaseSensitive(root, "vibrato_rate_hz"));
+    apply_number(opt.vibrato_cents, cJSON_GetObjectItemCaseSensitive(root, "vibrato_cents"));
+}
+
 } // namespace
+
+jtts::Options resolve_speech_options(const std::string& json, std::uint32_t sample_rate)
+{
+    jtts::Options opt = default_options(sample_rate);
+    if (json.empty()) return opt;
+    cJSON* root = cJSON_Parse(json.c_str());
+    if (root == nullptr) {
+        ESP_LOGW(kTag, "resolve_speech_options: JSON parse failed, using defaults");
+        return opt;
+    }
+    apply_options_json(opt, root);
+    cJSON_Delete(root);
+    return opt;
+}
 
 void Speech::configure(const std::string& json)
 {
@@ -114,16 +147,7 @@ void Speech::configure(const std::string& json)
         return;
     }
 
-    apply_voice(opts_, cJSON_GetObjectItemCaseSensitive(root, "voice"));
-    apply_number(opts_.f0_hz, cJSON_GetObjectItemCaseSensitive(root, "f0_hz"));
-    apply_number(opts_.formant_scale, cJSON_GetObjectItemCaseSensitive(root, "formant_scale"));
-    apply_number(opts_.mora_ms, cJSON_GetObjectItemCaseSensitive(root, "mora_ms"));
-    apply_number(opts_.gain, cJSON_GetObjectItemCaseSensitive(root, "gain"));
-    apply_number(opts_.breathiness, cJSON_GetObjectItemCaseSensitive(root, "breathiness"));
-    apply_number(opts_.voicing_mul, cJSON_GetObjectItemCaseSensitive(root, "voicing_mul"));
-    apply_number(opts_.frication_mul, cJSON_GetObjectItemCaseSensitive(root, "frication_mul"));
-    apply_number(opts_.vibrato_rate_hz, cJSON_GetObjectItemCaseSensitive(root, "vibrato_rate_hz"));
-    apply_number(opts_.vibrato_cents, cJSON_GetObjectItemCaseSensitive(root, "vibrato_cents"));
+    apply_options_json(opts_, root);
 
     // phrases: array whose elements are either
     //   - a string  "こんにちわ"                       (display == reading), or

@@ -12,6 +12,15 @@
 
 namespace stackchan::app {
 
+// Parse the user's jtts config JSON (the same blob Speech::configure
+// expects — defaults to the built-in "female child" preset when the
+// JSON is empty / malformed / missing fields) into a jtts::Options.
+// Exposed so non-babble call sites (e.g. the settings page /api/jtts-say
+// + BLE chr 0x2d test-speak buttons in app_main) use exactly the same
+// voice / pitch / mora / formant settings as the demo_loop babble.
+jtts::Options resolve_speech_options(const std::string& json,
+                                     std::uint32_t sample_rate);
+
 // Synthesises a short "babble" speech-like utterance and plays it through
 // M5.Speaker. While the clip is playing, `current_mouth_open()` returns the
 // instantaneous envelope (peak amplitude) of the audio, which the render

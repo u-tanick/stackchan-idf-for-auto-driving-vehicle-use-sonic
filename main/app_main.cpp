@@ -95,6 +95,15 @@ stackchan::board::Board* g_board = nullptr;
 // half-scale until the boot path overwrites it.
 std::uint8_t g_speaker_base_volume = 128;
 
+// jtts::Options used by start_say_worker (and therefore by both the
+// /api/jtts-say settings test button and BLE chr 0x2d). Populated at
+// boot from cfg.jtts_config_json so the settings page's "話す" button
+// uses the user's chosen voice / pitch / mora / formant rather than the
+// hard-coded female-child preset. Same options the demo_loop babble
+// uses (both go through resolve_speech_options on the same JSON).
+stackchan::jtts::Options g_say_opts{};
+bool g_say_opts_ready = false;
+
 // Live-apply the user's speaker_volume_pct (0..200) to the M5.Speaker
 // master volume and mirror into SharedState. Called from boot and from
 // the BLE / HTTP / device-UI sinks so the effect is immediate. No NVS
@@ -268,10 +277,14 @@ void start_say_worker(std::string_view kana_utf8)
                 vTaskDeleteWithCaps(nullptr);
                 return;
             }
-            constexpr std::uint32_t kRate = 16000;
-            stackchan::jtts::Options opt;
-            opt.voice = stackchan::jtts::Voice::Female;
-            opt.sample_rate_hz = kRate;
+            // Use the user's jtts settings (voice / pitch / mora /
+            // formant / vibrato) cached at boot. Falls back to the
+            // default-options preset when no JSON has been saved yet
+            // (g_say_opts_ready stays false until app_main sets it).
+            stackchan::jtts::Options opt = g_say_opts_ready
+                ? g_say_opts
+                : stackchan::app::resolve_speech_options("", stackchan::app::Speech::kSampleRate);
+            const std::uint32_t rate = opt.sample_rate_hz;
             std::vector<std::int16_t> pcm;
             if (auto r = stackchan::jtts::synthesize(kana, pcm, opt); !r) {
                 ESP_LOGW(kTag, "say synth fail: %s",
@@ -284,7 +297,7 @@ void start_say_worker(std::string_view kana_utf8)
                 return;
             }
             while (M5.Speaker.isPlaying()) vTaskDelay(pdMS_TO_TICKS(20));
-            M5.Speaker.playRaw(pcm.data(), pcm.size(), kRate, /*stereo=*/false);
+            M5.Speaker.playRaw(pcm.data(), pcm.size(), rate, /*stereo=*/false);
             while (M5.Speaker.isPlaying()) vTaskDelay(pdMS_TO_TICKS(20));
             stackchan::wifi_config::mcp_events::publish_say_done();
             vTaskDeleteWithCaps(nullptr);
@@ -985,6 +998,13 @@ extern "C" void app_main()
         }
     }
     static stackchan::config::DeviceConfig cfg = stackchan::config::load();
+
+    // Cache the jtts options used by the settings-page test-speak buttons
+    // (BLE chr 0x2d + /api/jtts-say). Same JSON the demo_loop babble
+    // parses, so the test voice matches the babble voice.
+    g_say_opts = stackchan::app::resolve_speech_options(
+        cfg.jtts_config_json, stackchan::app::Speech::kSampleRate);
+    g_say_opts_ready = true;
 
     // Module Audio (M144, ES8388 codec): probe once at boot. With its
     // jumpers in Config B the codec listens on the M-BUS I2S; the host
