@@ -787,6 +787,29 @@
         ローカルの <code>firmware.bin</code> を選んで「書き込み」を押すと、新ファームを
         別パーティションに書き込んで再起動します。Wi-Fi 経由は BLE より大幅に高速です。
       </p>
+      <details style="margin:0.5rem 0; font-size:0.85rem; color:#444">
+        <summary style="cursor:pointer; color:#06c">最新の release を取得する手順 (iPhone / AP モードでも可)</summary>
+        <ol style="margin:0.5rem 0 0.5rem 1.2rem; padding:0">
+          <li>Safari で
+            <a href="https://ciniml.github.io/stackchan-idf/" target="_blank" rel="noopener">
+              ciniml.github.io/stackchan-idf
+            </a>
+            を開く。<br>
+            <span style="color:#888">(AP モードで Wi-Fi がインターネットに繋がっていなくても、iOS は
+            セルラーへ自動 fallback します。繋がらない場合は一度 Wi-Fi を切ってからやり直してください。)</span>
+          </li>
+          <li>該当ボードの <code>firmware-vX.Y.Z-&lt;board&gt;.zip</code> をダウンロード</li>
+          <li>「ファイル」App で ZIP をタップして展開 → 中の
+            <code>stackchan_idf.bin</code> が OTA ペイロード本体</li>
+          <li>(AP モードの場合) device の AP に Wi-Fi 接続し、このページを再度開く</li>
+          <li>上の「ファイル選択」で <code>stackchan_idf.bin</code> を選び「書き込み」</li>
+        </ol>
+        <p class="hint" style="margin:0.25rem 0 0 0; font-size:0.8rem">
+          ※ <code>firmware-vX.Y.Z-&lt;board&gt;.bin</code> ではなく
+          <code>stackchan_idf.bin</code> の方を選んでください。前者はブートローダ+
+          パーティション+アプリの結合イメージ (USB 初回書き込み用) で OTA には使えません。
+        </p>
+      </details>
       <div class="ota-row">
         <input type="file" id="ota-file" accept=".bin">
         <button id="btn-ota" type="button" disabled>書き込み</button>
