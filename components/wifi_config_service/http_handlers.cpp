@@ -71,6 +71,10 @@ struct StagingBuffer {
 config::DeviceConfig g_active;
 StagingBuffer g_staging;
 bool g_wifi_connected = false;
+// True while SoftAP provisioning is active — bypasses require_auth (physical
+// AP button = implicit trust; iOS captive portals don't reliably carry the
+// Basic auth prompt). Set/cleared from wifi_config::set_provisioning_mode.
+bool g_provisioning_mode = false;
 // Cached battery snapshot served by /api/status. -1 mV / percent → unknown.
 int g_battery_mv = -1;
 int g_battery_ma = 0;
@@ -131,7 +135,12 @@ bool require_auth(httpd_req_t* req)
 {
     xSemaphoreTake(g_mutex, portMAX_DELAY);
     const std::string expected = g_active.auth_password;
+    const bool ap_mode = g_provisioning_mode;
     xSemaphoreGive(g_mutex);
+    // SoftAP provisioning: trust the user — they had to physically tap the
+    // on-device "AP モード" button to get here, and iOS's captive-portal flow
+    // doesn't carry the WWW-Authenticate prompt reliably.
+    if (ap_mode) return true;
     if (expected.empty()) return true;
 
     char hdr[160];
@@ -293,6 +302,7 @@ esp_err_t handle_status_get(httpd_req_t* req)
     xSemaphoreTake(g_mutex, portMAX_DELAY);
     const auto cfg = g_active;
     const bool wifi_ok = g_wifi_connected;
+    const bool prov_mode = g_provisioning_mode;
     const int bat_mv = g_battery_mv;
     const int bat_ma = g_battery_ma;
     const int bat_pct = g_battery_pct;
@@ -313,6 +323,7 @@ esp_err_t handle_status_get(httpd_req_t* req)
     body += "\"idf\":\"" + escape_json(idf_ver) + "\",";
     body += "\"ip\":\"" + escape_json(ip) + "\",";
     body += "\"wifi_connected\":" + std::string(wifi_ok ? "true" : "false") + ",";
+    body += "\"provisioning_mode\":" + std::string(prov_mode ? "true" : "false") + ",";
     body += "\"ssid\":\"" + escape_json(cfg.wifi_ssid) + "\",";
     body += "\"has_password\":" + std::string(cfg.wifi_password.empty() ? "false" : "true") + ",";
     body += "\"has_openai_key\":" + std::string(cfg.openai_api_key.empty() ? "false" : "true") + ",";
@@ -1248,6 +1259,14 @@ void set_wifi_connected(bool connected)
     if (g_mutex == nullptr) return;
     xSemaphoreTake(g_mutex, portMAX_DELAY);
     g_wifi_connected = connected;
+    xSemaphoreGive(g_mutex);
+}
+
+void set_provisioning_mode(bool active)
+{
+    if (g_mutex == nullptr) return;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_provisioning_mode = active;
     xSemaphoreGive(g_mutex);
 }
 

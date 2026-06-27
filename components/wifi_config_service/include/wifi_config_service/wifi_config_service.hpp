@@ -8,6 +8,7 @@
 #include <functional>
 
 #include <config_service/config_service.hpp>
+#include <esp_http_server.h>
 #include <tl/expected.hpp>
 
 namespace stackchan::wifi_config {
@@ -30,6 +31,22 @@ tl::expected<void, Error> start(const config::DeviceConfig& current);
 // Update Wi-Fi connectivity state — used by the /api/status endpoint to
 // reflect the same flags the BLE Status characteristic does. Thread-safe.
 void notify_wifi_connected(bool connected);
+
+// Raw httpd handle. nullptr until the init task has started the server.
+// Used by main's SoftAP captive portal to register a 404 catch-all on the
+// same server (the captive portal must NOT spin its own httpd — only two
+// open sockets, see start_http_server).
+httpd_handle_t handle();
+
+// Mark the HTTP service as serving the on-device SoftAP (provisioning)
+// rather than the home Wi-Fi STA. While set:
+//   - require_auth() is bypassed (physical AP button = implicit trust;
+//     iOS doesn't reliably carry the Basic auth prompt past a captive
+//     portal redirect anyway)
+//   - GET /api/status surfaces `"provisioning_mode": true` so the web UI
+//     can render an explanatory banner.
+// Idempotent. Thread-safe.
+void set_provisioning_mode(bool active);
 
 // Update the battery snapshot (mV / mA / percent) surfaced by /api/status.
 // No-op until the HTTP server has started. Thread-safe.

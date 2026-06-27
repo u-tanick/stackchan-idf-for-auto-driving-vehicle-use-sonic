@@ -12,6 +12,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include "ap_screen.hpp"
 #include "atom_status.hpp"
 #include "avatar/avatar.hpp"
 #include "avatar/canvas.hpp"
@@ -121,6 +122,19 @@ void render_task_entry(void* arg)
 
     for (;;) {
         const std::uint32_t now_ms = static_cast<std::uint32_t>(esp_timer_get_time() / 1000);
+
+        // SoftAP provisioning screen takes precedence over everything else:
+        // it draws straight to the panel (no canvas) because it needs
+        // M5GFX::qrcode(), which the Canvas abstraction doesn't expose. Once
+        // it paints, leaving the canvas untouched is fine — BufferedCanvas
+        // only overwrites the panel on its next end_frame, which we skip
+        // for as long as ap_screen::active() holds.
+        if (ap_screen::active()) {
+            ap_screen::draw(display);
+            ui_was_active = true; // force avatar full-repaint when AP ends
+            vTaskDelay(kPeriodTicks);
+            continue;
+        }
 
         // Either of the two on-device overlays (CoreS3 5-tab settings UI or
         // AtomS3R minimal status screen) takes over the display while shown.

@@ -17,6 +17,10 @@ void register_handlers(httpd_handle_t server, const config::DeviceConfig& curren
 // Update the Wi-Fi-connected flag exposed by /api/status.
 void set_wifi_connected(bool connected);
 
+// Mark the service as serving the on-device SoftAP — bypasses require_auth
+// while set, and surfaces "provisioning_mode" in /api/status.
+void set_provisioning_mode(bool active);
+
 // Update the cached battery snapshot (mV / mA / percent) exposed by /api/status.
 void set_battery(int millivolts, int milliamps, int percent);
 

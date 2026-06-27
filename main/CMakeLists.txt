@@ -29,10 +29,12 @@ set(_main_priv_reqs
 # just skip the per-file SRCS here, which trims out only the main-side glue
 # (~10 KB) on the no-PSRAM build.
 set(_main_srcs
+    "ap_screen.cpp"
     "app_main.cpp"
     "atom_status.cpp"
     "audio_codec.cpp"
     "battery.cpp"
+    "captive_portal.cpp"
     "device_ui.cpp"
     "diag.cpp"
     "face_config.cpp"

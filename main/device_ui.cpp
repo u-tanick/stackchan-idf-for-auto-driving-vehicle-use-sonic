@@ -462,6 +462,17 @@ void draw_control()
     char buf[16];
     std::snprintf(buf, sizeof(buf), "%u %%", static_cast<unsigned>(pct));
     g_cv->drawString(buf, rx + rw / 2, ry + rh / 2);
+
+    // Row 3: AP-mode toggle. Surfaced on Control (= live runtime actions)
+    // rather than Settings because it doesn't stage / require reboot —
+    // wifi_enable_ap_mode brings the SoftAP up immediately so iOS users
+    // can join and configure Wi-Fi via http://192.168.4.1/. The label
+    // reflects the live state so the same row dismisses it.
+    const bool ap_on = wifi_ap_active();
+    draw_button(3,
+                ap_on ? "AP モード（停止）" : "AP モード（Wi-Fi 再設定）",
+                ap_on ? g_cv->color565(200, 90, 60)
+                       : g_cv->color565(60, 120, 200));
 }
 
 // --- 範囲設定 (servo range-setting) page --------------------------------------
@@ -935,6 +946,16 @@ void handle_tap(int x, int y)
                 pct = (pct <= 190) ? (pct + 10) : 200;
                 g_state->speaker_volume_pct.store(pct, std::memory_order_relaxed);
                 g_dirty.store(true, std::memory_order_relaxed);
+            }
+        } else if (hit_row(3)) {
+            // AP-mode toggle. The enable path also starts mDNS / the http
+            // settings server (idempotently) and brings up the captive
+            // portal so iOS users joining the AP land on the settings
+            // page directly. Disable returns the driver to STA-only.
+            if (wifi_ap_active()) {
+                wifi_disable_ap_mode();
+            } else {
+                wifi_enable_ap_mode();
             }
         }
     } else if (page == kRange) {

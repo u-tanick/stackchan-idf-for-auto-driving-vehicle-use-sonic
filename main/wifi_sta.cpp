@@ -4,10 +4,12 @@
 #include "wifi_sta.hpp"
 
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 
 #include <esp_event.h>
 #include <esp_log.h>
+#include <esp_mac.h>
 #include <esp_netif.h>
 #include <esp_netif_sntp.h>
 #include <esp_wifi.h>
@@ -19,6 +21,8 @@
 #include <config_service/config_service.hpp>
 #include <wifi_config_service/wifi_config_service.hpp>
 
+#include "captive_portal.hpp"
+
 namespace stackchan::app {
 
 namespace {
@@ -26,6 +30,13 @@ namespace {
 constexpr const char* kTag = "wifi-sta";
 
 std::atomic<bool> g_connected{false};
+std::atomic<bool> g_ap_active{false};
+// Cached AP credentials so wifi_ap_info() can serve the on-device QR screen
+// without re-querying the driver. Derived from ESP_MAC_WIFI_STA.
+char g_ap_ssid[33] = {0};
+char g_ap_pw[33]   = {0};
+char g_ap_ip[16]   = "192.168.4.1";
+esp_netif_t* g_ap_netif = nullptr;
 // Snapshot of the config used at boot — held so the HTTP settings service
 // can be brought up on the *first* IP_EVENT_STA_GOT_IP with the same view
 // of NVS that the BLE service registered. After the first start it stays
@@ -147,6 +158,148 @@ void wifi_start(const config::DeviceConfig& cfg)
 bool wifi_is_connected()
 {
     return g_connected.load(std::memory_order_acquire);
+}
+
+// --- SoftAP provisioning ----------------------------------------------------
+//
+// Triggered from the on-device Settings UI when home Wi-Fi credentials are
+// missing/wrong. Brings up an isolated AP on top of the existing STA driver
+// (APSTA dual mode) so the user can join the AP from an iPhone — which has
+// no Web Bluetooth — and configure home Wi-Fi through the same settings_wifi
+// HTTP page used over STA. STA stays attempting reconnect in parallel; we
+// intentionally do not tear the AP down on STA_GOT_IP because the user is
+// often mid-edit when their changes take effect.
+//
+// Credentials are derived from the STA MAC (same low 3 bytes already used
+// for the BLE advertising name and mDNS hostname) so they are stable across
+// reboots and printed/displayed on the QR screen:
+//   SSID = "Stackchan-AABBCC"  (6 hex chars)
+//   PSK  = "sc-AABBCCDD"       (8 hex chars; 11 char total; WPA2 minimum 8)
+
+namespace {
+
+void derive_ap_credentials()
+{
+    if (g_ap_ssid[0] != 0) return; // already derived
+    std::uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    std::snprintf(g_ap_ssid, sizeof(g_ap_ssid),
+                  "Stackchan-%02X%02X%02X", mac[3], mac[4], mac[5]);
+    std::snprintf(g_ap_pw, sizeof(g_ap_pw),
+                  "sc-%02x%02x%02x%02x", mac[2], mac[3], mac[4], mac[5]);
+}
+
+} // namespace
+
+void wifi_enable_ap_mode()
+{
+    if (g_ap_active.load(std::memory_order_acquire)) return;
+
+    derive_ap_credentials();
+    if (g_ap_netif == nullptr) {
+        g_ap_netif = esp_netif_create_default_wifi_ap();
+    }
+
+    // APSTA keeps the STA side of the driver running so reconnect attempts
+    // continue in background; the user can fix credentials and watch them
+    // take effect without rebooting.
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+
+    wifi_config_t ap_cfg{};
+    std::strncpy(reinterpret_cast<char*>(ap_cfg.ap.ssid), g_ap_ssid,
+                 sizeof(ap_cfg.ap.ssid) - 1);
+    ap_cfg.ap.ssid_len = std::strlen(g_ap_ssid);
+    std::strncpy(reinterpret_cast<char*>(ap_cfg.ap.password), g_ap_pw,
+                 sizeof(ap_cfg.ap.password) - 1);
+    ap_cfg.ap.channel        = 6;
+    ap_cfg.ap.authmode       = WIFI_AUTH_WPA2_PSK;
+    ap_cfg.ap.max_connection = 4;
+    ap_cfg.ap.pmf_cfg.required = false;
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
+
+    // esp_wifi_start() is idempotent; calling it after set_mode picks up the
+    // new AP interface even when STA was already running.
+    esp_err_t st = esp_wifi_start();
+    if (st != ESP_OK && st != ESP_ERR_WIFI_NOT_INIT) {
+        ESP_LOGW(kTag, "esp_wifi_start (AP) returned %s", esp_err_to_name(st));
+    }
+
+    // Read the AP IP back so the QR screen reflects whatever the driver
+    // chose (default 192.168.4.1 unless reconfigured elsewhere).
+    if (g_ap_netif != nullptr) {
+        esp_netif_ip_info_t ip{};
+        if (esp_netif_get_ip_info(g_ap_netif, &ip) == ESP_OK && ip.ip.addr != 0) {
+            std::snprintf(g_ap_ip, sizeof(g_ap_ip), IPSTR, IP2STR(&ip.ip));
+        }
+    }
+
+    g_ap_active.store(true, std::memory_order_release);
+    ESP_LOGI(kTag, "AP up: SSID=\"%s\" PW=\"%s\" IP=%s",
+             g_ap_ssid, g_ap_pw, g_ap_ip);
+
+    // Bring up the HTTP settings service if STA never connected (no home
+    // Wi-Fi configured) — start() is idempotent over re-entry, so calling
+    // it after STA has already brought it up is harmless. The server binds
+    // to INADDR_ANY so it serves both the AP and STA interfaces.
+    if (g_boot_cfg != nullptr) {
+        (void)wifi_config::start(*g_boot_cfg);
+    }
+    // Flag the service so /api/status carries provisioning_mode and
+    // require_auth is bypassed for the duration. The flag can be set
+    // before the http server has finished initialising — http_handlers
+    // guards on its own mutex.
+    wifi_config::set_provisioning_mode(true);
+
+    // Captive portal: DNS hijack so iOS/Android probes (apple/connecttest)
+    // resolve to us, plus a 404 catch-all on the http server that
+    // redirects every unknown URL to the settings page. Poll briefly for
+    // the http server handle since wifi_config::start runs init in a
+    // task; in practice it's up within a few ms when we're invoked from
+    // a tap handler well after boot.
+    captive_portal::start_dns();
+    for (int i = 0; i < 40; ++i) {
+        if (auto h = wifi_config::handle(); h != nullptr) {
+            captive_portal::register_http_catchall(h);
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+
+void wifi_disable_ap_mode()
+{
+    if (!g_ap_active.load(std::memory_order_acquire)) return;
+    // Tear down captive portal first so STA-mode clients don't see the
+    // 404-to-root redirect anymore (the catch-all is harmless over STA,
+    // but it'd hijack legitimate 404s from poorly-written clients).
+    captive_portal::stop_dns();
+    if (auto h = wifi_config::handle(); h != nullptr) {
+        captive_portal::unregister_http_catchall(h);
+    }
+    wifi_config::set_provisioning_mode(false);
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    g_ap_active.store(false, std::memory_order_release);
+    ESP_LOGI(kTag, "AP down");
+}
+
+bool wifi_ap_active()
+{
+    return g_ap_active.load(std::memory_order_acquire);
+}
+
+bool wifi_ap_info(char* ssid, std::size_t ssid_cap,
+                  char* password, std::size_t pw_cap,
+                  char* ip, std::size_t ip_cap)
+{
+    if (!g_ap_active.load(std::memory_order_acquire)) return false;
+    if (ssid == nullptr || password == nullptr || ip == nullptr) return false;
+    if (ssid_cap <= std::strlen(g_ap_ssid)) return false;
+    if (pw_cap   <= std::strlen(g_ap_pw))   return false;
+    if (ip_cap   <= std::strlen(g_ap_ip))   return false;
+    std::strcpy(ssid, g_ap_ssid);
+    std::strcpy(password, g_ap_pw);
+    std::strcpy(ip, g_ap_ip);
+    return true;
 }
 
 } // namespace stackchan::app

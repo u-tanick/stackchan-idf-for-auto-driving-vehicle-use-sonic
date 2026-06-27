@@ -210,10 +210,23 @@ tl::expected<void, Error> start(const config::DeviceConfig& current)
     return {};
 }
 
+httpd_handle_t handle()
+{
+    return g_server;
+}
+
 void notify_wifi_connected(bool connected)
 {
     if (!g_started) return;
     http::set_wifi_connected(connected);
+}
+
+void set_provisioning_mode(bool active)
+{
+    // Allow the call before g_started: the http layer guards on its own
+    // mutex, and a flag set before server start is read back correctly
+    // once the first handler call comes in.
+    http::set_provisioning_mode(active);
 }
 
 void set_battery(int millivolts, int milliamps, int percent)
