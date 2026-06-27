@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSL-1.0
 
 #include "http_handlers.hpp"
+#include "release_ota.hpp"
 
 #include <avatar_vm/storage.hpp>
 #include <config_service/config_store.hpp>
@@ -792,6 +793,14 @@ esp_err_t handle_ota_control_post(httpd_req_t* req)
     if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, kMaxJttsConfig) != ESP_OK) return ESP_OK;
+    // An abort during a release-fetch needs to also pull the rug out from
+    // the HTTPS read loop — otherwise the worker keeps streaming bytes into
+    // a now-Idle ota state until the download completes. Forward the abort
+    // to the worker; release_ota::request_abort is a no-op if no fetch is
+    // running, so this is safe to call for every control command.
+    if (body.find("\"abort\"") != std::string::npos) {
+        release_ota::request_abort();
+    }
     return send_json(req, config::ota::handle_control_command(body));
 }
 
@@ -801,6 +810,59 @@ esp_err_t handle_ota_data_post(httpd_req_t* req)
     std::vector<std::uint8_t> body;
     if (read_body(req, body, kMaxOtaChunk) != ESP_OK) return ESP_OK;
     return send_json(req, config::ota::handle_data_chunk({body.data(), body.size()}));
+}
+
+// POST /api/ota/release  — body: {"tag":"vX.Y.Z"}
+//
+// Kicks off a worker that fetches the per-board stackchan_idf.bin staged
+// on GitHub Pages and streams it straight into esp_ota_write. Progress is
+// reported through the *same* /api/ota/status endpoint as the browser
+// upload path so the UI doesn't need a separate poller. Returns 200 +
+// "{queued:true}" once the worker is spawned (the actual download takes
+// 30–60 s); the UI polls /api/ota/status until phase == done, then waits
+// for the reboot to land.
+//
+// Requires STA to be up (the device needs its own internet connection to
+// reach GitHub Pages — the AP interface has no upstream). When STA is
+// down the worker fails on http_client_open and /api/ota/status flips to
+// idle.
+esp_err_t handle_ota_release_post(httpd_req_t* req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    std::string body;
+    // Tags are short (≤ 32 chars per release_ota::tag_looks_safe), so a
+    // 256 B body cap is generous.
+    if (read_body_str(req, body, 256) != ESP_OK) return ESP_OK;
+
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (root == nullptr) {
+        return send_error(req, "400 Bad Request", "bad json");
+    }
+    const cJSON* tag = cJSON_GetObjectItemCaseSensitive(root, "tag");
+    if (!cJSON_IsString(tag) || tag->valuestring == nullptr) {
+        cJSON_Delete(root);
+        return send_error(req, "400 Bad Request", "tag required");
+    }
+    const std::string tag_str = tag->valuestring;
+    cJSON_Delete(root);
+
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    const std::uint8_t board = g_board_kind;
+    xSemaphoreGive(g_mutex);
+
+    auto r = release_ota::start(tag_str, board);
+    if (!r) {
+        const char* msg = "?";
+        switch (r.error()) {
+        case release_ota::StartError::AlreadyRunning:     msg = "already running"; break;
+        case release_ota::StartError::BadTag:             msg = "bad tag";          break;
+        case release_ota::StartError::UnknownBoard:       msg = "unknown board";    break;
+        case release_ota::StartError::WorkerSpawnFailed:  msg = "spawn failed";     break;
+        }
+        return send_error(req, "400 Bad Request", msg);
+    }
+    return send_json(req,
+                     R"({"ok":true,"queued":true})");
 }
 
 // POST /api/avatar-dsl — body is a single complete `.avbc` (no chunking; HTTP
@@ -1233,6 +1295,7 @@ void register_handlers(httpd_handle_t server, const config::DeviceConfig& curren
     add(server, "/api/ota/status",      HTTP_GET,  handle_ota_status_get);
     add(server, "/api/ota/control",     HTTP_POST, handle_ota_control_post);
     add(server, "/api/ota/data",        HTTP_POST, handle_ota_data_post);
+    add(server, "/api/ota/release",     HTTP_POST, handle_ota_release_post);
     add(server, "/api/avatar-dsl",       HTTP_POST, handle_avatar_dsl_post);
     add(server, "/api/avatar-dsl/reset", HTTP_POST, handle_avatar_dsl_reset_post);
     add(server, "/api/metrics/audio",    HTTP_GET,  handle_audio_metrics_get);

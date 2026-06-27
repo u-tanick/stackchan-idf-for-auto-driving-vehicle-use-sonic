@@ -11,6 +11,7 @@ idf_component_register(
         "wifi_config_service.cpp"
         "http_handlers.cpp"
         "mcp_events.cpp"
+        "release_ota.cpp"
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "."
     REQUIRES tl_expected config_service avatar_vm esp_http_server
@@ -19,6 +20,8 @@ idf_component_register(
         esp_app_format
         app_update
         esp_event
+        esp_http_client
+        esp-tls
         esp_partition
         esp_system
         esp_timer

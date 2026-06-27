@@ -814,6 +814,25 @@
         <input type="file" id="ota-file" accept=".bin">
         <button id="btn-ota" type="button" disabled>書き込み</button>
       </div>
+
+      <h3 class="section-title" style="margin-top:1rem; font-size:0.95rem">
+        release から直接取得 (device side fetch)
+      </h3>
+      <p class="hint" style="margin-bottom:0.5rem">
+        device が <code>STA</code> 経由で GitHub Pages から自分宛のビルドを取得し
+        OTA 適用します。AP モード中でも STA がアップであれば動作 (APSTA)。STA が
+        ダウンの場合はエラーになるので、上の「ローカル ファイル」を使ってください。
+      </p>
+      <div class="ota-row">
+        <input type="text" id="ota-release-tag" placeholder="v0.7.3"
+               style="flex:1; padding:0.4rem; font-family:monospace; font-size:0.9rem">
+        <button id="btn-ota-release" type="button" disabled>release を適用</button>
+      </div>
+      <p class="hint" style="margin:0.25rem 0 0 0; font-size:0.8rem">
+        ボード判定 (cores3 / atoms3r / atoms3 / stopwatch) は device 側で自動。
+        進捗は下の status バーに反映されます。
+      </p>
+
       <div class="ota-status" id="ota-status">
         <div class="ota-bar"><div class="ota-bar-fill" id="ota-bar-fill"></div></div>
         <div class="ota-stats" id="ota-stats">未開始</div>
@@ -1190,6 +1209,13 @@ async function refresh() {
   try {
     const s = await fetchJSON('/api/status');
     $('dis-fw').textContent = s.firmware || '—';
+    // Pre-fill the release-tag input with the running firmware version so
+    // the most common interaction (reapply / re-flash same tag) is just
+    // "click 適用". Tags that don't yet exist will surface as the device
+    // worker's "HTTP status 404" / "no Content-Length" error after submit.
+    if (s.firmware && s.firmware !== 'unknown' && !$('ota-release-tag').value) {
+      $('ota-release-tag').value = s.firmware;
+    }
     $('dis-idf').textContent = s.idf || '—';
     $('dis-ip').textContent = s.ip || '—';
     applyBoardGating(typeof s.board === 'number' ? s.board : null);
@@ -1277,6 +1303,7 @@ async function refresh() {
     setDot('http-dot', 'http-connected');
     $('http-label').textContent = 'HTTP 接続中';
     $('btn-ota').disabled = false;
+    $('btn-ota-release').disabled = false;
     log('状態取得 OK', 'ok');
   } catch (e) {
     setDot('http-dot', 'http-error');
@@ -1445,6 +1472,86 @@ async function startOta() {
   }
 }
 
+// Server-side release fetch — device pulls the ZIP-extracted bin from
+// GitHub Pages via its STA connection and writes through esp_ota_write.
+// We just kick off the worker and tail /api/ota/status; the existing
+// progress bar reads the same state field that local-upload OTA writes
+// into, so the visual feedback is unified.
+async function startReleaseOta() {
+  const tag = $('ota-release-tag').value.trim();
+  if (!tag) { log('tag を入力してください (例: v0.7.3)', 'err'); return; }
+
+  $('btn-ota').disabled = true;
+  $('btn-ota-release').disabled = true;
+  $('btn-refresh').disabled = true;
+  $('btn-apply').disabled = true;
+  const bar = $('ota-bar-fill');
+  const stats = $('ota-stats');
+  bar.style.width = '0';
+  stats.textContent = `release ${tag} を device 側で取得中…`;
+
+  try {
+    const r = await fetch('/api/ota/release', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tag })
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      throw new Error(`HTTP ${r.status}: ${t}`);
+    }
+    log(`release fetch 開始: ${tag}`, 'ok');
+
+    // Poll /api/ota/status until phase != idle and != receiving. The worker
+    // updates state through the same ota.cpp dispatcher the BLE / local-
+    // upload path uses, so received/total/phase are live.
+    let lastReceived = -1;
+    let stagnantTicks = 0;
+    while (true) {
+      await new Promise(res => setTimeout(res, 800));
+      const s = await pollOtaStatus();
+      if (!s) {
+        // Lost the device — likely the post-OTA reboot already happened.
+        // Treat as success; the new firmware will re-attach to STA + Wi-Fi
+        // and the page will reload manually.
+        bar.style.width = '100%';
+        stats.textContent = '完了 — device 再起動中';
+        log('release OTA 完了 — 新ファームに再起動', 'ok');
+        return;
+      }
+      if (s.state === 'receiving' && s.total > 0) {
+        const pct = (s.received * 100 / s.total);
+        bar.style.width = pct.toFixed(1) + '%';
+        stats.textContent = `${pct.toFixed(1)}%  ${fmtBytes(s.received)} / ${fmtBytes(s.total)}`;
+        if (s.received === lastReceived) {
+          // Detect a stalled worker (network problem). After ~30 s of no
+          // progress, surface a warning but don't kill the transfer —
+          // recovery is possible.
+          if (++stagnantTicks === 38) log('進捗停止 (STA リンク不調?)', 'err');
+        } else {
+          stagnantTicks = 0;
+          lastReceived = s.received;
+        }
+      } else if (s.state === 'done') {
+        bar.style.width = '100%';
+        stats.textContent = '完了 — device 再起動中';
+        log('release OTA 完了 — 新ファームに再起動', 'ok');
+        return;
+      } else if (s.state === 'failed') {
+        throw new Error(s.error || 'unknown');
+      }
+    }
+  } catch (e) {
+    log('release OTA 失敗: ' + e.message, 'err');
+    stats.textContent = '失敗: ' + e.message;
+  } finally {
+    $('btn-ota').disabled = false;
+    $('btn-ota-release').disabled = false;
+    $('btn-refresh').disabled = false;
+    $('btn-apply').disabled = false;
+  }
+}
+
 // --- Avatar DSL editor + send -------------------------------------------
 
 (function setupDslEditor() {
@@ -1606,6 +1713,7 @@ async function startOta() {
 $('btn-refresh').addEventListener('click', refresh);
 $('btn-apply').addEventListener('click', apply);
 $('btn-ota').addEventListener('click', startOta);
+$('btn-ota-release').addEventListener('click', startReleaseOta);
 
 refresh();
 
