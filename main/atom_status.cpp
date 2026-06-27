@@ -17,6 +17,7 @@
 #include <config_service/config_service.hpp>
 #include <config_service/config_store.hpp>
 
+#include "ap_screen.hpp"
 #include "wifi_sta.hpp"
 
 namespace stackchan::app::atom_status {
@@ -35,13 +36,20 @@ std::uint32_t now_ms_local()
 std::uint32_t g_last_draw_ms = 0;
 
 // Long-press cycle state. AtomS3R / AtomS3 have no on-screen settings UI,
-// so the only way to change operation_mode locally is to hold the front
-// button while the status overlay is up — that cycles to the next mode,
-// saves, and reboots. 1500 ms threshold; the press-down sets the timestamp
-// and a single edge-trigger inside the poll fires the cycle exactly once.
-constexpr std::uint32_t kLongPressMs = 1500;
+// so we overload the single front button (M5.BtnA) with a duration-based
+// gesture vocab:
+//   - short tap                            → toggle the status overlay
+//   - 1.5 s while overlay UP               → cycle operation_mode + reboot
+//   - 5.0 s while overlay DOWN (idle)      → toggle SoftAP provisioning
+//     (so an iOS user without home Wi-Fi can hold-press to bring up the
+//      QR + AP without needing the overlay open first)
+// Press-down sets the timestamp; each threshold edge-triggers exactly once
+// while still held.
+constexpr std::uint32_t kLongPressMs   = 1500;  // mode cycle (overlay up)
+constexpr std::uint32_t kApPressMs     = 5000;  // AP toggle  (overlay down)
 std::uint32_t g_press_start_ms = 0;
 bool g_long_press_fired = false;
+bool g_ap_press_fired   = false;
 
 void cycle_operation_mode_and_reboot()
 {
@@ -109,31 +117,51 @@ void poll_button()
 {
     // M5.update() is called by demo_loop on each iteration; we just look at
     // the latched press state.
-    //
-    // Short tap (release before 1.5 s) → toggle the overlay (existing
-    // behaviour).
-    // Long press (held ≥ 1.5 s while the overlay is up) → cycle the
-    // operation_mode and reboot. The reboot doesn't return.
     if (M5.BtnA.wasPressed()) {
         g_press_start_ms = now_ms_local();
         g_long_press_fired = false;
+        g_ap_press_fired   = false;
     }
+    const std::uint32_t held = now_ms_local() - g_press_start_ms;
+    // 1.5 s while overlay is up → cycle operation_mode + reboot (does not
+    // return). Suppressed when AP screen is showing because the user is
+    // mid-provisioning; we don't want a wrist-bump to wipe their progress.
     if (M5.BtnA.isPressed() && !g_long_press_fired &&
-        now_ms_local() - g_press_start_ms >= kLongPressMs) {
+        held >= kLongPressMs) {
         g_long_press_fired = true;
-        if (g_active.load(std::memory_order_relaxed)) {
+        if (g_active.load(std::memory_order_relaxed) &&
+            !ap_screen::active()) {
             cycle_operation_mode_and_reboot();
             // unreached
         }
     }
+    // 5 s while overlay is DOWN → toggle SoftAP provisioning. The threshold
+    // is intentionally well past the mode-cycle one so a too-long press on
+    // the overlay does NOT spill into AP mode. When the overlay is up the
+    // 1.5 s gate already fired the mode cycle (which reboots), so this
+    // branch is reachable only from the idle / AP-screen states.
+    if (M5.BtnA.isPressed() && !g_ap_press_fired &&
+        held >= kApPressMs) {
+        g_ap_press_fired = true;
+        const bool overlay_up = g_active.load(std::memory_order_relaxed);
+        if (!overlay_up || ap_screen::active()) {
+            if (wifi_ap_active()) {
+                wifi_disable_ap_mode();
+            } else {
+                wifi_enable_ap_mode();
+            }
+        }
+    }
     if (M5.BtnA.wasReleased()) {
-        // Suppress the short-tap toggle if the long-press path already
-        // fired (we'd have rebooted anyway, so this is just defensive).
-        if (!g_long_press_fired) {
+        // Short tap → overlay toggle. Suppress if either long-press path
+        // already fired (mode cycle reboots; AP toggle should not also
+        // flip the overlay state).
+        if (!g_long_press_fired && !g_ap_press_fired) {
             g_active.store(!g_active.load(std::memory_order_relaxed),
                            std::memory_order_relaxed);
         }
         g_long_press_fired = false;
+        g_ap_press_fired   = false;
     }
 }
 
