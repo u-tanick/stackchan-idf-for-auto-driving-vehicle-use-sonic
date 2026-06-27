@@ -1165,12 +1165,16 @@ extern "C" void app_main()
     // Apply the user's gain (cfg already loaded above). 0..200 % → byte
     // is clamped at 255 so boards already at 255 are unchanged at 100 %.
     apply_speaker_volume(cfg.speaker_volume_pct);
-    for (float freq : {523.25f, 659.25f, 783.99f}) { // C5 – E5 – G5
-        M5.Speaker.tone(freq, 150);
-        vTaskDelay(pdMS_TO_TICKS(180));
-    }
-    while (M5.Speaker.isPlaying()) {
-        vTaskDelay(pdMS_TO_TICKS(20));
+    if (cfg.startup_arpeggio_enabled) {
+        for (float freq : {523.25f, 659.25f, 783.99f}) { // C5 – E5 – G5
+            M5.Speaker.tone(freq, 150);
+            vTaskDelay(pdMS_TO_TICKS(180));
+        }
+        while (M5.Speaker.isPlaying()) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+    } else {
+        ESP_LOGI(kTag, "startup arpeggio disabled");
     }
     // JTTS-rate playRaw probe: synth a brief 16 kHz 440 Hz tone and push
     // it through M5.Speaker.playRaw. JTTS babble plays at the same

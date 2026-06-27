@@ -692,6 +692,12 @@
       </label>
       <p class="hint">アバター画面の左上に残量ゲージを表示します（保存後の再起動で反映）</p>
 
+      <label class="toggle-label" for="startup-arpeggio-enabled" style="margin-top:1rem">
+        <input type="checkbox" id="startup-arpeggio-enabled" checked>
+        <span>起動時のアルペジオを再生する</span>
+      </label>
+      <p class="hint">起動直後の C5–E5–G5（スピーカー動作確認音）を鳴らすかどうか。OFF にすると無音起動（保存後の再起動で反映）</p>
+
       <label class="toggle-label" for="servo-enabled" style="margin-top:1rem">
         <input type="checkbox" id="servo-enabled" checked>
         <span>サーボを有効にする</span>
@@ -1194,6 +1200,7 @@ async function refresh() {
     }
     $('mic-lip-agc').checked = (s.mic_lip_agc_enabled !== false); // default true
     $('bat-gauge-enabled').checked = (s.battery_gauge_enabled !== false); // default on if absent
+    $('startup-arpeggio-enabled').checked = (s.startup_arpeggio_enabled !== false); // default on if absent
     $('servo-enabled').checked = (s.servo_enabled !== false); // default on if absent
     $('mcp-token-state').textContent = s.has_mcp_token ? '設定済' : '未設定';
     // Device name + auth password (auth password is write-only — never
@@ -1270,6 +1277,7 @@ async function apply() {
     const jttsIdleEnabled = $('jtts-idle-enabled').checked;
     const ledMouthSync = $('led-mouth-sync').checked;
     const batGauge = $('bat-gauge-enabled').checked;
+    const startupArp = $('startup-arpeggio-enabled').checked;
     const servoEn = $('servo-enabled').checked;
     const jtts = readJttsForm();
 
@@ -1307,6 +1315,7 @@ async function apply() {
     await postText('/api/lip-sync-mode', $('lip-sync-mode').value);
     await postText('/api/mic-lip-agc', $('mic-lip-agc').checked ? '1' : '0');
     await postText('/api/battery-gauge', batGauge ? '1' : '0');
+    await postText('/api/startup-arpeggio', startupArp ? '1' : '0');
     await postText('/api/servo-enabled', servoEn ? '1' : '0');
     // MCP token: send only when the user typed something OR explicitly hit
     // "clear" (signalled by data-cleared="1"). An untouched blank field is

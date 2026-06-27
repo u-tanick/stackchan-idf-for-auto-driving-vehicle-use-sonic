@@ -53,6 +53,7 @@ struct StagingBuffer {
     std::optional<bool> rtp_audio_enabled;
     std::optional<bool> jtts_idle_enabled;
     std::optional<bool> battery_gauge_enabled;
+    std::optional<bool> startup_arpeggio_enabled;
     std::optional<bool> servo_enabled;
     std::optional<bool> led_mouth_sync_enabled;
     std::optional<std::string> mcp_api_token;
@@ -322,6 +323,7 @@ esp_err_t handle_status_get(httpd_req_t* req)
     body += "\"rtp_audio_enabled\":" + std::string(cfg.rtp_audio_enabled ? "true" : "false") + ",";
     body += "\"jtts_idle_enabled\":" + std::string(cfg.jtts_idle_enabled ? "true" : "false") + ",";
     body += "\"battery_gauge_enabled\":" + std::string(cfg.battery_gauge_enabled ? "true" : "false") + ",";
+    body += "\"startup_arpeggio_enabled\":" + std::string(cfg.startup_arpeggio_enabled ? "true" : "false") + ",";
     body += "\"servo_enabled\":" + std::string(cfg.servo_enabled ? "true" : "false") + ",";
     body += "\"led_mouth_sync_enabled\":" + std::string(cfg.led_mouth_sync_enabled ? "true" : "false") + ",";
     body += "\"operation_mode\":" + std::to_string(static_cast<int>(cfg.operation_mode)) + ",";
@@ -565,6 +567,18 @@ esp_err_t handle_battery_gauge_post(httpd_req_t* req)
     return send_empty(req);
 }
 
+esp_err_t handle_startup_arpeggio_post(httpd_req_t* req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    std::string body;
+    if (read_body_str(req, body, 8) != ESP_OK) return ESP_OK;
+    const bool enabled = !body.empty() && (body[0] == '1' || body[0] == 't' || body[0] == 'y');
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_staging.startup_arpeggio_enabled = enabled;
+    xSemaphoreGive(g_mutex);
+    return send_empty(req);
+}
+
 esp_err_t handle_servo_enabled_post(httpd_req_t* req)
 {
     if (!require_auth(req)) return ESP_OK;
@@ -720,6 +734,7 @@ esp_err_t handle_apply_post(httpd_req_t* req)
     if (g_staging.mic_lip_agc_enabled) merged.mic_lip_agc_enabled = *g_staging.mic_lip_agc_enabled;
     if (g_staging.barge_in_enabled) merged.barge_in_enabled = *g_staging.barge_in_enabled;
     if (g_staging.battery_gauge_enabled) merged.battery_gauge_enabled = *g_staging.battery_gauge_enabled;
+    if (g_staging.startup_arpeggio_enabled) merged.startup_arpeggio_enabled = *g_staging.startup_arpeggio_enabled;
     if (g_staging.servo_enabled)   merged.servo_enabled = *g_staging.servo_enabled;
     if (g_staging.mcp_api_token)   merged.mcp_api_token = *g_staging.mcp_api_token;
     if (g_staging.lt_config)       merged.lt_config_json = *g_staging.lt_config;
@@ -1193,6 +1208,7 @@ void register_handlers(httpd_handle_t server, const config::DeviceConfig& curren
     add(server, "/api/mic-lip-agc",     HTTP_POST, handle_mic_lip_agc_post);
     add(server, "/api/barge-in",        HTTP_POST, handle_barge_in_enabled_post);
     add(server, "/api/battery-gauge",   HTTP_POST, handle_battery_gauge_post);
+    add(server, "/api/startup-arpeggio",HTTP_POST, handle_startup_arpeggio_post);
     add(server, "/api/servo-enabled",   HTTP_POST, handle_servo_enabled_post);
     add(server, "/api/mcp-token",       HTTP_POST, handle_mcp_token_post);
     add(server, "/api/lt-config",       HTTP_POST, handle_lt_config_post);

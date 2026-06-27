@@ -903,6 +903,12 @@
       </label>
       <p class="hint">アバター画面の左上に残量ゲージを表示します（保存後の再起動で反映）</p>
 
+      <label class="toggle-label" for="startup-arpeggio-enabled" style="margin-top:1rem">
+        <input type="checkbox" id="startup-arpeggio-enabled" checked>
+        <span>起動時のアルペジオを再生する</span>
+      </label>
+      <p class="hint">起動直後の C5–E5–G5（スピーカー動作確認音）を鳴らすかどうか。OFF にすると無音起動（保存後の再起動で反映）</p>
+
       <label class="toggle-label" for="servo-enabled" style="margin-top:1rem">
         <input type="checkbox" id="servo-enabled" checked>
         <span>サーボを有効にする</span>
@@ -1096,6 +1102,7 @@ const CHR_RTP_EN  = 'e3f0a011-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_JTTS_IDLE_EN = 'e3f0a022-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // BatteryGauge — encrypted 1-byte flag (show/hide the top-left battery gauge).
 const CHR_BAT_GAUGE = 'e3f0a017-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+const CHR_STARTUP_ARP = 'e3f0a02e-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // ServoLimits — encrypted compact JSON of per-servo zero + motion range.
 const CHR_SERVO_LIMITS = 'e3f0a018-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // ServoRangeMode — encrypted 1-byte flag (0=off, 1=on). ON puts the device
@@ -1233,7 +1240,7 @@ const DIS_CHRS = {
 
 // --- State ---
 let bleDevice = null, bleServer = null, svc = null;
-let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJttsIdleEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrBatGauge = null, chrServoEnabled = null, chrMcpToken = null, chrLtConfig = null, chrServoLimits = null, chrServoRangeMode = null, chrServoPositions = null, chrBoardKind = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null, chrAudioMetrics = null, chrLedState = null, chrMicLipGain = null, chrLedMouthSync = null, chrLipSyncMode = null, chrMicLipAgc = null, chrSpeakerVolume = null, chrJttsSay = null, chrOperationMode = null, chrAudioOutput = null, chrBargeIn = null, chrDeviceName = null, chrAuthPassword = null, chrAvatarBc = null;
+let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJttsIdleEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrBatGauge = null, chrStartupArp = null, chrServoEnabled = null, chrMcpToken = null, chrLtConfig = null, chrServoLimits = null, chrServoRangeMode = null, chrServoPositions = null, chrBoardKind = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null, chrAudioMetrics = null, chrLedState = null, chrMicLipGain = null, chrLedMouthSync = null, chrLipSyncMode = null, chrMicLipAgc = null, chrSpeakerVolume = null, chrJttsSay = null, chrOperationMode = null, chrAudioOutput = null, chrBargeIn = null, chrDeviceName = null, chrAuthPassword = null, chrAvatarBc = null;
 let boardKind = null; // null = unknown (older firmware), else 0/1/2 from BOARD_*
 let batteryPollTimer = null;  // setInterval handle while connected
 let jttsInitialJson = '';  // last read JSON, used to detect Apply-time changes
@@ -1770,6 +1777,7 @@ function applyCapabilityGating() {
   const hasEnable = !!chrEn;
   const hasRtpEnable = !!chrRtpEn;
   const hasBatGauge = !!chrBatGauge;
+  const hasStartupArp = !!chrStartupArp;
   const hasServoEnabled = !!chrServoEnabled;
   const hasMcpToken = !!chrMcpToken;
   const hasJtts = !!chrJtts;
@@ -1796,6 +1804,8 @@ function applyCapabilityGating() {
   setVisible('label.toggle-label[for="rtp-enabled"] + p.hint', hasRtpEnable);
   setVisible('label.toggle-label[for="bat-gauge-enabled"]', hasBatGauge);
   setVisible('label.toggle-label[for="bat-gauge-enabled"] + p.hint', hasBatGauge);
+  setVisible('label.toggle-label[for="startup-arpeggio-enabled"]', hasStartupArp);
+  setVisible('label.toggle-label[for="startup-arpeggio-enabled"] + p.hint', hasStartupArp);
   setVisible('label.toggle-label[for="servo-enabled"]', hasServoEnabled);
   setVisible('label.toggle-label[for="servo-enabled"] + p.hint', hasServoEnabled);
   setVisible('#mcp-section', hasMcpToken);
@@ -2459,6 +2469,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
       ['rtpEn',      CHR_RTP_EN],
       ['jttsIdleEn', CHR_JTTS_IDLE_EN],
       ['batGauge',   CHR_BAT_GAUGE],
+      ['startupArp', CHR_STARTUP_ARP],
       ['servoEnabled', CHR_SERVO_ENABLED],
       ['mcpToken',   CHR_MCP_TOKEN],
       ['ltConfig',   CHR_LT_CONFIG],
@@ -2514,6 +2525,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
     chrRtpEn    = found.rtpEn    ?? null;
     chrJttsIdleEn = found.jttsIdleEn ?? null;
     chrBatGauge = found.batGauge ?? null;
+    chrStartupArp = found.startupArp ?? null;
     chrServoEnabled = found.servoEnabled ?? null;
     chrMcpToken = found.mcpToken ?? null;
     chrLtConfig = found.ltConfig ?? null;
@@ -2771,6 +2783,18 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
       }
     }
 
+    if (chrStartupArp) {
+      try {
+        const baBytes = await readEncrypted(chrStartupArp);
+        const enabled = baBytes.length > 0 && baBytes[0] !== 0;
+        document.getElementById('startup-arpeggio-enabled').checked = enabled;
+        document.getElementById('startup-arpeggio-enabled').dataset.initial = enabled ? '1' : '0';
+        log(`起動アルペジオ: ${enabled ? '有効' : '無効'}`);
+      } catch (e) {
+        log(`起動アルペジオ設定の取得失敗: ${e.message}`, 'err');
+      }
+    }
+
     if (chrServoEnabled) {
       try {
         const seBytes = await readEncrypted(chrServoEnabled);
@@ -2946,6 +2970,7 @@ function onDisconnected() {
   delete document.getElementById('audio-output').dataset.initial;
   delete document.getElementById('barge-in-enabled').dataset.initial;
   delete document.getElementById('bat-gauge-enabled').dataset.initial;
+  delete document.getElementById('startup-arpeggio-enabled').dataset.initial;
   delete document.getElementById('servo-enabled').dataset.initial;
   delete document.getElementById('provider').dataset.initial;
   jttsInitialJson = '';
@@ -3133,6 +3158,15 @@ document.getElementById('btn-apply').addEventListener('click', async () => {
     if (chrBatGauge && bgInitial !== undefined && bgInitial !== bgWanted) {
       await writeEncrypted(chrBatGauge, new Uint8Array([bgCheckbox.checked ? 1 : 0]));
       log(`バッテリーゲージ表示を ${bgCheckbox.checked ? '有効' : '無効'} に切り替え`, 'ok');
+    }
+
+    // Startup arpeggio: only push if it changed AND chr is present.
+    const baCheckbox = document.getElementById('startup-arpeggio-enabled');
+    const baInitial = baCheckbox.dataset.initial;
+    const baWanted = baCheckbox.checked ? '1' : '0';
+    if (chrStartupArp && baInitial !== undefined && baInitial !== baWanted) {
+      await writeEncrypted(chrStartupArp, new Uint8Array([baCheckbox.checked ? 1 : 0]));
+      log(`起動アルペジオを ${baCheckbox.checked ? '有効' : '無効'} に切り替え`, 'ok');
     }
 
     // Servo master enable (NVS-persisted): only push if it changed AND chr is present.

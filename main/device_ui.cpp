@@ -60,6 +60,7 @@ int g_provider = 0; // 0 = OpenAI, 1 = Gemini, 2 = XiaoZhi (cached at init)
 std::atomic<bool> g_stage_conv{true};
 std::atomic<bool> g_stage_rtp{true};
 std::atomic<bool> g_stage_bat_gauge{true};
+std::atomic<bool> g_stage_boot_arp{true};
 // Master servo enable (NVS-persisted). Distinct from g_state->servo_enabled,
 // which is the runtime torque toggle on the kControl page.
 std::atomic<bool> g_stage_servo_master{true};
@@ -423,12 +424,14 @@ void draw_settings()
     draw_toggle_row(3, "電池ゲージ", g_stage_bat_gauge.load(std::memory_order_relaxed), kSettingsRowH);
     draw_toggle_row(4, "サーボ (恒久)", g_stage_servo_master.load(std::memory_order_relaxed),
                     kSettingsRowH);
-    draw_button(5, "適用（保存して再起動）", g_cv->color565(60, 120, 200), kSettingsRowH);
+    draw_toggle_row(5, "起動アルペジオ", g_stage_boot_arp.load(std::memory_order_relaxed),
+                    kSettingsRowH);
+    draw_button(6, "適用（保存して再起動）", g_cv->color565(60, 120, 200), kSettingsRowH);
     g_cv->setFont(kFontBody);
     g_cv->setTextDatum(lgfx::textdatum_t::top_left);
     g_cv->setTextColor(g_cv->color565(150, 150, 150));
     g_cv->drawString("行をタップで切替 / 変更は適用で反映",
-                     12, kContentY + 6 * kSettingsRowH + 2);
+                     12, kContentY + 7 * kSettingsRowH + 2);
 }
 
 void draw_control()
@@ -697,6 +700,7 @@ void load_staged()
     g_stage_conv.store(cfg.openai_enabled, std::memory_order_relaxed);
     g_stage_rtp.store(cfg.rtp_audio_enabled, std::memory_order_relaxed);
     g_stage_bat_gauge.store(cfg.battery_gauge_enabled, std::memory_order_relaxed);
+    g_stage_boot_arp.store(cfg.startup_arpeggio_enabled, std::memory_order_relaxed);
     g_stage_servo_master.store(cfg.servo_enabled, std::memory_order_relaxed);
     g_stage_op_mode.store(static_cast<std::uint8_t>(cfg.operation_mode),
                           std::memory_order_relaxed);
@@ -710,6 +714,7 @@ void apply_and_reboot()
     config::DeviceConfig cfg = config::load();
     cfg.rtp_audio_enabled = g_stage_rtp.load(std::memory_order_relaxed);
     cfg.battery_gauge_enabled = g_stage_bat_gauge.load(std::memory_order_relaxed);
+    cfg.startup_arpeggio_enabled = g_stage_boot_arp.load(std::memory_order_relaxed);
     cfg.servo_enabled = g_stage_servo_master.load(std::memory_order_relaxed);
     // operation_mode is now the primary switch — the legacy openai_enabled /
     // jtts_idle_enabled gates are re-derived at boot from this value, so the
@@ -768,6 +773,7 @@ void init(SharedState& state)
     g_stage_conv.store(cfg.openai_enabled, std::memory_order_relaxed);
     g_stage_rtp.store(cfg.rtp_audio_enabled, std::memory_order_relaxed);
     g_stage_bat_gauge.store(cfg.battery_gauge_enabled, std::memory_order_relaxed);
+    g_stage_boot_arp.store(cfg.startup_arpeggio_enabled, std::memory_order_relaxed);
     g_stage_servo_master.store(cfg.servo_enabled, std::memory_order_relaxed);
     g_stage_op_mode.store(static_cast<std::uint8_t>(cfg.operation_mode),
                           std::memory_order_relaxed);
@@ -897,6 +903,10 @@ void handle_tap(int x, int y)
                                        std::memory_order_relaxed);
             g_dirty.store(true, std::memory_order_relaxed);
         } else if (hit_row(5)) {
+            g_stage_boot_arp.store(!g_stage_boot_arp.load(std::memory_order_relaxed),
+                                   std::memory_order_relaxed);
+            g_dirty.store(true, std::memory_order_relaxed);
+        } else if (hit_row(6)) {
             apply_and_reboot(); // does not return
         }
     } else if (page == kControl) {

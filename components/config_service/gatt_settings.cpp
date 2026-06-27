@@ -179,6 +179,11 @@ static const ble_uuid128_t kBatteryUuid = BLE_UUID128_INIT(
 static const ble_uuid128_t kBatteryGaugeUuid = BLE_UUID128_INIT(
     0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
     0x2a, 0x4d, 0x1c, 0x7b, 0x17, 0xa0, 0xf0, 0xe3);
+// StartupArpeggio — encrypted 1-byte flag (0=silent boot, 1=play). Toggles the
+// C5–E5–G5 speaker sanity check at startup. Staged + applied on the Apply reboot.
+static const ble_uuid128_t kStartupArpeggioUuid = BLE_UUID128_INIT(
+    0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
+    0x2a, 0x4d, 0x1c, 0x7b, 0x2e, 0xa0, 0xf0, 0xe3);
 // ServoLimits — encrypted compact JSON of per-servo zero position + motion
 // range. READ returns the active JSON; WRITE stages for Apply (reboot → servo
 // task reads at startup). See main/servo_limits.hpp for the schema.
@@ -358,6 +363,7 @@ struct StagingBuffer {
     std::optional<bool> rtp_audio_enabled;
     std::optional<bool> jtts_idle_enabled;
     std::optional<bool> battery_gauge_enabled;
+    std::optional<bool> startup_arpeggio_enabled;
     std::optional<bool> servo_enabled;
     std::optional<bool> led_mouth_sync_enabled;
     std::optional<std::string> mcp_api_token;
@@ -394,6 +400,7 @@ static uint16_t g_enabled_handle = 0;
 static uint16_t g_rtp_enabled_handle = 0;
 static uint16_t g_jtts_idle_enabled_handle = 0;
 static uint16_t g_bat_gauge_handle = 0;
+static uint16_t g_boot_arp_handle = 0;
 static uint16_t g_servo_enabled_handle = 0;
 static uint16_t g_mcp_token_handle = 0;
 static uint16_t g_lt_config_handle = 0;
@@ -753,6 +760,17 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
                 return BLE_ATT_ERR_UNLIKELY;
             }
             const std::uint8_t byte = g_active.battery_gauge_enabled ? 1 : 0;
+            const bool ok = append_encrypted(ctxt->om, {&byte, 1});
+            xSemaphoreGive(g_mutex);
+            return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
+        }
+        if (attr_handle == g_boot_arp_handle) {
+            xSemaphoreTake(g_mutex, portMAX_DELAY);
+            if (!g_session.is_established()) {
+                xSemaphoreGive(g_mutex);
+                return BLE_ATT_ERR_UNLIKELY;
+            }
+            const std::uint8_t byte = g_active.startup_arpeggio_enabled ? 1 : 0;
             const bool ok = append_encrypted(ctxt->om, {&byte, 1});
             xSemaphoreGive(g_mutex);
             return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
@@ -1248,6 +1266,13 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             xSemaphoreGive(g_mutex);
             return 0;
         }
+        if (attr_handle == g_boot_arp_handle) {
+            if (pt.size() != 1) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            xSemaphoreTake(g_mutex, portMAX_DELAY);
+            g_staging.startup_arpeggio_enabled = (pt[0] != 0);
+            xSemaphoreGive(g_mutex);
+            return 0;
+        }
         if (attr_handle == g_servo_enabled_handle) {
             if (pt.size() != 1) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
             xSemaphoreTake(g_mutex, portMAX_DELAY);
@@ -1549,6 +1574,7 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             if (g_staging.device_name) merged.device_name = *g_staging.device_name;
             if (g_staging.auth_password) merged.auth_password = *g_staging.auth_password;
             if (g_staging.battery_gauge_enabled) merged.battery_gauge_enabled = *g_staging.battery_gauge_enabled;
+            if (g_staging.startup_arpeggio_enabled) merged.startup_arpeggio_enabled = *g_staging.startup_arpeggio_enabled;
             if (g_staging.servo_enabled) merged.servo_enabled = *g_staging.servo_enabled;
             if (g_staging.mcp_api_token) merged.mcp_api_token = *g_staging.mcp_api_token;
             if (g_staging.lt_config) merged.lt_config_json = *g_staging.lt_config;
@@ -1655,6 +1681,12 @@ static ble_gatt_chr_def kChrs[] = {
         .access_cb = gatt_access_cb,
         .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
         .val_handle = &g_bat_gauge_handle,
+    },
+    {
+        .uuid = &kStartupArpeggioUuid.u,
+        .access_cb = gatt_access_cb,
+        .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+        .val_handle = &g_boot_arp_handle,
     },
     {
         .uuid = &kServoEnabledUuid.u,

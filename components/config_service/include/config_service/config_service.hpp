@@ -121,6 +121,11 @@ struct DeviceConfig {
     // true for backwards compatibility with NVS contents that pre-date the flag.
     // Takes effect after the Apply reboot.
     bool battery_gauge_enabled = true;
+    // Play the startup arpeggio (C5–E5–G5) on boot — the quick speaker sanity
+    // check immediately after audio init. Defaults to true (= ships behaviour
+    // before the flag existed). Set to false for a silent boot. Takes effect
+    // after the Apply reboot.
+    bool startup_arpeggio_enabled = true;
     // Master servo enable. When false, the servo VM rail stays off at boot AND
     // the servo task is never spawned (i.e. the head stays completely silent
     // and limp). Distinct from SharedState::servo_enabled which is the runtime
