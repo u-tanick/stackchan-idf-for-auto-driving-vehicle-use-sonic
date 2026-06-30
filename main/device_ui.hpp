@@ -22,6 +22,15 @@ namespace stackchan::app::ui {
 
 void init(SharedState& state);
 void handle_tap(int x, int y);
+
+// Horizontal flick from the M5Unified touch state machine — swipe-to-switch
+// tab. Caller passes the flick's net displacement (distanceX / distanceY
+// from touch_detail_t at the wasFlicked() edge). No-op when the UI isn't
+// shown, or when the gesture was too vertical / too short. Mirrors the
+// next/prev tab arrows in the top bar; useful on round panels (StopWatch)
+// where the arrow buttons sit at the edge of the visible circle.
+void handle_flick(int dx, int dy);
+
 // Open / close the UI without going through a tap. Used by physical-button
 // inputs (e.g. StopWatch's BtnA) when the corner of a round panel makes the
 // tap-to-open hot zone awkward to hit. Mirrors the open/close behaviour of

@@ -38,8 +38,22 @@ constexpr int kTabsPerPage = 3;
 constexpr int kContentY = kBarH + 8;     // 46
 constexpr int kRowH = 42;
 
-enum Page : int { kInfo = 0, kSettings = 1, kControl = 2, kRange = 3, kConversation = 4, kLtTimer = 5, kTabCount };
-const char* const kTabLabels[kTabCount] = {"情報", "設定", "操作", "範囲", "会話", "LT"};
+// Page enum order DOES define the swipe-next / swipe-prev order and the
+// tab-bar pagination grouping (kTabsPerPage slots per page), so keep
+// closely-related pages adjacent. Settings was split into two pages because
+// the 6 toggles + apply row no longer fit under kH=240 with kSettingsRowH=30
+// (was overflowing by ~16 px at the bottom).
+enum Page : int {
+    kInfo = 0,
+    kSettings = 1,
+    kSettings2 = 2,
+    kControl = 3,
+    kRange = 4,
+    kConversation = 5,
+    kLtTimer = 6,
+    kTabCount
+};
+const char* const kTabLabels[kTabCount] = {"情報", "設定1", "設定2", "操作", "範囲", "会話", "LT"};
 int num_tab_pages() { return (kTabCount + kTabsPerPage - 1) / kTabsPerPage; }
 
 const auto* const kFontTitle = &fonts::lgfxJapanGothic_24;
@@ -328,10 +342,12 @@ void draw_info()
     }
 
     int y = kContentY;
-    // 10 rows now (added MCP API state) — tighten dy from 22 → 20 so the
-    // bottom row fits under kH=240. (46 + 10*20 = 246; the last row's text
-    // baseline sits within the screen with a few px of slack.)
-    const int dy = 20;
+    // 10 rows. dy=20 was clipping the last row's text descender by ~6 px;
+    // 18 brings the bottom row's baseline to y=46+9*18=208, with text
+    // extending to ~y=224 — comfortable headroom under kH=240. Caller can
+    // also now swipe to navigate so visual continuity matters more than
+    // squeezing every pixel.
+    const int dy = 18;
     draw_kv(y, "FW", app ? app->version : "?", fg); y += dy;
     draw_kv(y, "SSID", g_ssid.empty() ? "(未設定)" : g_ssid.c_str(), fg); y += dy;
     draw_kv(y, "mDNS", g_host.c_str(), fg); y += dy;
@@ -412,6 +428,12 @@ void draw_button(int i, const char* label, std::uint16_t color, int row_h = kRow
     g_cv->drawString(label, rx + rw / 2, ry + rh / 2);
 }
 
+// Settings is split across two tabs so the 6 toggles + apply button fit
+// under kH=240 with kSettingsRowH=30 each. Apply (= save+reboot) lives only
+// on 設定2 — staged values from both pages are merged in apply_and_reboot.
+//
+//   設定1 — 動作モード / 音声出力 / RTP / 電池ゲージ            (5 rows w/ caption)
+//   設定2 — サーボ恒久 / 起動アルペジオ / 適用                   (4 rows w/ caption)
 void draw_settings()
 {
     draw_value_row(0, "動作モード",
@@ -422,16 +444,25 @@ void draw_settings()
                    kSettingsRowH);
     draw_toggle_row(2, "RTP 音声受信", g_stage_rtp.load(std::memory_order_relaxed), kSettingsRowH);
     draw_toggle_row(3, "電池ゲージ", g_stage_bat_gauge.load(std::memory_order_relaxed), kSettingsRowH);
-    draw_toggle_row(4, "サーボ (恒久)", g_stage_servo_master.load(std::memory_order_relaxed),
-                    kSettingsRowH);
-    draw_toggle_row(5, "起動アルペジオ", g_stage_boot_arp.load(std::memory_order_relaxed),
-                    kSettingsRowH);
-    draw_button(6, "適用（保存して再起動）", g_cv->color565(60, 120, 200), kSettingsRowH);
     g_cv->setFont(kFontBody);
     g_cv->setTextDatum(lgfx::textdatum_t::top_left);
     g_cv->setTextColor(g_cv->color565(150, 150, 150));
-    g_cv->drawString("行をタップで切替 / 変更は適用で反映",
-                     12, kContentY + 7 * kSettingsRowH + 2);
+    g_cv->drawString("→ スワイプで 設定2 / 操作 へ",
+                     12, kContentY + 4 * kSettingsRowH + 4);
+}
+
+void draw_settings2()
+{
+    draw_toggle_row(0, "サーボ (恒久)", g_stage_servo_master.load(std::memory_order_relaxed),
+                    kSettingsRowH);
+    draw_toggle_row(1, "起動アルペジオ", g_stage_boot_arp.load(std::memory_order_relaxed),
+                    kSettingsRowH);
+    draw_button(2, "適用（保存して再起動）", g_cv->color565(60, 120, 200), kSettingsRowH);
+    g_cv->setFont(kFontBody);
+    g_cv->setTextDatum(lgfx::textdatum_t::top_left);
+    g_cv->setTextColor(g_cv->color565(150, 150, 150));
+    g_cv->drawString("設定1+2 の変更を「適用」で保存・再起動",
+                     12, kContentY + 3 * kSettingsRowH + 4);
 }
 
 void draw_control()
@@ -691,6 +722,8 @@ void render_page()
         draw_info();
     } else if (page == kSettings) {
         draw_settings();
+    } else if (page == kSettings2) {
+        draw_settings2();
     } else if (page == kControl) {
         draw_control();
     } else if (page == kRange) {
@@ -884,7 +917,7 @@ void handle_tap(int x, int y)
     const int page = g_page.load(std::memory_order_relaxed);
     // kSettings packs 5 rows tighter than kRowH so the apply button + caption
     // fit; keep the default kRowH for kControl and the other pages.
-    const int row_h = (page == kSettings) ? kSettingsRowH : kRowH;
+    const int row_h = (page == kSettings || page == kSettings2) ? kSettingsRowH : kRowH;
     auto hit_row = [&](int i) {
         int rx, ry, rw, rh;
         row_rect(i, rx, ry, rw, rh, row_h);
@@ -909,15 +942,17 @@ void handle_tap(int x, int y)
         } else if (hit_row(3)) {
             g_stage_bat_gauge.store(!g_stage_bat_gauge.load(std::memory_order_relaxed), std::memory_order_relaxed);
             g_dirty.store(true, std::memory_order_relaxed);
-        } else if (hit_row(4)) {
+        }
+    } else if (page == kSettings2) {
+        if (hit_row(0)) {
             g_stage_servo_master.store(!g_stage_servo_master.load(std::memory_order_relaxed),
                                        std::memory_order_relaxed);
             g_dirty.store(true, std::memory_order_relaxed);
-        } else if (hit_row(5)) {
+        } else if (hit_row(1)) {
             g_stage_boot_arp.store(!g_stage_boot_arp.load(std::memory_order_relaxed),
                                    std::memory_order_relaxed);
             g_dirty.store(true, std::memory_order_relaxed);
-        } else if (hit_row(6)) {
+        } else if (hit_row(2)) {
             apply_and_reboot(); // does not return
         }
     } else if (page == kControl) {
@@ -1013,6 +1048,40 @@ void handle_tap(int x, int y)
             g_dirty.store(true, std::memory_order_relaxed);
         }
     }
+}
+
+// Horizontal flick → next/prev tab. Vertical flicks (e.g. user scrolling
+// intent we don't yet support) and short / too-vertical flicks are ignored
+// so a curved drag-style tap doesn't accidentally switch tabs.
+void handle_flick(int dx, int dy)
+{
+    if (!g_active.load(std::memory_order_relaxed)) return;
+    // Range mode is a hand-driven page (user is moving the head manually);
+    // a horizontal flick is almost certainly trying to capture a position
+    // for the buttons, not switch tabs. Same for LT timer running — we
+    // don't want a swipe to take the user away mid-talk.
+    const int page = g_page.load(std::memory_order_relaxed);
+    if (page == kRange) return;
+    if (page == kLtTimer && g_state->lt_active.load(std::memory_order_relaxed)) return;
+
+    const int adx = dx < 0 ? -dx : dx;
+    const int ady = dy < 0 ? -dy : dy;
+    if (adx < 60) return;        // too short to be a deliberate horizontal swipe
+    if (adx < 2 * ady) return;   // too vertical — leave for future scroll support
+
+    const int step = (dx < 0) ? +1 : -1; // swipe left = go forward
+    int next = page + step;
+    if (next < 0)            next = kTabCount - 1;
+    if (next >= kTabCount)   next = 0;
+
+    // Mirror the per-page side effects the tab-bar tap path applies:
+    // range mode is on iff we're sitting on the range page.
+    update_range_mode_for_page(next);
+    g_page.store(next, std::memory_order_relaxed);
+    // Keep the tab bar's currently-shown slot group aligned with the new
+    // page so the active tab is visible in the bar.
+    g_tab_page.store(next / kTabsPerPage, std::memory_order_relaxed);
+    g_dirty.store(true, std::memory_order_relaxed);
 }
 
 bool draw(avatar::RichCanvas& canvas)

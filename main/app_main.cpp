@@ -611,6 +611,13 @@ void demo_loop(const std::string& jtts_config_json, bool has_battery, bool is_at
             app::atom_status::poll_button();
         } else {
             const auto td = M5.Touch.getDetail();
+            // Horizontal flick → next/prev tab. M5Unified emits this on the
+            // release frame after a touch that travelled past the flick
+            // threshold. We treat it independently of the press path so a
+            // press that ends in a flick doesn't also fire the tap action.
+            if (td.wasFlicked()) {
+                app::ui::handle_flick(td.distanceX(), td.distanceY());
+            }
             if (td.wasPressed()) {
                 // AP provisioning screen owns the touch while it's up —
                 // the on-screen "終了" button is how the user dismisses
