@@ -561,7 +561,10 @@ private:
         }
         const int rc = esp_websocket_client_send_text(client_, text, std::strlen(text), kSendTimeout);
         cJSON_free(text);
-        return rc >= 0;
+        // rc==0 means the poll_write timed out (nothing sent). Serialized JSON
+        // is always non-empty here, so only rc>0 is a real success — treating 0
+        // as success would silently drop tool results and hang the turn.
+        return rc > 0;
     }
 
     // ---- outbound: session.update -----------------------------------------

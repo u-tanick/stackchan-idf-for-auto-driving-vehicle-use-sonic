@@ -459,7 +459,10 @@ private:
         }
         std::memcpy(rx_buffer_ + rx_len_, data->data_ptr, chunk);
         rx_len_ += chunk;
-        if (rx_len_ < total) return; // wait for the rest
+        // Require total > 0: a payload_len==0 fragment (with data_len>0) would
+        // otherwise satisfy rx_len_ >= total immediately and parse an
+        // incomplete JSON frame. Wait for the framed total to be known.
+        if (rx_len_ < total || total == 0) return; // wait for the rest
         parse_server_event(rx_buffer_, rx_len_);
         rx_len_ = 0;
     }
@@ -961,6 +964,16 @@ private:
 
     // Resumption handle from goAway / sessionResumptionUpdate. Empty means
     // no prior session.
+    //
+    // THREADING INVARIANT: session_handle_ is only ever touched on the WS
+    // event task. The three access sites — the 1008 clear in the CLOSED
+    // handler, the read in send_setup() (invoked from WEBSOCKET_EVENT_CONNECTED)
+    // and the assign in handle_session_resumption_update() (reached via
+    // WEBSOCKET_EVENT_DATA) — all run on that single task and are thus
+    // serialized. Do NOT read or write it from the audio TX / conversation
+    // tasks; if that ever becomes necessary, add explicit synchronization
+    // (a dedicated mutex, not send_mutex_, to avoid ordering issues with the
+    // send path).
     std::string session_handle_;
 
     // Stash of the last WS close frame (opcode 0x08) we saw on this client.

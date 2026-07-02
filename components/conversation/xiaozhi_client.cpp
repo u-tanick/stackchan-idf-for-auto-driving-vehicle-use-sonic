@@ -485,7 +485,10 @@ private:
         }
         std::memcpy(rx_buffer_ + rx_len_, data->data_ptr, chunk);
         rx_len_ += chunk;
-        if (rx_len_ < total) return; // wait for the rest of a fragmented frame
+        // Require total > 0: a payload_len==0 fragment (with data_len>0) would
+        // otherwise satisfy rx_len_ >= total immediately and dispatch an
+        // incomplete frame. Wait for the framed total to be known.
+        if (rx_len_ < total || total == 0) return; // wait for the rest of a fragmented frame
 
         if (rx_op_code_ == 0x02) {
             handle_audio_frame(rx_buffer_, rx_len_);
@@ -505,7 +508,10 @@ private:
         if (str == nullptr) return false;
         const int rc = esp_websocket_client_send_text(client_, str, std::strlen(str), kSendTimeout);
         cJSON_free(str);
-        return rc >= 0;
+        // rc==0 means the poll_write timed out (nothing sent). Serialized JSON
+        // is always non-empty here, so only rc>0 is a real success — treating 0
+        // as success would silently drop control messages and hang the turn.
+        return rc > 0;
     }
 
     void send_hello()
@@ -766,7 +772,10 @@ private:
                 static_cast<int>(out.encoded_bytes), kSendTimeout);
         }
         ++audio_seq_;
-        if (rc < 0) {
+        // rc==0 is a poll_write timeout (nothing sent); the Opus frame here is
+        // always non-empty, so treat rc<=0 as a failed send — matching the
+        // gemini/openai audio-send heartbeats.
+        if (rc <= 0) {
             ESP_LOGW(kTag, "audio send failed seq=%lu rc=%d",
                      static_cast<unsigned long>(audio_seq_), rc);
         } else if ((audio_seq_ % 100) == 1) {
