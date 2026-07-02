@@ -1278,7 +1278,14 @@ void add(httpd_handle_t s, const char* uri, httpd_method_t m, esp_err_t (*h)(htt
     cfg.method = m;
     cfg.handler = h;
     cfg.user_ctx = nullptr;
-    httpd_register_uri_handler(s, &cfg);
+    esp_err_t err = httpd_register_uri_handler(s, &cfg);
+    if (err != ESP_OK) {
+        // Most likely ESP_ERR_HTTPD_HANDLERS_FULL: max_uri_handlers
+        // (wifi_config_service.cpp) is below the number of add() calls below.
+        // Make the drop loud so it can't silently 404 a route again.
+        ESP_LOGE(kTag, "register_uri_handler(%s) failed: %s — raise cfg.max_uri_handlers",
+                 uri, esp_err_to_name(err));
+    }
 }
 
 } // namespace
