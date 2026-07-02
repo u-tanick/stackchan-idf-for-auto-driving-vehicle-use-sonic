@@ -357,8 +357,9 @@
     このページは device 自身の AP <code>http://192.168.4.1/</code> 経由で表示されており、
     <em>認証パスワードは一時的に無効化</em> されています (物理ボタンで AP を有効化
     した ≒ 本体アクセス済み)。まず「接続」タブで家庭 Wi-Fi の SSID / パスワードを
-    設定 → 保存 &amp; 再起動、または STA が繋がるのを待って「メンテ」タブから release
-    fetch OTA を実行してください。
+    設定 → 保存 &amp; 再起動してください。ファームを更新する場合は、STA 未接続では
+    リリース取得 (device side fetch) が使えないため、「メンテ」タブの
+    <strong>ローカル ファイル アップロード</strong> を使用してください。
   </div>
 
   <div class="page-header">
@@ -805,7 +806,7 @@
         別パーティションに書き込んで再起動します。Wi-Fi 経由は BLE より大幅に高速です。
       </p>
       <details style="margin:0.5rem 0; font-size:0.85rem; color:#444">
-        <summary style="cursor:pointer; color:#06c">最新の release を取得する手順 (iPhone / AP モードでも可)</summary>
+        <summary style="cursor:pointer; color:#06c">最新の release をローカル ファイルで書き込む手順 (iPhone / AP モードでも可)</summary>
         <ol style="margin:0.5rem 0 0.5rem 1.2rem; padding:0">
           <li>Safari で
             <a href="https://ciniml.github.io/stackchan-idf/" target="_blank" rel="noopener">
@@ -827,6 +828,26 @@
           パーティション+アプリの結合イメージ (USB 初回書き込み用) で OTA には使えません。
         </p>
       </details>
+      <p id="ota-android-cpl-note" hidden
+         style="margin:0.5rem 0; font-size:0.85rem; color:#664d03;
+                background:#fff3cd; border:1px solid #ffe69c;
+                padding:0.5rem 0.7rem; border-radius:6px; line-height:1.4">
+        ⚠ <strong>Android で「ファイル選択」が反応しない場合</strong>:
+        <ol style="margin:0.4rem 0 0 0; padding-left:1.2rem">
+          <li>この画面が「ネットワークにログイン」ミニブラウザ
+            (CaptivePortalLogin) で開いている場合、ファイル選択は動作しません。</li>
+          <li>右上の <strong>⋮ メニュー →「このネットワークをこのまま使用」</strong>
+            を選択してください (Stackchan AP への接続が維持されます)。</li>
+          <li><strong>Chrome</strong> を開いて
+            <code>http://192.168.4.1/</code> にアクセスし、そちらで
+            ファイル選択・OTA を実行してください。</li>
+        </ol>
+        <span style="display:block; margin-top:0.4rem">
+          ※ Android が「インターネット接続がありません」と表示しても、
+          接続は維持したままにしてください。元の Wi-Fi に自動で戻って
+          しまう場合は、Wi-Fi 設定で Stackchan AP を選び直してください。
+        </span>
+      </p>
       <div class="ota-row">
         <input type="file" id="ota-file" accept=".bin">
         <button id="btn-ota" type="button" disabled>書き込み</button>
@@ -853,6 +874,13 @@
         ドロップダウンで選ぶと右のテキスト欄に反映されます。手入力も可 (未来の
         tag / 特殊 build)。ボード判定 (cores3 / atoms3r / atoms3 / stopwatch) は
         device 側で自動。進捗は下の status バーに反映されます。
+      </p>
+      <p id="ota-release-ap-note" hidden
+         style="margin:0.5rem 0 0 0; font-size:0.85rem; color:#664d03;
+                background:#fff3cd; border:1px solid #ffe69c;
+                padding:0.5rem 0.7rem; border-radius:6px; line-height:1.4">
+        ⚠ AP モード (STA 未接続) 中はリリース取得できません。上の「ローカル
+        ファイル アップロード」を使用してください。
       </p>
 
       <div class="ota-status" id="ota-status">
@@ -1331,7 +1359,16 @@ async function refresh() {
     setDot('http-dot', 'http-connected');
     $('http-label').textContent = 'HTTP 接続中';
     $('btn-ota').disabled = false;
-    $('btn-ota-release').disabled = false;
+    // Release fetch needs the device's STA uplink to reach GitHub Pages.
+    // In AP (provisioning) mode STA is unassociated, so disable the release
+    // controls and show a note pointing at the local-upload path instead.
+    // The server also rejects the POST with 409, but disabling up front
+    // avoids a confusing round-trip.
+    const staDown = !s.wifi_connected;
+    $('btn-ota-release').disabled = staDown;
+    $('ota-release-select').disabled = staDown;
+    const relNote = document.getElementById('ota-release-ap-note');
+    if (relNote) relNote.hidden = !staDown;
     // Kick off a versions.json fetch in the background. The endpoint
     // proxies GitHub Pages through the device's STA link, so it works
     // from AP-mode iOS where the browser can't reach github directly.
@@ -1790,6 +1827,16 @@ $('ota-release-select').addEventListener('change', (e) => {
 });
 
 refresh();
+
+// Android の captive-portal ミニブラウザ (CaptivePortalLogin WebView) は
+// <input type="file"> のファイルピッカーを実装しないため、ローカル OTA の
+// 「ファイル選択」が無反応になる。UA が Android のときは上の注記を表示して
+// Chrome で開き直すよう促す。iOS / PC Chrome には出さない。
+(function warnAndroidFilePicker() {
+  const note = document.getElementById('ota-android-cpl-note');
+  if (!note) return;
+  if (/Android/i.test(navigator.userAgent)) note.hidden = false;
+})();
 
 // ===== Mic lip-sync calibration ============================================
 // Two sliders mirroring the BLE page's chr 0x23 — input gain and output gain

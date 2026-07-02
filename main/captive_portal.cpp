@@ -109,6 +109,24 @@ void dns_task(void*)
 
 esp_err_t catchall_handler(httpd_req_t* req, httpd_err_code_t /*err*/)
 {
+    // NOTE (learned the hard way — do NOT re-try the 204 approach):
+    // We once special-cased Android's probes (`/generate_204`, `/gen_204`) to
+    // return `204 No Content`, hoping Android would see "network is open" and
+    // skip the CaptivePortalLogin WebView (whose `<input type="file">` is
+    // broken) so the user could just use Chrome. On a real Android device this
+    // BACKFIRED: Android also verifies connectivity over HTTPS, so an HTTP-only
+    // 204 never convinces it there's real internet. Instead it decided there
+    // was "no internet" AND lost the captive-portal state — which meant it also
+    // dropped its hold on our network and AUTO-SWITCHED back to a saved AP
+    // (observed: the portal opened then immediately closed, disconnecting from
+    // the Stackchan AP and reverting to the previous Wi-Fi).
+    //
+    // So: keep every URL on the plain 302 → http://192.168.4.1/ captive-portal
+    // path (below). That preserves the captive judgement so Android holds our
+    // network. We guide the user to CaptivePortalLogin's ⋮ menu →
+    // "Use this network as is", then re-open http://192.168.4.1/ in Chrome
+    // (see the Android note in settings_wifi.html).
+
     // 302 to the settings page on the AP IP. iOS captive-portal probes
     // (Apple `/hotspot-detect.html`, etc.) follow this and the OS pops the
     // captive sheet directly to settings_wifi.html. The browser also gets
