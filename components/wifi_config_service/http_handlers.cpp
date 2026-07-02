@@ -18,6 +18,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <esp_app_desc.h>
@@ -124,6 +125,29 @@ constexpr std::size_t kMaxBodyBytes = 32768;
 constexpr std::size_t kMaxDeviceName = 24;
 constexpr std::size_t kMaxAuthPassword = 64;
 
+// Constant-time string comparison for secrets (passwords / tokens). Both the
+// per-byte XOR accumulation and the length check are folded into a single
+// running accumulator so the response timing leaks neither the matching
+// prefix length nor the secret's length. Modelled on mbedtls's constant-time
+// helpers: we always walk the full expected length, indexing the candidate
+// modulo its own length (never out of bounds) so the loop count depends only
+// on `expected`, and OR in the length delta at the end.
+bool constant_time_equals(std::string_view a, std::string_view b)
+{
+    // Iterate over the longer of the two so a length mismatch cannot shorten
+    // the loop; the length delta below is what actually rejects it.
+    const std::size_t n = std::max(a.size(), b.size());
+    unsigned diff = static_cast<unsigned>(a.size() ^ b.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        // Index modulo each side's length so neither read runs past the end;
+        // when sizes differ the length delta above already forces a mismatch.
+        const unsigned char ca = a.empty() ? 0 : static_cast<unsigned char>(a[i % a.size()]);
+        const unsigned char cb = b.empty() ? 0 : static_cast<unsigned char>(b[i % b.size()]);
+        diff |= static_cast<unsigned>(ca ^ cb);
+    }
+    return diff == 0;
+}
+
 // --- HTTP Basic Auth gate ---
 //
 // Every public handler calls require_auth() at the top. When
@@ -165,7 +189,7 @@ bool require_auth(httpd_req_t* req)
                 auto colon = up.find(':');
                 if (colon != std::string::npos) {
                     const std::string pwd = up.substr(colon + 1);
-                    if (pwd == expected) return true;
+                    if (constant_time_equals(pwd, expected)) return true;
                 }
             }
         }
@@ -964,15 +988,9 @@ bool mcp_auth_ok(httpd_req_t* req)
     constexpr const char* prefix = "Bearer ";
     constexpr std::size_t plen = 7;
     if (std::strncmp(hdr, prefix, plen) != 0) return false;
-    // Constant-time compare on the token tail.
+    // Constant-time compare on the token tail (length mismatch included).
     const char* tok = hdr + plen;
-    const std::size_t expected_len = g_mcp_active_token.size();
-    if (std::strlen(tok) != expected_len) return false;
-    unsigned diff = 0;
-    for (std::size_t i = 0; i < expected_len; ++i) {
-        diff |= static_cast<unsigned char>(tok[i] ^ g_mcp_active_token[i]);
-    }
-    return diff == 0;
+    return constant_time_equals(std::string_view(tok, std::strlen(tok)), g_mcp_active_token);
 }
 
 esp_err_t mcp_gate(httpd_req_t* req)
