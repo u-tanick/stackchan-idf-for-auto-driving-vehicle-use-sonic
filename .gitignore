@@ -18,6 +18,11 @@ version.txt
 
 Makefile.local
 
+# Debug captures at repo root: Saleae I2C exports (see docs/known_issues.md §2)
+# and tools/monitor_log.py serial dumps. Kept local, never committed.
+/i2c*.csv
+/output.log
+
 *.swp
 *.swo
 .DS_Store
