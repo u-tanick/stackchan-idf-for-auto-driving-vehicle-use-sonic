@@ -29,6 +29,19 @@ namespace {
 
 constexpr const char* kTag = "wifi-sta";
 
+// Bounded copy into a fixed field that always NUL-terminates. Used for the
+// esp_wifi AP config's ssid/password byte arrays. strncpy(dst, src, sizeof-1)
+// and snprintf both trip GCC 14's -Werror=stringop-truncation /
+// format-truncation under IDF 5.5; an explicit memcpy of a clamped length
+// followed by a NUL is accepted on both IDF 5.4 (GCC 13) and 5.5 (GCC 14).
+void copy_field(std::uint8_t* dst, std::size_t cap, const char* src)
+{
+    std::size_t n = std::strlen(src);
+    if (n > cap - 1) n = cap - 1;
+    std::memcpy(dst, src, n);
+    dst[n] = 0;
+}
+
 std::atomic<bool> g_connected{false};
 std::atomic<bool> g_ap_active{false};
 // Cached AP credentials so wifi_ap_info() can serve the on-device QR screen
@@ -242,11 +255,9 @@ void wifi_enable_ap_mode()
     }
 
     wifi_config_t ap_cfg{};
-    std::strncpy(reinterpret_cast<char*>(ap_cfg.ap.ssid), g_ap_ssid,
-                 sizeof(ap_cfg.ap.ssid) - 1);
+    copy_field(ap_cfg.ap.ssid, sizeof(ap_cfg.ap.ssid), g_ap_ssid);
     ap_cfg.ap.ssid_len = std::strlen(g_ap_ssid);
-    std::strncpy(reinterpret_cast<char*>(ap_cfg.ap.password), g_ap_pw,
-                 sizeof(ap_cfg.ap.password) - 1);
+    copy_field(ap_cfg.ap.password, sizeof(ap_cfg.ap.password), g_ap_pw);
     ap_cfg.ap.channel        = 6;
     ap_cfg.ap.authmode       = WIFI_AUTH_WPA2_PSK;
     ap_cfg.ap.max_connection = 4;

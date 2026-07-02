@@ -85,9 +85,13 @@ bool draw(M5GFX& display)
         std::strcmp(ip, g_last_ip) == 0) {
         return false;
     }
-    std::strncpy(g_last_ssid, ssid, sizeof(g_last_ssid) - 1);
-    std::strncpy(g_last_pw, pw, sizeof(g_last_pw) - 1);
-    std::strncpy(g_last_ip, ip, sizeof(g_last_ip) - 1);
+    // Use snprintf rather than strncpy(dst, src, sizeof-1): GCC 14 (IDF 5.5)
+    // promotes -Wstringop-truncation to an error for the strncpy idiom because
+    // it may leave the buffer unterminated. snprintf always NUL-terminates and
+    // is accepted on both IDF 5.4 (GCC 13) and 5.5 (GCC 14).
+    std::snprintf(g_last_ssid, sizeof(g_last_ssid), "%s", ssid);
+    std::snprintf(g_last_pw, sizeof(g_last_pw), "%s", pw);
+    std::snprintf(g_last_ip, sizeof(g_last_ip), "%s", ip);
 
     const std::int32_t W = display.width();
     const std::int32_t H = display.height();
