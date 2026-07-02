@@ -109,7 +109,11 @@ ScsBus::send(std::uint8_t id, std::uint8_t instruction, std::span<const std::uin
     tx[2] = id;
     tx[3] = static_cast<std::uint8_t>(params.size() + 2); // instruction + params + checksum
     tx[4] = instruction;
-    std::memcpy(tx.data() + 5, params.data(), params.size());
+    // Guard the empty-params case: memcpy(dst, nullptr, 0) is technically UB
+    // (params.data() is null for an empty span) even though it copies nothing.
+    if (!params.empty()) {
+        std::memcpy(tx.data() + 5, params.data(), params.size());
+    }
     tx[5 + params.size()] = make_checksum(std::span{tx.data() + 2, 3 + params.size()});
 
     const std::size_t total = 6 + params.size();
