@@ -2023,7 +2023,7 @@ void reset_session()
     g_session.reset();
     // Any half-finished OTA must not survive a disconnect — esp_ota_abort
     // releases the partition so the bootloader keeps running the old image.
-    ota::abort();
+    ota::abort_update();
     // Same for in-flight audio streaming — abort so the decoder gets reset.
     // user_initiated = false because this is a transport-layer drop (BLE
     // disconnect), not the browser asking to abort. The sink may still

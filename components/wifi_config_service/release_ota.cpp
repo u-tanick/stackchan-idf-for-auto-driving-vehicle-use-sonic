@@ -186,7 +186,7 @@ void worker(void* arg)
     cleanup_client();
 
     if (!ok) {
-        config::ota::abort();
+        config::ota::abort_update();
         g_active.store(false, std::memory_order_release);
         vTaskDelete(nullptr);
     }

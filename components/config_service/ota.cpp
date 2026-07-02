@@ -164,7 +164,7 @@ std::string cmd_end()
 
 std::string cmd_abort()
 {
-    abort();
+    abort_update();
     return R"({"ok":true})";
 }
 
@@ -221,7 +221,7 @@ std::string status_json()
     return make_status();
 }
 
-void abort()
+void abort_update()
 {
     if (g_state.phase == Phase::Receiving && g_state.handle != 0) {
         esp_ota_abort(g_state.handle);

@@ -28,6 +28,6 @@ std::string status_json();
 
 // Drop any in-progress transfer (esp_ota_abort). Call on BLE disconnect so
 // a half-finished image can never be marked bootable.
-void abort();
+void abort_update();
 
 } // namespace stackchan::config::ota
