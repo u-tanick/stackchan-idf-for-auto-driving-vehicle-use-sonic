@@ -96,6 +96,14 @@ void led_task_entry(void* arg)
 
     TickType_t last_wake = xTaskGetTickCount();
     for (;;) {
+        // Camera session: the strip refresh reaches the PY32 over In_I2C on
+        // some boards, which would re-init the I2C controller under the
+        // camera's SCCB driver. Skip the whole frame while quiesced (LEDs
+        // just hold their last state for the ~1.5 s session).
+        if (state.i2c_quiesce.load(std::memory_order_acquire)) {
+            vTaskDelayUntil(&last_wake, kPeriodTicks);
+            continue;
+        }
         const std::uint8_t mode = state.led_mode.load(std::memory_order_relaxed);
         const std::uint32_t color = state.led_color.load(std::memory_order_relaxed);
         const std::uint8_t base_bright = state.led_brightness.load(std::memory_order_relaxed);

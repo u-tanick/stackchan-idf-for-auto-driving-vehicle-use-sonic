@@ -517,6 +517,16 @@ void demo_loop(const std::string& jtts_config_json, bool has_battery, bool is_at
     std::uint32_t next_shake_ms = 0;
 
     for (;;) {
+        // Camera session in progress: every In_I2C touch (M5.update's
+        // touch/BtnPWR poll, INA226 battery, Si12T nadenade, BMI270 shake)
+        // would re-init the I2C controller under the camera's SCCB driver
+        // and kill the capture. Idle the whole iteration instead — sessions
+        // are ~1.5 s one-shots, so buttons/touch just miss a beat.
+        if (g_state->i2c_quiesce.load(std::memory_order_acquire)) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+
         // Drive M5.update() so M5.Touch / M5.BtnPWR latch their state machines.
         M5.update();
 
@@ -1417,6 +1427,27 @@ extern "C" void app_main()
                     ESP_LOGW(kTag, "camera capture rejected: QR scan active");
                     return false;
                 }
+                // Quiesce every periodic In_I2C user for the whole session.
+                // Confirmed on hardware (2026-07-03): without this, an
+                // In_I2C access (touch poll etc.) between esp_camera_init's
+                // sensor probe and its register upload re-inits the I2C
+                // controller under the SCCB driver → SCCB_Write fails with
+                // ESP_ERR_INVALID_STATE and the whole init aborts.
+                struct QuiesceGuard {
+                    QuiesceGuard()
+                    {
+                        g_state->i2c_quiesce.store(true, std::memory_order_release);
+                        // Let in-flight iterations drain: demo_loop polls
+                        // every ~50 ms, led_task every 100 ms — 150 ms
+                        // guarantees both observed the flag before SCCB
+                        // starts driving the bus.
+                        vTaskDelay(pdMS_TO_TICKS(150));
+                    }
+                    ~QuiesceGuard()
+                    {
+                        g_state->i2c_quiesce.store(false, std::memory_order_release);
+                    }
+                } quiesce;
                 stackchan::board::CameraGc0308 camera;
                 if (auto r = camera.begin(); !r) {
                     ESP_LOGE(kTag, "camera capture: begin failed: %d",
