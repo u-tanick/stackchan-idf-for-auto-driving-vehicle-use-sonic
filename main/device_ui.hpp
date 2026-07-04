@@ -12,7 +12,10 @@
 //
 //   - handle_tap(): called from the task that runs M5.update() (demo_loop),
 //     once per press. Maps the tap to a UI action (open/close, switch tab,
-//     toggle, button) based on the current page.
+//     toggle, button) based on the current page. Returns true when the tap
+//     was consumed (UI shown, corner open zone, or the top-left mute zone);
+//     false means it fell through to the avatar (caller may treat it as a
+//     barge-in request).
 //   - active(): true while the UI is shown (the render task draws the UI
 //     instead of the avatar).
 //   - draw(): called from the render task each frame; renders into the caller's
@@ -21,7 +24,7 @@
 namespace stackchan::app::ui {
 
 void init(SharedState& state);
-void handle_tap(int x, int y);
+bool handle_tap(int x, int y);
 
 // Horizontal flick from the M5Unified touch state machine — swipe-to-switch
 // tab. Caller passes the flick's net displacement (distanceX / distanceY

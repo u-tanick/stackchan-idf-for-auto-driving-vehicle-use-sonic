@@ -68,6 +68,31 @@ void draw_battery_gauge(RichCanvas& canvas, int pct)
     canvas.end_group();
 }
 
+// One-touch mute badge: a struck-through speaker glyph shown whenever
+// speaker_muted is set, so the user can tell at a glance why the device is
+// silent. Drawn in the top-left corner — on touch boards the same corner is
+// the tap zone (device_ui::handle_tap) that toggles the flag, so the badge
+// doubles as the "tap here to unmute" affordance.
+void draw_mute_badge(RichCanvas& canvas, int x, int y)
+{
+    constexpr int w = 34, h = 16;
+    const std::uint16_t white = canvas.color565(235, 235, 235);
+    const std::uint16_t black = canvas.color565(0, 0, 0);
+    const std::uint16_t red = canvas.color565(230, 110, 110);
+
+    canvas.begin_group(x - 1, y - 1, w + 2, h + 2);
+    canvas.fillRoundRect(x - 1, y - 1, w + 2, h + 2, 3, black);
+    canvas.drawRoundRect(x - 1, y - 1, w + 2, h + 2, 3, red);
+    // Speaker glyph: driver box + cone.
+    canvas.fillRect(x + 5, y + 5, 4, 6, white);
+    canvas.fillTriangle(x + 9, y + 8, x + 16, y + 1, x + 16, y + 15, white);
+    // Diagonal red bar across the glyph (two triangles — the Canvas
+    // abstraction has no thick-line primitive).
+    canvas.fillTriangle(x + 20, y + 1, x + 24, y + 1, x + 32, y + 15, red);
+    canvas.fillTriangle(x + 20, y + 1, x + 28, y + 15, x + 32, y + 15, red);
+    canvas.end_group();
+}
+
 void render_task_entry(void* arg)
 {
     auto& args = *static_cast<RenderTaskArgs*>(arg);
@@ -119,6 +144,7 @@ void render_task_entry(void* arg)
     std::string balloon_scratch;
     bool balloon_pending = false;
     bool ui_was_active = false;
+    bool last_muted = false;
 
     for (;;) {
         const std::uint32_t now_ms = static_cast<std::uint32_t>(esp_timer_get_time() / 1000);
@@ -192,6 +218,15 @@ void render_task_entry(void* arg)
             last_face_bytecode_version = face_bc_version;
         }
 
+        // Mute badge appears/disappears with the flag; the direct (partial-
+        // update) strategy never repaints untouched pixels, so force a full
+        // repaint on each edge or the stale badge lingers after unmute.
+        const bool muted_now = state->speaker_muted.load(std::memory_order_relaxed);
+        if (muted_now != last_muted) {
+            last_muted = muted_now;
+            avatar.request_full_repaint();
+        }
+
         const int expr = args.state->expression.load(std::memory_order_relaxed);
         if (expr != last_expression) {
             avatar.set_expression(static_cast<avatar::Expression>(expr));
@@ -220,11 +255,23 @@ void render_task_entry(void* arg)
         avatar.tick(now_ms, canvas);
 
         // Battery gauge overlay. Live from SharedState.
+        bool gauge_shown = false;
         if (state->battery_gauge_enabled.load(std::memory_order_relaxed)) {
             const int pct = state->battery_pct.load(std::memory_order_relaxed);
             if (pct >= 0) {
                 draw_battery_gauge(canvas, pct);
+                gauge_shown = true;
             }
+        }
+
+        // Mute badge, below the battery gauge when both are up. Round
+        // panels (StopWatch) inset it to the inscribed square so it stays
+        // on the visible circle.
+        if (state->speaker_muted.load(std::memory_order_relaxed)) {
+            const int inset = args.circular_display
+                ? static_cast<int>(canvas_w * (1.0f - 0.70710678f) * 0.5f) + 4
+                : 6;
+            draw_mute_badge(canvas, inset, inset + (gauge_shown ? 22 : 0));
         }
 
         canvas.end_frame();

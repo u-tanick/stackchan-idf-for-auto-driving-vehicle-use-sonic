@@ -472,8 +472,8 @@ void draw_control()
     draw_button(1, "姿勢をリセット", g_cv->color565(60, 120, 200));
 
     // Speaker volume row: 3 hit zones — left third = -10 %, right third =
-    // +10 %, center shows the current value. Live (no reboot) — applied
-    // by demo_loop on the next iteration.
+    // +10 %, center shows the current value and toggles mute. Live (no
+    // reboot) — applied by demo_loop on the next iteration.
     const std::uint16_t pct = g_state->speaker_volume_pct.load(std::memory_order_relaxed);
     int rx, ry, rw, rh;
     row_rect(2, rx, ry, rw, rh);
@@ -489,10 +489,17 @@ void draw_control()
     // (the Unicode minus U+2212 doesn't have a glyph in this build).
     g_cv->drawString("-", rx + rw / 6, ry + rh / 2);
     g_cv->drawString("+", rx + (5 * rw) / 6, ry + rh / 2);
-    // Value in the middle, big enough to read at a glance.
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "%u %%", static_cast<unsigned>(pct));
-    g_cv->drawString(buf, rx + rw / 2, ry + rh / 2);
+    // Value in the middle, big enough to read at a glance. While muted the
+    // value is replaced by a red ミュート label — tapping the center toggles
+    // it back (same zone as the mute tap).
+    if (g_state->speaker_muted.load(std::memory_order_relaxed)) {
+        g_cv->setTextColor(g_cv->color565(230, 110, 110));
+        g_cv->drawString("ミュート中", rx + rw / 2, ry + rh / 2);
+    } else {
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%u %%", static_cast<unsigned>(pct));
+        g_cv->drawString(buf, rx + rw / 2, ry + rh / 2);
+    }
 
     // Row 3: AP-mode toggle. Surfaced on Control (= live runtime actions)
     // rather than Settings because it doesn't stage / require reboot —
@@ -854,7 +861,7 @@ void toggle()
     }
 }
 
-void handle_tap(int x, int y)
+bool handle_tap(int x, int y)
 {
     // Translate physical touch coords into the 320×240 design space the
     // hit-test layout assumes. On panels where the UI is centered (e.g.
@@ -871,8 +878,19 @@ void handle_tap(int x, int y)
             g_tab_page.store(0, std::memory_order_relaxed); // 情報 is on page 0
             g_active.store(true, std::memory_order_relaxed);
             g_dirty.store(true, std::memory_order_relaxed);
+            return true;
         }
-        return;
+        // Top-left corner: one-touch speaker mute toggle (mirrors the
+        // open-UI hot zone on the opposite corner). demo_loop watches the
+        // atom and re-applies the M5.Speaker volume; render_task draws the
+        // mute badge in this corner so the zone stays discoverable while
+        // muted.
+        if (x < 64 && y < 64) {
+            g_state->speaker_muted.store(!g_state->speaker_muted.load(std::memory_order_relaxed),
+                                         std::memory_order_relaxed);
+            return true;
+        }
+        return false;
     }
 
     // Top bar.
@@ -881,20 +899,20 @@ void handle_tap(int x, int y)
         if (x >= b.close_x) { // close
             update_range_mode_for_page(-1); // ensure range mode is off on close
             g_active.store(false, std::memory_order_relaxed);
-            return;
+            return true;
         }
         const int np = num_tab_pages();
         if (b.paging && x >= b.prev_x && x < b.prev_x + kArrowW) {
             g_tab_page.store((g_tab_page.load(std::memory_order_relaxed) + np - 1) % np,
                              std::memory_order_relaxed);
             g_dirty.store(true, std::memory_order_relaxed);
-            return;
+            return true;
         }
         if (b.paging && x >= b.next_x && x < b.next_x + kArrowW) {
             g_tab_page.store((g_tab_page.load(std::memory_order_relaxed) + 1) % np,
                              std::memory_order_relaxed);
             g_dirty.store(true, std::memory_order_relaxed);
-            return;
+            return true;
         }
         for (int i = 0; i < b.slot_count; ++i) {
             if (x >= b.slots[i].x && x < b.slots[i].x + b.slots[i].w) {
@@ -910,7 +928,7 @@ void handle_tap(int x, int y)
                 break;
             }
         }
-        return;
+        return true;
     }
 
     // Content, per page.
@@ -964,11 +982,10 @@ void handle_tap(int x, int y)
             g_state->target_yaw_deg.store(0.0f, std::memory_order_relaxed);
             g_state->target_pitch_deg.store(0.0f, std::memory_order_relaxed);
         } else if (hit_row(2)) {
-            // Speaker-volume nudge row: left third = -10 %, right third
-            // = +10 %, center = no-op (avoids accidental tap). Bumps
-            // SharedState; demo_loop watches the atom and pushes the
-            // change through apply_speaker_volume_sink (M5.Speaker
-            // setVolume + NVS).
+            // Speaker-volume row: left third = -10 %, right third = +10 %,
+            // center = mute toggle. Bumps SharedState; demo_loop watches
+            // both atoms and pushes the change through the M5.Speaker
+            // volume (the pct also persists to NVS; mute does not).
             int rx, ry, rw, rh;
             row_rect(2, rx, ry, rw, rh);
             std::uint16_t pct = g_state->speaker_volume_pct.load(std::memory_order_relaxed);
@@ -980,6 +997,11 @@ void handle_tap(int x, int y)
             } else if (local_x >= (2 * rw) / 3) {
                 pct = (pct <= 190) ? (pct + 10) : 200;
                 g_state->speaker_volume_pct.store(pct, std::memory_order_relaxed);
+                g_dirty.store(true, std::memory_order_relaxed);
+            } else {
+                g_state->speaker_muted.store(
+                    !g_state->speaker_muted.load(std::memory_order_relaxed),
+                    std::memory_order_relaxed);
                 g_dirty.store(true, std::memory_order_relaxed);
             }
         } else if (hit_row(3)) {
@@ -1048,6 +1070,9 @@ void handle_tap(int x, int y)
             g_dirty.store(true, std::memory_order_relaxed);
         }
     }
+    // The UI owns the whole screen while active — even a miss on every hit
+    // zone must not fall through to the avatar's barge-in path.
+    return true;
 }
 
 // Horizontal flick → next/prev tab. Vertical flicks (e.g. user scrolling

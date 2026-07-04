@@ -159,6 +159,13 @@ public:
     // call M5.Speaker.setVolume() + save_speaker_volume() so the change
     // takes effect immediately and survives reboot.
     std::atomic<std::uint16_t> speaker_volume_pct{100};
+    // One-touch speaker mute. Session-only (deliberately NOT persisted to
+    // NVS — a reboot always restores sound). Toggled by the top-left corner
+    // tap on touch boards (device_ui), the volume row's center tap on the
+    // Control tab, or a 1.5 s BtnA hold-and-release on AtomS3 / AtomS3R
+    // (atom_status). demo_loop watches this and re-applies the effective
+    // M5.Speaker volume; render_task draws the mute badge while set.
+    std::atomic<bool> speaker_muted{false};
     // Adaptive noise-floor AGC enable. When true (default),
     // main/mic_lip_sync_task rebases its dB window on the tracked
     // ambient noise level; when false, a fixed floor is used. Live —

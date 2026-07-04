@@ -40,6 +40,9 @@ std::uint32_t g_last_draw_ms = 0;
 // gesture vocab:
 //   - short tap                            → toggle the status overlay
 //   - 1.5 s while overlay UP               → cycle operation_mode + reboot
+//   - 1.5–5 s while overlay DOWN, released → toggle one-touch speaker mute
+//     (fires on release, not at the 1.5 s mark, so holding on toward the
+//      5 s AP threshold does not also flip the mute state)
 //   - 5.0 s while overlay DOWN (idle)      → toggle SoftAP provisioning
 //     (so an iOS user without home Wi-Fi can hold-press to bring up the
 //      QR + AP without needing the overlay open first)
@@ -156,9 +159,22 @@ void poll_button()
         // Short tap → overlay toggle. Suppress if either long-press path
         // already fired (mode cycle reboots; AP toggle should not also
         // flip the overlay state).
+        const bool overlay_up = g_active.load(std::memory_order_relaxed);
         if (!g_long_press_fired && !g_ap_press_fired) {
-            g_active.store(!g_active.load(std::memory_order_relaxed),
-                           std::memory_order_relaxed);
+            g_active.store(!overlay_up, std::memory_order_relaxed);
+        } else if (g_long_press_fired && !g_ap_press_fired &&
+                   !overlay_up && !ap_screen::active()) {
+            // 1.5 s ≤ hold < 5 s from the idle avatar screen → one-touch
+            // speaker mute toggle. When the overlay is up the 1.5 s edge
+            // already cycled the mode (and rebooted), so reaching here
+            // with the flag set means the hold started overlay-down.
+            // demo_loop watches the atom and re-applies the M5.Speaker
+            // volume; render_task shows the mute badge for feedback.
+            if (g_state != nullptr) {
+                g_state->speaker_muted.store(
+                    !g_state->speaker_muted.load(std::memory_order_relaxed),
+                    std::memory_order_relaxed);
+            }
         }
         g_long_press_fired = false;
         g_ap_press_fired   = false;
@@ -239,6 +255,14 @@ bool draw(avatar::RichCanvas& canvas)
         canvas.drawString(value, val_x, y);
     };
 
+    // Mute marker folded into the Mode row — a dedicated row would push the
+    // 128 px layout past the panel edge.
+    const bool muted = g_state != nullptr &&
+                       g_state->speaker_muted.load(std::memory_order_relaxed);
+    char mode_buf[20];
+    std::snprintf(mode_buf, sizeof(mode_buf), "%s%s", op_mode_short(g_op_mode),
+                  muted ? " (mute)" : "");
+
     int row = 0;
     kv(row++, "FW",   app ? app->version : "?", fg);
     kv(row++, "SSID", g_ssid.empty() ? "(unset)" : g_ssid.c_str(), fg);
@@ -246,7 +270,7 @@ bool draw(avatar::RichCanvas& canvas)
     kv(row++, "Wifi", wifi ? "up" : "down", wifi ? ok : off);
     kv(row++, "BLE",  ble ? "conn" : "wait", ble ? ok : fg);
     kv(row++, "Conv", conv_status_label(cs), fg);
-    kv(row++, "Mode", op_mode_short(g_op_mode), fg);
+    kv(row++, "Mode", mode_buf, muted ? off : fg);
     kv(row++, "Time", time_buf, fg);
 
     // Hint: short tap dismisses; long press cycles mode + reboots.

@@ -138,6 +138,11 @@ void apply_speaker_volume(std::uint16_t pct) noexcept
     int v = static_cast<int>(g_speaker_base_volume) * static_cast<int>(pct) / 100;
     if (v > 255) v = 255;
     if (v < 0) v = 0;
+    // One-touch mute overrides the percent: master volume goes to 0 while
+    // the flag is set, and the user's pct survives untouched for unmute.
+    if (g_state != nullptr && g_state->speaker_muted.load(std::memory_order_relaxed)) {
+        v = 0;
+    }
     M5.Speaker.setVolume(static_cast<std::uint8_t>(v));
     if (g_state != nullptr) {
         g_state->speaker_volume_pct.store(pct, std::memory_order_relaxed);
@@ -514,6 +519,9 @@ void demo_loop(const std::string& jtts_config_json, bool has_battery, bool is_at
     // current atom (set by boot's apply_speaker_volume_sink call).
     std::uint16_t last_speaker_volume_pct =
         g_state->speaker_volume_pct.load(std::memory_order_relaxed);
+    // One-touch mute edge detection (corner tap / BtnA hold). Applied via
+    // apply_speaker_volume (NOT the sink) — mute is session-only, no NVS.
+    bool last_speaker_muted = g_state->speaker_muted.load(std::memory_order_relaxed);
 
     // Set true by the (render-task) completion callback so demo_loop knows
     // the previous balloon finished. Atomics keep it thread-safe.
@@ -561,6 +569,22 @@ void demo_loop(const std::string& jtts_config_json, bool has_battery, bool is_at
             if (cur != last_speaker_volume_pct) {
                 last_speaker_volume_pct = cur;
                 apply_speaker_volume_sink(cur);
+            }
+        }
+
+        // One-touch mute toggles (device_ui corner tap / atom_status BtnA
+        // hold). Re-run apply_speaker_volume with the unchanged percent so
+        // the M5.Speaker master volume snaps to 0 / back immediately — this
+        // also silences audio that's already mid-playback, since the mixer
+        // applies master volume per chunk. A short haptic confirms the
+        // toggle on boards with a vibration motor (no-op elsewhere).
+        {
+            const bool muted = g_state->speaker_muted.load(std::memory_order_relaxed);
+            if (muted != last_speaker_muted) {
+                last_speaker_muted = muted;
+                apply_speaker_volume(g_state->speaker_volume_pct.load(std::memory_order_relaxed));
+                ESP_LOGI(kTag, "speaker %s", muted ? "muted" : "unmuted");
+                if (g_board != nullptr) (void)g_board->vibrate(20);
             }
         }
 
@@ -660,14 +684,14 @@ void demo_loop(const std::string& jtts_config_json, bool has_battery, bool is_at
                 if (app::ap_screen::handle_tap(td.x, td.y)) {
                     continue;
                 }
-                const bool ui_before = app::ui::active();
-                app::ui::handle_tap(td.x, td.y);
-                // A tap that didn't open/use the on-device UI, while the
-                // assistant is mid-reply, is a barge-in request: voice input is
-                // paused for the whole turn, so the screen tap is how the user
+                const bool ui_consumed = app::ui::handle_tap(td.x, td.y);
+                // A tap the on-device UI didn't consume (didn't open / use
+                // the UI, didn't hit the mute corner), while the assistant is
+                // mid-reply, is a barge-in request: voice input is paused for
+                // the whole turn, so the screen tap is how the user
                 // interrupts. The conversation task consumes this during
                 // playback.
-                if (!ui_before && !app::ui::active() &&
+                if (!ui_consumed &&
                     g_state->barge_in_enabled.load(std::memory_order_relaxed) &&
                     g_state->conversation_active.load(std::memory_order_relaxed) &&
                     !g_state->conversation_idle.load(std::memory_order_relaxed)) {
