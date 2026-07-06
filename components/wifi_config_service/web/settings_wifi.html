@@ -601,8 +601,12 @@
         </div>
       </div>
 
-      <label for="jtts-phrases" style="margin-top:0.75rem">アイドル時の発話フレーズ (一行 1 つ・ひらがな/カタカナのみ)</label>
-      <textarea id="jtts-phrases" rows="6" placeholder="こんにちわー&#10;おはよー&#10;..."></textarea>
+      <label for="jtts-phrases" style="margin-top:0.75rem">アイドル時の発話フレーズ (一行 1 つ)</label>
+      <p class="hint" style="margin:0.2rem 0">
+        <code>画面表示 | 読み</code> の形式。読みはひらがな/カタカナのみ (漢字は発声時に
+        無視されます)。<code>|</code> を省くと表示と読みが同じになります。
+        例: <code>こんにちは | こんにちわ</code></p>
+      <textarea id="jtts-phrases" rows="6" placeholder="こんにちは | こんにちわ&#10;おはよー&#10;..."></textarea>
     </div>
     <div id="lt-section">
       <h2 class="section-title">LT タイムキーパー</h2>
@@ -1018,10 +1022,8 @@ function readJttsForm() {
     const v = $(id).value.trim();
     if (v !== '') obj[key] = Number(v);
   }
-  const phrases = $('jtts-phrases').value
-    .split('\n')
-    .map(s => s.trim())
-    .filter(s => s.length);
+  // `表示 | 読み` pair support shared with the BLE page (settings_common.js).
+  const phrases = StackchanSettings.jttsPhrasesFromText($('jtts-phrases').value);
   if (phrases.length) obj.phrases = phrases;
   return Object.keys(obj).length ? JSON.stringify(obj) : '';
 }
@@ -1034,7 +1036,9 @@ function applyJttsToForm(json) {
   for (const [key, id] of Object.entries(JTTS_NUM_FIELDS)) {
     if (obj[key] !== undefined) $(id).value = obj[key];
   }
-  if (Array.isArray(obj.phrases)) $('jtts-phrases').value = obj.phrases.join('\n');
+  if (Array.isArray(obj.phrases)) {
+    $('jtts-phrases').value = StackchanSettings.jttsPhrasesToText(obj.phrases);
+  }
 }
 
 // --- Servo limits + range-setting calibration ---

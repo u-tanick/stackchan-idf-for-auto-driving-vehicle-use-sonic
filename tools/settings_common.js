@@ -576,7 +576,41 @@
     }
   }
 
+  // --- jtts phrase list mapping ---------------------------------------------
+  // Textarea line format: `表示 | 読み` (reading optional). JSON entry: a
+  // plain string when display == reading (compact — the JttsConfig budget is
+  // ~768 bytes), otherwise {text, reading}. The device parser accepts both.
+  // MUST be used by both pages: a page that renders entries with a bare
+  // join('\n') turns object entries into "[object Object]" and then persists
+  // the corruption on the next save (bit the Wi-Fi page on HW).
+  function jttsPhrasesFromText(text) {
+    return text
+      .split('\n')
+      .map((line) => {
+        const bar = line.indexOf('|');
+        const t = (bar < 0 ? line : line.slice(0, bar)).trim();
+        const r = (bar < 0 ? line : line.slice(bar + 1)).trim();
+        return { text: t, reading: r };
+      })
+      .filter((p) => p.text.length > 0 || p.reading.length > 0)
+      .map((p) => {
+        const t = p.text || p.reading;
+        const r = p.reading || p.text;
+        return t === r ? t : { text: t, reading: r };
+      });
+  }
+  function jttsPhrasesToText(arr) {
+    if (!Array.isArray(arr)) return '';
+    return arr.map((p) => {
+      if (typeof p === 'string') return p;
+      const t = p.text ?? p.reading ?? '';
+      const r = p.reading ?? p.text ?? '';
+      return t === r ? t : `${t} | ${r}`;
+    }).join('\n');
+  }
+
   window.StackchanSettings = { BOARDS, boardLabel, boardSlug, log, setupTabs, init,
                                setupDslEditor, SERVO_DEFAULTS, setupServoCalibration,
-                               setupSecretFields, buildLtConfigJson, seedLtConfigForm };
+                               setupSecretFields, buildLtConfigJson, seedLtConfigForm,
+                               jttsPhrasesFromText, jttsPhrasesToText };
 })();

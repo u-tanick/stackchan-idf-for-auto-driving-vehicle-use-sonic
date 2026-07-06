@@ -1699,23 +1699,9 @@ function readJttsForm() {
       if (Number.isFinite(n)) obj[key] = n;
     }
   }
-  // Each line is `display | reading`. Emit a plain string when the two are
-  // identical (compact — keeps the 768-byte JttsConfig budget), otherwise an
-  // object {text, reading}. The device parser accepts both forms.
-  const phrases = document.getElementById('jtts-phrases').value
-    .split('\n')
-    .map(line => {
-      const bar = line.indexOf('|');
-      const text = (bar < 0 ? line : line.slice(0, bar)).trim();
-      const reading = (bar < 0 ? line : line.slice(bar + 1)).trim();
-      return { text, reading };
-    })
-    .filter(p => p.text.length > 0 || p.reading.length > 0)
-    .map(p => {
-      const text = p.text || p.reading;
-      const reading = p.reading || p.text;
-      return text === reading ? text : { text, reading };
-    });
+  // `表示 | 読み` pair support shared with the Wi-Fi page (settings_common.js).
+  const phrases = StackchanSettings.jttsPhrasesFromText(
+      document.getElementById('jtts-phrases').value);
   if (phrases.length > 0) obj.phrases = phrases;
   return obj;
 }
@@ -1740,12 +1726,8 @@ function writeJttsForm(json) {
     }
   }
   if (Array.isArray(obj.phrases)) {
-    document.getElementById('jtts-phrases').value = obj.phrases.map(p => {
-      if (typeof p === 'string') return p;
-      const text = p.text ?? p.reading ?? '';
-      const reading = p.reading ?? p.text ?? '';
-      return text === reading ? text : `${text} | ${reading}`;
-    }).join('\n');
+    document.getElementById('jtts-phrases').value =
+        StackchanSettings.jttsPhrasesToText(obj.phrases);
   }
 }
 
