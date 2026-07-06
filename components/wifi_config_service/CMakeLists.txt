@@ -62,13 +62,15 @@ set(_DSL_PRESET_FILES
     "${PROJECT_DIR}/assets/aokko_face.avdsl"
 )
 # The inject script depends on every JS source file it bundles, so rebuilds
-# pick up edits to the compiler.
+# pick up edits to the compiler. settings_common.js is inlined into the page
+# via the SETTINGS_COMMON placeholder, so it is a rebuild trigger too.
 file(GLOB _DSL_JS "${PROJECT_DIR}/tools/avatar_dsl/*.js" "${PROJECT_DIR}/tools/avatar_dsl/*.mjs")
+set(_SETTINGS_COMMON_JS "${PROJECT_DIR}/tools/settings_common.js")
 
 add_custom_command(
     OUTPUT "${_SETTINGS_OUT}"
     COMMAND ${NODE_EXECUTABLE} "${_DSL_INJECT}" "${_SETTINGS_SRC}" "${_SETTINGS_OUT}" ${_DSL_PRESETS}
-    DEPENDS "${_SETTINGS_SRC}" ${_DSL_PRESET_FILES} ${_DSL_JS}
+    DEPENDS "${_SETTINGS_SRC}" ${_DSL_PRESET_FILES} ${_DSL_JS} "${_SETTINGS_COMMON_JS}"
     COMMENT "[wifi_config_service] injecting avatar DSL compiler + presets into settings_wifi.html"
     VERBATIM
 )

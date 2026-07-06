@@ -80,6 +80,16 @@ html = html.replace(/"\{\{AVATAR_DSL_PRESETS\}\}"/g,
 html = html.replace(/"\{\{AVATAR_DSL_DEFAULT_SOURCE\}\}"/g,
   () => { ++srcHits; return firstSourceJson; });
 
+// Shared settings-page helpers (tools/settings_common.js). Optional: only
+// settings_wifi.html carries the placeholder (it must stay a single
+// embeddable file); settings.html loads the same file as a sibling
+// <script src> instead, and avatar.html doesn't use it at all.
+let commonHits = 0;
+html = html.replace(/\/\*\{\{SETTINGS_COMMON\}\}\*\//g, () => {
+  ++commonHits;
+  return readFileSync(resolve(SCRIPT_DIR, '..', 'settings_common.js'), 'utf8');
+});
+
 if (bundleHits === 0) {
   process.stderr.write(`warning: ${templatePath}: no '/*{{AVATAR_DSL_BUNDLE}}*/' placeholder found\n`);
 }
@@ -90,4 +100,6 @@ if (presetsHits === 0 && srcHits === 0) {
 writeFileSync(outPath, html);
 process.stdout.write(
   `[avatar_dsl] injected bundle (${bundle.length}B) + ${presets.length} preset(s) ` +
-  `(${presets.map((p) => p.name).join(', ')}) into ${templatePath} -> ${outPath}\n`);
+  `(${presets.map((p) => p.name).join(', ')})` +
+  (commonHits > 0 ? ' + settings_common.js' : '') +
+  ` into ${templatePath} -> ${outPath}\n`);

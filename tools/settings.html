@@ -1067,6 +1067,11 @@
      if absent (e.g. local file:// without a build) the avatar preview is skipped
      and BLE tuning still works (see setupAvatarPreview's guard). -->
 <script src="avatar_module.js" onerror="window.__avatarModuleMissing=true"></script>
+<!-- Transport-agnostic helpers (log panel / tab bar / board facts) shared
+     with the Wi-Fi settings page. Sibling file both in the repo (tools/) and
+     on the deployed site (pages.yml copies it next to settings.html), so the
+     same tag works over file:// during development. -->
+<script src="settings_common.js"></script>
 <!-- Avatar DSL compiler bundle (lexer/parser/emitter/compile/opcodes from
      tools/avatar_dsl/), concatenated into an IIFE that hangs the public API
      on window.AvatarDsl. Injected at Pages-deploy time by tools/avatar_dsl/
@@ -1183,18 +1188,13 @@ const CHR_JTTS_SAY = 'e3f0a02d-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 //   0x02 commit ()
 //   0xff reset  ()         (revert to firmware-embedded default)
 const CHR_AVATAR_BC = 'e3f0a021-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+// Board facts (labels / capabilities / firmware-ZIP slug) live in
+// settings_common.js — window.StackchanSettings.BOARDS.
 const BOARD_M5_BASE = 0;
 const BOARD_TAKAO_BASE = 1;
 const BOARD_ATOM_NYAN = 2;
 const BOARD_ATOM_S3 = 3;
 const BOARD_STOPWATCH = 4;
-const BOARD_LABELS = {
-  0: 'CoreS3 + M5 base',
-  1: 'CoreS3 + Takao base',
-  2: 'AtomS3R + Atomic ECHO BASE',
-  3: 'AtomS3 + Atomic ECHO BASE (slim)',
-  4: 'M5 StopWatch (C152)',
-};
 const CHR_JTTS    = 'e3f0a008-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_OTA_CTRL = 'e3f0a009-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 const CHR_OTA_DATA = 'e3f0a00a-7b1c-4d2a-9e6f-2c5a8d4b1f00';
@@ -1249,16 +1249,10 @@ let otaInFlight = false;
 let aesKey = null;  // CryptoKey for AES-256-GCM, derived per connection
 
 // --- Log ---
-const logEl = document.getElementById('log');
-function log(msg, cls = 'info') {
-  const now = new Date();
-  const ts = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
-  const div = document.createElement('div');
-  div.className = 'entry';
-  div.innerHTML = `<span class="ts">[${ts}]</span><span class="${cls}">${msg}</span>`;
-  logEl.appendChild(div);
-  logEl.scrollTop = logEl.scrollHeight;
-}
+// Shared implementation (settings_common.js). Classless calls render as
+// "info" on this page — the historical default here.
+StackchanSettings.init({ logDefaultClass: 'info' });
+const log = StackchanSettings.log;
 
 // --- UI helpers ---
 function setBleUi(connected) {
@@ -1858,11 +1852,11 @@ function applyCapabilityGating() {
   if (boardKind != null) {
     const modelEl = document.getElementById('dis-model');
     if (modelEl) {
-      modelEl.textContent = BOARD_LABELS[boardKind] || `kind ${boardKind}`;
+      modelEl.textContent = StackchanSettings.boardLabel(boardKind);
     }
     const hdrBoard = document.getElementById('hdr-board');
     if (hdrBoard) {
-      hdrBoard.textContent = BOARD_LABELS[boardKind] || `kind ${boardKind}`;
+      hdrBoard.textContent = StackchanSettings.boardLabel(boardKind);
     }
   }
   // Also mirror the firmware revision into the compact page header so the
@@ -1956,14 +1950,7 @@ async function fetchReleaseFirmware(tag) {
   // legacy single-zip releases (pre-AtomS3R) used a flat .zip field that
   // only ever held a cores3 image. boardKind = null = pre-CHR_BOARD_KIND
   // firmware; assume cores3 there (= original behaviour).
-  const boardName = (() => {
-    switch (boardKind) {
-      case BOARD_ATOM_NYAN: return 'atoms3r';
-      case BOARD_ATOM_S3:   return 'atoms3';
-      case BOARD_STOPWATCH: return 'stopwatch';
-      default:              return 'cores3'; // M5_BASE / TAKAO_BASE / null
-    }
-  })();
+  const boardName = StackchanSettings.boardSlug(boardKind);
   let zipName = null;
   if (rel.boards && rel.boards[boardName]) zipName = rel.boards[boardName];
   else if (rel.zip && boardName === 'cores3') zipName = rel.zip;
@@ -2764,7 +2751,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
         const bk = await readEncrypted(chrBoardKind);
         if (bk.length > 0) {
           boardKind = bk[0];
-          log(`基板: ${BOARD_LABELS[boardKind] || `kind ${boardKind}`}`);
+          log(`基板: ${StackchanSettings.boardLabel(boardKind)}`);
         }
       } catch (e) {
         log(`基板種別の取得失敗: ${e.message}`, 'err');
@@ -4245,26 +4232,7 @@ async function refreshBattery() {
 // <details> stack (see plan-md-lucky-dongarra.md). All existing section IDs
 // (#avatar-section, #led-section, etc.) live inside their respective panels so
 // no event listener or chr-probing code needed to change.
-(function setupTabs() {
-  const tabs = document.querySelectorAll('.tabs button[data-tab]');
-  const panels = document.querySelectorAll('.tab-panel[data-tab]');
-  const LS_KEY = 'stackchan.settings.ble.activeTab';
-  function activate(name) {
-    let found = false;
-    tabs.forEach(b => {
-      const on = b.dataset.tab === name;
-      b.classList.toggle('active', on);
-      if (on) found = true;
-    });
-    if (!found) return;
-    panels.forEach(p => p.classList.toggle('active', p.dataset.tab === name));
-    try { localStorage.setItem(LS_KEY, name); } catch {}
-  }
-  tabs.forEach(b => b.addEventListener('click', () => activate(b.dataset.tab)));
-  let saved = null;
-  try { saved = localStorage.getItem(LS_KEY); } catch {}
-  if (saved) activate(saved);
-})();
+StackchanSettings.setupTabs('stackchan.settings.ble.activeTab');
 </script>
 </body>
 </html>

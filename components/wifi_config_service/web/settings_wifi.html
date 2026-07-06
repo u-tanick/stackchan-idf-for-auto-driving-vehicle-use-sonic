@@ -945,26 +945,19 @@
   window.AVATAR_DSL_PRESETS = "{{AVATAR_DSL_PRESETS}}";
   window.AVATAR_DSL_DEFAULT_SOURCE = "{{AVATAR_DSL_DEFAULT_SOURCE}}";
 </script>
+<!-- Transport-agnostic helpers (log panel / tab bar / board facts) shared
+     with the BLE settings page. tools/settings_common.js is inlined here at
+     firmware build time by tools/avatar_dsl/inject.mjs — this page must
+     stay a single embeddable file. -->
+<script>/*{{SETTINGS_COMMON}}*/</script>
 
 <script>
 const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder();
 
-function log(msg, kind = '') {
-  const div = document.createElement('div');
-  div.className = 'entry';
-  const ts = document.createElement('span');
-  ts.className = 'ts';
-  ts.textContent = new Date().toLocaleTimeString();
-  const body = document.createElement('span');
-  body.className = kind;
-  body.textContent = ' ' + msg;
-  div.appendChild(ts);
-  div.appendChild(body);
-  const el = $('log');
-  el.appendChild(div);
-  el.scrollTop = el.scrollHeight;
-}
+// Shared implementation (settings_common.js, inlined above). Classless
+// calls render plain on this page — the historical default here.
+const log = StackchanSettings.log;
 
 async function fetchJSON(path) {
   const r = await fetch(path, { cache: 'no-store' });
@@ -1244,30 +1237,13 @@ $('btn-lt-send').addEventListener('click', () => {
 // Per-board gating: Atom-nyan has no servos, no battery monitor. Older
 // firmware that doesn't report "board" in /api/status leaves this null, in
 // which case we keep everything visible (historical M5-base behaviour).
-const BOARD_M5_BASE = 0;
-const BOARD_TAKAO_BASE = 1;
-const BOARD_ATOM_NYAN = 2;
-const BOARD_ATOM_S3 = 3;
-const BOARD_STOPWATCH = 4;
-const BOARD_LABELS = {
-  0: 'CoreS3 + M5 base',
-  1: 'CoreS3 + Takao base',
-  2: 'AtomS3R + Atomic ECHO BASE',
-  3: 'AtomS3 + Atomic ECHO BASE (slim)',
-  4: 'M5 StopWatch (C152)',
-};
-
 function applyBoardGating(kind) {
-  // No servo: Atom-family and StopWatch all lack the M5 base servo bus.
-  // (StopWatch's back-side UART0 servo route is Phase-3 opt-in, not surfaced.)
-  const noServo = (kind === BOARD_ATOM_NYAN) ||
-                  (kind === BOARD_ATOM_S3) ||
-                  (kind === BOARD_STOPWATCH);
-  // Battery telemetry: M5 base = INA226, StopWatch = M5PM1.
-  // Takao / AtomNyan / AtomS3 = none.
-  const noBattery = (kind === BOARD_TAKAO_BASE) ||
-                    (kind === BOARD_ATOM_NYAN) ||
-                    (kind === BOARD_ATOM_S3);
+  // Capability facts come from the shared board table (settings_common.js).
+  // Unknown / null kind → no gating (both flags false), matching the old
+  // behaviour for pre-BoardKind firmware.
+  const cap = StackchanSettings.BOARDS[kind];
+  const noServo = cap ? !cap.servo : false;
+  const noBattery = cap ? !cap.battery : false;
   const sv = document.getElementById('servo-section');
   if (sv) sv.style.display = noServo ? 'none' : '';
   const svEnToggle = document.querySelector('label.toggle-label[for="servo-enabled"]');
@@ -1283,7 +1259,7 @@ function applyBoardGating(kind) {
   const boardEl = document.getElementById('dis-board');
   if (boardEl) {
     boardEl.textContent = (kind == null) ? '(unknown)'
-                                         : (BOARD_LABELS[kind] || `kind ${kind}`);
+                                         : StackchanSettings.boardLabel(kind);
   }
 }
 
@@ -2184,26 +2160,7 @@ $('jtts-say-text').addEventListener('keydown', (e) => {
 // tools/settings.html (BLE) — see plan-md-lucky-dongarra.md. All existing
 // section IDs (#jtts-section, #servo-section etc.) live inside their panels
 // so no JS wiring needs to be touched.
-(function setupTabs() {
-  const tabs = document.querySelectorAll('.tabs button[data-tab]');
-  const panels = document.querySelectorAll('.tab-panel[data-tab]');
-  const LS_KEY = 'stackchan.settings.wifi.activeTab';
-  function activate(name) {
-    let found = false;
-    tabs.forEach(b => {
-      const on = b.dataset.tab === name;
-      b.classList.toggle('active', on);
-      if (on) found = true;
-    });
-    if (!found) return;
-    panels.forEach(p => p.classList.toggle('active', p.dataset.tab === name));
-    try { localStorage.setItem(LS_KEY, name); } catch {}
-  }
-  tabs.forEach(b => b.addEventListener('click', () => activate(b.dataset.tab)));
-  let saved = null;
-  try { saved = localStorage.getItem(LS_KEY); } catch {}
-  if (saved) activate(saved);
-})();
+StackchanSettings.setupTabs('stackchan.settings.wifi.activeTab');
 </script>
 </body>
 </html>
