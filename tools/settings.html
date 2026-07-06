@@ -2932,7 +2932,6 @@ function onDisconnected() {
   log('切断されました', 'err');
   setBleUi(false);
   clearInterval(batteryPollTimer); batteryPollTimer = null;
-  clearInterval(svPosPollTimer); svPosPollTimer = null;
   clearInterval(audioMetricsTimer); audioMetricsTimer = null;
   const autoEl = document.getElementById('audio-metrics-autorefresh');
   if (autoEl) autoEl.checked = false;
@@ -2940,8 +2939,6 @@ function onDisconnected() {
   ledStateLoaded = false;
   clearTimeout(micLipWriteTimer); micLipWriteTimer = null;
   micLipLoaded = false;
-  svRangeOn = false;
-  svLiveYaw = svLivePitch = -1;
   chrSsid = chrPass = chrKey = chrApply = chrStatus = chrKx = chrEn = chrRtpEn = chrJttsIdleEn = chrJtts = chrOtaCtrl = chrOtaData = chrProvider = chrGeminiKey = chrXiaozhiUrl = chrXiaozhiToken = chrFaceConfig = chrBattery = chrBatGauge = chrServoEnabled = chrMcpToken = chrLtConfig = chrServoLimits = chrServoRangeMode = chrServoPositions = chrBoardKind = chrWifiIp = chrWifiMac = chrAudioCtrl = chrAudioData = chrAudioCredit = chrAudioMetrics = chrLedState = chrMicLipGain = chrLedMouthSync = chrLipSyncMode = chrMicLipAgc = chrSpeakerVolume = chrJttsSay = chrOperationMode = chrAudioOutput = chrBargeIn = chrAvatarBc = null;
   if (typeof refreshAvbcButton === 'function') refreshAvbcButton();
   boardKind = null;
@@ -2963,8 +2960,7 @@ function onDisconnected() {
   jttsInitialJson = '';
   servoLimitsInitial = '';
   writeJttsForm('');
-  updateSvCaptureUi();
-  document.getElementById('sv-live-pos').textContent = 'Yaw: -- (--°)   Pitch: -- (--°)';
+  servoCal.reset(); // stop the position poll + idle display + re-gate buttons
   document.getElementById('btn-ota').disabled = true;
   if (!otaInFlight) {
     document.getElementById('ota-bar-fill').style.width = '0';
@@ -3462,72 +3458,35 @@ function setupAvatarPreview() {
 }
 setupAvatarPreview();
 
-// ===== Servo limits (per-servo zero + motion range) =========================
-// Defaults match the M5-base values baked into the firmware so an empty config
-// reproduces the original head behaviour.
-const SV_DEFAULTS = { yaw_zero: 460, yaw_min: -40, yaw_max: 40,
-                      pitch_zero: 620, pitch_min: -10, pitch_max: 25 };
-function readServoLimitsForm() {
-  const num = (id, def) => {
-    const v = parseInt(document.getElementById(id).value, 10);
-    return Number.isFinite(v) ? v : def;
-  };
-  return {
-    yaw_zero: num('sv-yaw-zero', SV_DEFAULTS.yaw_zero),
-    yaw_min:  num('sv-yaw-min',  SV_DEFAULTS.yaw_min),
-    yaw_max:  num('sv-yaw-max',  SV_DEFAULTS.yaw_max),
-    pitch_zero: num('sv-pitch-zero', SV_DEFAULTS.pitch_zero),
-    pitch_min:  num('sv-pitch-min',  SV_DEFAULTS.pitch_min),
-    pitch_max:  num('sv-pitch-max',  SV_DEFAULTS.pitch_max),
-  };
-}
-function canonicaliseServoLimits() { return JSON.stringify(readServoLimitsForm()); }
+// ===== Servo limits + range-setting calibration =============================
+// Form serialization and the hand-driven calibration flow (torque-off range
+// mode → live position poll → capture buttons) are shared with the Wi-Fi
+// page via settings_common.js — this page supplies the BLE transport:
+// chr ServoRangeMode write to toggle, chr ServoPositions read (2 × i16 LE
+// raw steps) for the live poll. Range mode is intentionally ephemeral — it
+// auto-OFFs device-side when the BLE session resets and is not persisted.
+const servoCal = StackchanSettings.setupServoCalibration({
+  pollMs: 250,
+  canToggle: () => !!chrServoRangeMode && aesKey != null,
+  canCapture: () => !!chrServoPositions && aesKey != null,
+  async setRangeMode(on) {
+    await writeEncrypted(chrServoRangeMode, new Uint8Array([on ? 1 : 0]));
+  },
+  async readPositions() {
+    if (!chrServoPositions || !aesKey) throw new Error('未接続');
+    const b = await readEncrypted(chrServoPositions);
+    if (b.length < 4) throw new Error('short read');
+    const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+    return { yaw: dv.getInt16(0, true), pitch: dv.getInt16(2, true) };
+  },
+});
+
+function canonicaliseServoLimits() { return servoCal.formJson(); }
 function seedServoLimits(json) {
-  let o = { ...SV_DEFAULTS };
-  if (json) { try { Object.assign(o, JSON.parse(json)); } catch (e) {} }
-  document.getElementById('sv-yaw-zero').value   = o.yaw_zero;
-  document.getElementById('sv-yaw-min').value    = o.yaw_min;
-  document.getElementById('sv-yaw-max').value    = o.yaw_max;
-  document.getElementById('sv-pitch-zero').value = o.pitch_zero;
-  document.getElementById('sv-pitch-min').value  = o.pitch_min;
-  document.getElementById('sv-pitch-max').value  = o.pitch_max;
+  servoCal.seedForm(json);
   servoLimitsInitial = canonicaliseServoLimits();
 }
-
-// ===== Servo range-setting mode (hand-driven calibration) ===================
-//
-// While range mode is ON the device's servo task drops torque so the user can
-// move the head by hand, and the ServoPositions characteristic returns the
-// live raw step of each axis. The capture buttons read the latest live raw
-// and either set the per-axis zero directly (zero button) or compute
-// (raw - zero) * 5/16 → degrees (min / max buttons) and write into the form
-// inputs. The final "保存 & 再起動" persists the resulting limits as usual.
-//
-// Range mode is intentionally local-only / ephemeral — it auto-OFFs on
-// disconnect (device-side, when the BLE session resets) and is not persisted.
-
-let svPosPollTimer = null;
-let svRangeOn = false;
-let svLiveYaw = -1, svLivePitch = -1;
-
-function updateSvCaptureUi() {
-  const ok = svRangeOn && !!chrServoPositions && aesKey != null;
-  for (const id of ['sv-cap-yaw-zero','sv-cap-yaw-min','sv-cap-yaw-max',
-                    'sv-cap-pitch-zero','sv-cap-pitch-min','sv-cap-pitch-max']) {
-    const el = document.getElementById(id);
-    if (el) el.disabled = !ok;
-  }
-  const btn = document.getElementById('sv-range-mode');
-  if (btn) {
-    btn.textContent = '範囲設定モード: ' + (svRangeOn ? 'ON' : 'OFF');
-    btn.disabled = !chrServoRangeMode || !aesKey;
-  }
-}
-
-function rawDeltaToDeg(raw, zero) {
-  const d = (raw - zero) * 5 / 16;
-  return Math.round(d);
-}
+function updateSvCaptureUi() { servoCal.refreshUi(); }
 
 // ===== LED state (BLE chr 0x20) ==============================================
 //
@@ -3750,78 +3709,6 @@ function setAudioMetricsAutoRefresh(on) {
   }
 }
 
-async function refreshServoPositions() {
-  if (!chrServoPositions || !aesKey) return;
-  try {
-    const b = await readEncrypted(chrServoPositions);
-    if (b.length < 4) return;
-    const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
-    svLiveYaw = dv.getInt16(0, true);
-    svLivePitch = dv.getInt16(2, true);
-    const zy = parseInt(document.getElementById('sv-yaw-zero').value, 10) || SV_DEFAULTS.yaw_zero;
-    const zp = parseInt(document.getElementById('sv-pitch-zero').value, 10) || SV_DEFAULTS.pitch_zero;
-    const yStr = svLiveYaw >= 0 ? `${svLiveYaw} (${rawDeltaToDeg(svLiveYaw, zy)>=0?'+':''}${rawDeltaToDeg(svLiveYaw, zy)}°)` : '--';
-    const pStr = svLivePitch >= 0 ? `${svLivePitch} (${rawDeltaToDeg(svLivePitch, zp)>=0?'+':''}${rawDeltaToDeg(svLivePitch, zp)}°)` : '--';
-    document.getElementById('sv-live-pos').textContent = `Yaw: ${yStr}   Pitch: ${pStr}`;
-  } catch (e) {
-    // Transient — leave the last reading visible.
-  }
-}
-
-async function setServoRangeMode(on) {
-  if (!chrServoRangeMode || !aesKey) return;
-  try {
-    await writeEncrypted(chrServoRangeMode, new Uint8Array([on ? 1 : 0]));
-    svRangeOn = on;
-    updateSvCaptureUi();
-    clearInterval(svPosPollTimer); svPosPollTimer = null;
-    if (on) {
-      svPosPollTimer = setInterval(refreshServoPositions, 250);
-      log('範囲設定モード: ON (サーボの力が抜けます)', 'ok');
-      refreshServoPositions();
-    } else {
-      log('範囲設定モード: OFF');
-      svLiveYaw = svLivePitch = -1;
-      document.getElementById('sv-live-pos').textContent = 'Yaw: -- (--°)   Pitch: -- (--°)';
-    }
-  } catch (e) {
-    log(`範囲設定モード切替失敗: ${e.message}`, 'err');
-  }
-}
-
-document.getElementById('sv-range-mode').addEventListener('click', () => {
-  setServoRangeMode(!svRangeOn);
-});
-
-function setNumInput(id, v) {
-  const el = document.getElementById(id);
-  el.value = v;
-  // Re-flow the live °-display since the zero just moved.
-  refreshServoPositions();
-}
-function captureYaw(which) {
-  if (svLiveYaw < 0) { log('まだサーボ位置を取得できていません', 'err'); return; }
-  if (which === 'zero') setNumInput('sv-yaw-zero', svLiveYaw);
-  else {
-    const z = parseInt(document.getElementById('sv-yaw-zero').value, 10) || SV_DEFAULTS.yaw_zero;
-    setNumInput(which === 'min' ? 'sv-yaw-min' : 'sv-yaw-max', rawDeltaToDeg(svLiveYaw, z));
-  }
-}
-function capturePitch(which) {
-  if (svLivePitch < 0) { log('まだサーボ位置を取得できていません', 'err'); return; }
-  if (which === 'zero') setNumInput('sv-pitch-zero', svLivePitch);
-  else {
-    const z = parseInt(document.getElementById('sv-pitch-zero').value, 10) || SV_DEFAULTS.pitch_zero;
-    setNumInput(which === 'min' ? 'sv-pitch-min' : 'sv-pitch-max', rawDeltaToDeg(svLivePitch, z));
-  }
-}
-document.getElementById('sv-cap-yaw-zero').addEventListener('click', () => captureYaw('zero'));
-document.getElementById('sv-cap-yaw-min').addEventListener('click',  () => captureYaw('min'));
-document.getElementById('sv-cap-yaw-max').addEventListener('click',  () => captureYaw('max'));
-document.getElementById('sv-cap-pitch-zero').addEventListener('click', () => capturePitch('zero'));
-document.getElementById('sv-cap-pitch-min').addEventListener('click',  () => capturePitch('min'));
-document.getElementById('sv-cap-pitch-max').addEventListener('click',  () => capturePitch('max'));
-
 // Audio metrics: manual reload + optional 2-s auto-refresh.
 document.getElementById('btn-audio-metrics-reload').addEventListener('click', () => readAudioMetrics());
 document.getElementById('audio-metrics-autorefresh').addEventListener('change', (e) => {
@@ -3978,48 +3865,10 @@ function refreshAvbcButton() {
   if (dslEditor) dslEditor.refreshButtons();
 }
 
-// MCP API token: random-generate / show / clear. The "clear" path sets a
-// data-cleared marker so the apply path POSTs an empty body explicitly
-// rather than treating an empty field as "leave as-is".
-const MCP_TOKEN_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-function generateMcpToken(len = 32) {
-  const out = new Uint8Array(len);
-  crypto.getRandomValues(out);
-  let s = '';
-  for (let i = 0; i < len; ++i) {
-    s += MCP_TOKEN_ALPHABET[out[i] % MCP_TOKEN_ALPHABET.length];
-  }
-  return s;
-}
-document.getElementById('btn-mcp-token-gen').addEventListener('click', () => {
-  const el = document.getElementById('mcp-token');
-  el.value = generateMcpToken();
-  el.type = 'text';
-  delete el.dataset.cleared;
-});
-document.getElementById('btn-mcp-token-show').addEventListener('click', () => {
-  const el = document.getElementById('mcp-token');
-  el.type = (el.type === 'password') ? 'text' : 'password';
-});
-document.getElementById('btn-mcp-token-clear').addEventListener('click', () => {
-  const el = document.getElementById('mcp-token');
-  el.value = '';
-  el.type = 'password';
-  el.dataset.cleared = '1';
-});
-
-// Auth password "クリア" — same UX as MCP token. On Apply, sends an empty
-// string which disables the auth gate at the next reboot.
-document.getElementById('btn-auth-password-clear').addEventListener('click', () => {
-  if (!confirm('認証なし (空欄) に戻します。保存 & 再起動で反映されます。よろしいですか?')) {
-    return;
-  }
-  const el = document.getElementById('auth-password');
-  el.value = '';
-  el.dataset.cleared = '1';
-  const hintEl = document.getElementById('auth-password-state');
-  if (hintEl) hintEl.textContent = '(クリア予約 — 保存で空欄を送信)';
-});
+// MCP API token gen/show/clear + auth-password clear — shared with the
+// Wi-Fi page (settings_common.js). The clear paths set dataset.cleared so
+// the Apply path sends an explicit empty value.
+StackchanSettings.setupSecretFields();
 
 // ===== Battery (READ + poll) ================================================
 // Decode the 5-byte Battery payload [mV u16 LE][mA i16 LE][pct i8] into a label.

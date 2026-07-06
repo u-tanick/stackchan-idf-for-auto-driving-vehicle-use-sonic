@@ -328,5 +328,214 @@
     return { refreshButtons };
   }
 
-  window.StackchanSettings = { BOARDS, boardLabel, boardSlug, log, setupTabs, init, setupDslEditor };
+  // --- Servo limits form + range-setting calibration -----------------------
+  // Shared logic for the #servo-section form (sv-yaw-*/sv-pitch-* inputs) and
+  // the hand-driven range calibration: toggle range mode → device drops
+  // torque → live positions poll into #sv-live-pos → capture buttons stash
+  // raw/degree values into the form. The transport object carries the
+  // page-specific parts:
+  //   canToggle()      -> bool; gates the range-mode button (BLE: chr + key)
+  //   canCapture()     -> bool; extra gate on the capture buttons
+  //   setRangeMode(on) -> Promise; reject on failure
+  //   readPositions()  -> Promise<{yaw, pitch}> raw steps, -1 = unknown;
+  //                       reject on transient failure (display keeps the
+  //                       last reading)
+  //   pollMs           -> live-position poll period while range mode is on
+  // Returns null when the servo section isn't in the DOM.
+  const SERVO_DEFAULTS = { yaw_zero: 460, yaw_min: -40, yaw_max: 40,
+                           pitch_zero: 620, pitch_min: -10, pitch_max: 25 };
+  function setupServoCalibration(transport) {
+    const $id = (id) => document.getElementById(id);
+    if (!$id('sv-range-mode') || !$id('sv-yaw-zero')) return null;
+
+    let rangeOn = false;
+    let liveYaw = -1, livePitch = -1;
+    let pollTimer = null;
+
+    function readForm() {
+      const num = (id, def) => {
+        const v = parseInt($id(id).value, 10);
+        return Number.isFinite(v) ? v : def;
+      };
+      return {
+        yaw_zero: num('sv-yaw-zero', SERVO_DEFAULTS.yaw_zero),
+        yaw_min:  num('sv-yaw-min',  SERVO_DEFAULTS.yaw_min),
+        yaw_max:  num('sv-yaw-max',  SERVO_DEFAULTS.yaw_max),
+        pitch_zero: num('sv-pitch-zero', SERVO_DEFAULTS.pitch_zero),
+        pitch_min:  num('sv-pitch-min',  SERVO_DEFAULTS.pitch_min),
+        pitch_max:  num('sv-pitch-max',  SERVO_DEFAULTS.pitch_max),
+      };
+    }
+    function formJson() { return JSON.stringify(readForm()); }
+    function seedForm(json) {
+      let o = { ...SERVO_DEFAULTS };
+      if (json) { try { Object.assign(o, JSON.parse(json)); } catch {} }
+      $id('sv-yaw-zero').value   = o.yaw_zero;
+      $id('sv-yaw-min').value    = o.yaw_min;
+      $id('sv-yaw-max').value    = o.yaw_max;
+      $id('sv-pitch-zero').value = o.pitch_zero;
+      $id('sv-pitch-min').value  = o.pitch_min;
+      $id('sv-pitch-max').value  = o.pitch_max;
+    }
+
+    function rawDeltaToDeg(raw, zero) {
+      return Math.round((raw - zero) * 5 / 16);
+    }
+
+    function refreshUi() {
+      const ok = rangeOn && transport.canCapture();
+      for (const id of ['sv-cap-yaw-zero','sv-cap-yaw-min','sv-cap-yaw-max',
+                        'sv-cap-pitch-zero','sv-cap-pitch-min','sv-cap-pitch-max']) {
+        const el = $id(id);
+        if (el) el.disabled = !ok;
+      }
+      const btn = $id('sv-range-mode');
+      btn.textContent = '範囲設定モード: ' + (rangeOn ? 'ON' : 'OFF');
+      btn.disabled = !transport.canToggle();
+    }
+
+    function clearLiveDisplay() {
+      $id('sv-live-pos').textContent = 'Yaw: -- (--°)   Pitch: -- (--°)';
+    }
+
+    async function refreshPositions() {
+      try {
+        const p = await transport.readPositions();
+        liveYaw = p.yaw;
+        livePitch = p.pitch;
+        const zy = parseInt($id('sv-yaw-zero').value, 10) || SERVO_DEFAULTS.yaw_zero;
+        const zp = parseInt($id('sv-pitch-zero').value, 10) || SERVO_DEFAULTS.pitch_zero;
+        const fmt = (raw, z) => raw >= 0
+          ? `${raw} (${rawDeltaToDeg(raw, z) >= 0 ? '+' : ''}${rawDeltaToDeg(raw, z)}°)`
+          : '--';
+        $id('sv-live-pos').textContent = `Yaw: ${fmt(liveYaw, zy)}   Pitch: ${fmt(livePitch, zp)}`;
+      } catch (e) {
+        // Transient — leave the last reading visible.
+      }
+    }
+
+    function restartPoll() {
+      clearInterval(pollTimer); pollTimer = null;
+      if (rangeOn) {
+        pollTimer = setInterval(refreshPositions, transport.pollMs);
+        refreshPositions();
+      }
+    }
+
+    async function setRangeMode(on) {
+      if (!transport.canToggle()) return;
+      try {
+        await transport.setRangeMode(on);
+        rangeOn = on;
+        refreshUi();
+        restartPoll();
+        if (on) {
+          log('範囲設定モード: ON (サーボの力が抜けます)', 'ok');
+        } else {
+          log('範囲設定モード: OFF');
+          liveYaw = livePitch = -1;
+          clearLiveDisplay();
+        }
+      } catch (e) {
+        log('範囲設定モード切替失敗: ' + e.message, 'err');
+      }
+    }
+
+    // Range mode toggled from elsewhere (another tab / an earlier session) —
+    // adopt the device-reported state without re-writing it.
+    function syncRangeOn(on) {
+      if (on === rangeOn) return;
+      rangeOn = on;
+      refreshUi();
+      restartPoll();
+    }
+
+    // Transport lost (BLE disconnect): stop polling and drop back to the
+    // idle display. The device auto-OFFs range mode on its side.
+    function reset() {
+      rangeOn = false;
+      liveYaw = livePitch = -1;
+      clearInterval(pollTimer); pollTimer = null;
+      clearLiveDisplay();
+      refreshUi();
+    }
+
+    function capture(axis, which) {
+      const live = axis === 'yaw' ? liveYaw : livePitch;
+      if (live < 0) { log('まだサーボ位置を取得できていません', 'err'); return; }
+      const zeroId = `sv-${axis}-zero`;
+      if (which === 'zero') {
+        $id(zeroId).value = live;
+      } else {
+        const z = parseInt($id(zeroId).value, 10) ||
+                  SERVO_DEFAULTS[axis === 'yaw' ? 'yaw_zero' : 'pitch_zero'];
+        $id(`sv-${axis}-${which}`).value = rawDeltaToDeg(live, z);
+      }
+      // Re-flow the live °-display (the zero may have just moved).
+      refreshPositions();
+    }
+
+    $id('sv-range-mode').addEventListener('click', () => setRangeMode(!rangeOn));
+    for (const axis of ['yaw', 'pitch']) {
+      for (const which of ['zero', 'min', 'max']) {
+        const el = $id(`sv-cap-${axis}-${which}`);
+        if (el) el.addEventListener('click', () => capture(axis, which));
+      }
+    }
+
+    return { readForm, formJson, seedForm, refreshUi, refreshPositions,
+             setRangeMode, syncRangeOn, reset, isOn: () => rangeOn };
+  }
+
+  // --- Secret-field buttons (MCP token / auth password) --------------------
+  // Identical on both pages: random-generate / show-toggle / clear for
+  // #mcp-token, and the confirm-guarded clear for #auth-password. The clear
+  // paths set el.dataset.cleared so each page's Apply logic sends an explicit
+  // empty value rather than treating an empty field as "leave as-is".
+  const MCP_TOKEN_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  function generateMcpToken(len = 32) {
+    const out = new Uint8Array(len);
+    crypto.getRandomValues(out);
+    let s = '';
+    for (let i = 0; i < len; ++i) {
+      s += MCP_TOKEN_ALPHABET[out[i] % MCP_TOKEN_ALPHABET.length];
+    }
+    return s;
+  }
+  function setupSecretFields() {
+    const $id = (id) => document.getElementById(id);
+    const tokenEl = $id('mcp-token');
+    if (tokenEl) {
+      $id('btn-mcp-token-gen').addEventListener('click', () => {
+        tokenEl.value = generateMcpToken();
+        tokenEl.type = 'text';
+        delete tokenEl.dataset.cleared;
+      });
+      $id('btn-mcp-token-show').addEventListener('click', () => {
+        tokenEl.type = (tokenEl.type === 'password') ? 'text' : 'password';
+      });
+      $id('btn-mcp-token-clear').addEventListener('click', () => {
+        tokenEl.value = '';
+        tokenEl.type = 'password';
+        tokenEl.dataset.cleared = '1';
+      });
+    }
+    const authEl = $id('auth-password');
+    const authClear = $id('btn-auth-password-clear');
+    if (authEl && authClear) {
+      authClear.addEventListener('click', () => {
+        if (!confirm('認証なし (空欄) に戻します。保存 & 再起動で反映されます。よろしいですか?')) {
+          return;
+        }
+        authEl.value = '';
+        authEl.dataset.cleared = '1';
+        const hintEl = $id('auth-password-state');
+        if (hintEl) hintEl.textContent = '(クリア予約 — 保存で空欄を送信)';
+      });
+    }
+  }
+
+  window.StackchanSettings = { BOARDS, boardLabel, boardSlug, log, setupTabs, init,
+                               setupDslEditor, SERVO_DEFAULTS, setupServoCalibration,
+                               setupSecretFields };
 })();
