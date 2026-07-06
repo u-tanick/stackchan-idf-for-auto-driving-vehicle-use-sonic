@@ -12,6 +12,7 @@
 #include <esp_mac.h>
 #include <esp_netif.h>
 #include <esp_netif_sntp.h>
+#include <esp_timer.h>
 #include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -56,6 +57,25 @@ esp_netif_t* g_ap_netif = nullptr;
 // up across reconnects (wifi_config_service::start ignores re-entry).
 const config::DeviceConfig* g_boot_cfg = nullptr;
 
+// One-shot timer that defers the next esp_wifi_connect() while the
+// provisioning AP is up. Each STA connect attempt runs a full-channel scan
+// (~5 s) that pulls the shared radio off the AP's channel — with the
+// immediate-retry loop the AP beacons go silent most of the time and joined
+// clients get kicked within seconds (observed on HW when the stored SSID no
+// longer exists, which is exactly the situation provisioning is for). While
+// the AP is active the retry is throttled to this period instead — and
+// paused entirely while a client is associated (the off-channel scan makes
+// the AP fail its SA-query keepalive and disassoc the client mid-page-load;
+// also observed on HW).
+constexpr std::uint64_t kApModeStaRetryUs = 30 * 1000 * 1000;
+esp_timer_handle_t g_sta_retry_timer = nullptr;
+std::atomic<int> g_ap_client_count{0};
+
+void sta_retry_timer_cb(void*)
+{
+    esp_wifi_connect();
+}
+
 void event_handler(void* /*arg*/, esp_event_base_t base, int32_t id, void* data)
 {
     if (base == WIFI_EVENT) {
@@ -65,8 +85,36 @@ void event_handler(void* /*arg*/, esp_event_base_t base, int32_t id, void* data)
             g_connected.store(false, std::memory_order_release);
             config::notify_wifi_connected(false);
             wifi_config::notify_wifi_connected(false);
-            ESP_LOGW(kTag, "disconnected, retrying");
-            esp_wifi_connect();
+            if (g_ap_active.load(std::memory_order_acquire) &&
+                g_sta_retry_timer != nullptr) {
+                esp_timer_stop(g_sta_retry_timer);
+                if (g_ap_client_count.load(std::memory_order_acquire) > 0) {
+                    ESP_LOGW(kTag, "disconnected — AP client associated, STA retry paused");
+                } else {
+                    ESP_LOGW(kTag, "disconnected — AP mode active, next retry in %llu s",
+                             kApModeStaRetryUs / 1000000ULL);
+                    esp_timer_start_once(g_sta_retry_timer, kApModeStaRetryUs);
+                }
+            } else {
+                ESP_LOGW(kTag, "disconnected, retrying");
+                esp_wifi_connect();
+            }
+        } else if (id == WIFI_EVENT_AP_STACONNECTED) {
+            // A provisioning client joined — give it quiet air: no STA
+            // scans until every client leaves.
+            g_ap_client_count.fetch_add(1, std::memory_order_acq_rel);
+            if (g_sta_retry_timer != nullptr) esp_timer_stop(g_sta_retry_timer);
+        } else if (id == WIFI_EVENT_AP_STADISCONNECTED) {
+            const int left = g_ap_client_count.fetch_sub(1, std::memory_order_acq_rel) - 1;
+            if (left <= 0) {
+                g_ap_client_count.store(0, std::memory_order_release);
+                if (g_ap_active.load(std::memory_order_acquire) &&
+                    !g_connected.load(std::memory_order_acquire) &&
+                    g_sta_retry_timer != nullptr) {
+                    esp_timer_stop(g_sta_retry_timer);
+                    esp_timer_start_once(g_sta_retry_timer, kApModeStaRetryUs);
+                }
+            }
         }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         const auto* event = static_cast<ip_event_got_ip_t*>(data);
@@ -150,6 +198,17 @@ void wifi_start(const config::DeviceConfig& cfg)
                                                &event_handler, nullptr));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                                &event_handler, nullptr));
+
+    if (g_sta_retry_timer == nullptr) {
+        const esp_timer_create_args_t args = {
+            .callback = &sta_retry_timer_cb,
+            .arg = nullptr,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "sta-retry",
+            .skip_unhandled_events = true,
+        };
+        ESP_ERROR_CHECK(esp_timer_create(&args, &g_sta_retry_timer));
+    }
 
     if (cfg.wifi_ssid.empty()) {
         ESP_LOGI(kTag, "no SSID configured — Wi-Fi driver initialised but not started");
@@ -359,6 +418,12 @@ void wifi_disable_ap_mode()
     }
     wifi_config::set_provisioning_mode(false);
     g_ap_active.store(false, std::memory_order_release);
+    g_ap_client_count.store(0, std::memory_order_release);
+    // Resume the full-rate STA reconnect immediately: cancel any throttled
+    // retry and kick a connect now (harmless error return if an attempt is
+    // already in flight or the STA is currently paused-while-client).
+    if (g_sta_retry_timer != nullptr) esp_timer_stop(g_sta_retry_timer);
+    if (!g_connected.load(std::memory_order_acquire)) esp_wifi_connect();
     ESP_LOGI(kTag, "AP down");
 }
 
