@@ -654,7 +654,7 @@ static void HTS_Vocoder_initialize_excitation(HTS_Vocoder * v, float pitch, size
    v->pitch_inc_per_point = 0.0;
    if (nlpf > 0) {
       v->excite_buff_size = nlpf;
-      v->excite_ring_buff = (float *) HTS_calloc(v->excite_buff_size, sizeof(float));
+      v->excite_ring_buff = (float *) HTS_calloc_fast(v->excite_buff_size, sizeof(float));
       for (i = 0; i < v->excite_buff_size; i++)
          v->excite_ring_buff[i] = 0.0;
       v->excite_buff_index = 0;
@@ -868,12 +868,12 @@ void HTS_Vocoder_initialize(HTS_Vocoder * v, size_t m, size_t stage, HTS_Boolean
    v->spectrum2en_buff = NULL;
    v->spectrum2en_size = 0;
    if (v->stage == 0) {         /* for MCP */
-      v->c = (float *) HTS_calloc(m * (3 + PADEORDER) + 5 * PADEORDER + 6, sizeof(float));
+      v->c = (float *) HTS_calloc_fast(m * (3 + PADEORDER) + 5 * PADEORDER + 6, sizeof(float));
       v->cc = v->c + m + 1;
       v->cinc = v->cc + m + 1;
       v->d1 = v->cinc + m + 1;
    } else {                     /* for LSP */
-      v->c = (float *) HTS_calloc((m + 1) * (v->stage + 3), sizeof(float));
+      v->c = (float *) HTS_calloc_fast((m + 1) * (v->stage + 3), sizeof(float));
       v->cc = v->c + m + 1;
       v->cinc = v->cc + m + 1;
       v->d1 = v->cinc + m + 1;

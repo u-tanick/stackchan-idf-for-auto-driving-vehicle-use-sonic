@@ -58,6 +58,11 @@ HTS_GSTREAM_C_START;
 /* hts_engine libraries */
 #include "HTS_hidden.h"
 
+#ifdef ESP_PLATFORM
+#include "freertos/FreeRTOS.h"  /* stackchan: vTaskDelay */
+#include "freertos/task.h"
+#endif
+
 /* HTS_GStreamSet_initialize: initialize generated parameter stream set */
 void HTS_GStreamSet_initialize(HTS_GStreamSet * gss)
 {
@@ -140,6 +145,12 @@ HTS_Boolean HTS_GStreamSet_create(HTS_GStreamSet * gss, HTS_PStreamSet * pss, si
       if (gss->nstream >= 3)
          lpf = &gss->gstream[2].par[i][0];
       HTS_Vocoder_synthesize(&v, gss->gstream[0].vector_length - 1, gss->gstream[1].par[i][0], &gss->gstream[0].par[i][0], nlpf, lpf, alpha, beta, volume, &gss->gspeech[j], audio);
+#ifdef ESP_PLATFORM
+      /* stackchan: 長文合成 (RTF ~1) が IDLE タスクを飢餓させ task_wdt が
+       * 鳴くので、~0.5 秒分のフレーム毎に 1 tick 譲る。 */
+      if ((i & 0x7f) == 0x7f)
+         vTaskDelay(1);
+#endif
    }
    HTS_Vocoder_clear(&v);
    if (audio)

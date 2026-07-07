@@ -552,19 +552,13 @@ void *HTS_calloc(const size_t num, const size_t size)
 #ifdef FESTIVAL
    mem = (void *) safe_wcalloc(n);
 #elif defined(ESP_PLATFORM)
-   /* stackchan: 大きい確保 (PDF テーブル / パラメータ行列 / 波形バッファ) は
-    * PSRAM、小さい確保 (ボコーダのリング バッファ等、サンプル毎に触る) は
-    * 内部 RAM。全部 PSRAM にすると MLSA の内側ループがキャッシュ ミスだらけに
-    * なり実測 RTF 6.0 (11.8 s / 2 s 音声) まで落ちる。 */
-   if (n >= 32768) {
-      mem = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-      if (mem == NULL)
-         mem = malloc(n);
-   } else {
+   /* stackchan: 通常の確保 (モデル構造 = 数千個の小確保 + PDF/波形の大確保) は
+    * PSRAM。内部 RAM に流すと数 MB 分の小確保で内部 RAM が枯渇し I2S DMA や
+    * httpd が死ぬ (実測)。サンプル毎に触るボコーダの作業バッファだけ
+    * HTS_calloc_fast (内部 RAM 優先) を使う。 */
+   mem = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (mem == NULL)
       mem = malloc(n);
-      if (mem == NULL)
-         mem = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-   }
 #else
    mem = (void *) malloc(n);
 #endif                          /* FESTIVAL */
@@ -575,6 +569,28 @@ void *HTS_calloc(const size_t num, const size_t size)
       HTS_error(1, "HTS_calloc: Cannot allocate memory.\n");
 
    return mem;
+}
+
+/* stackchan: HTS_calloc_fast — サンプル毎にアクセスする小バッファ用 (内部 RAM 優先)。
+ * PSRAM だと MLSA 内側ループがキャッシュ ミスだらけになり実測 RTF が 6.0 に落ちる。 */
+void *HTS_calloc_fast(const size_t num, const size_t size)
+{
+#ifdef ESP_PLATFORM
+   size_t n = num * size;
+   void *mem;
+
+   if (n == 0)
+      return NULL;
+   mem = malloc(n);
+   if (mem == NULL)
+      mem = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (mem == NULL)
+      HTS_error(1, "HTS_calloc_fast: Cannot allocate memory.\n");
+   memset(mem, 0, n);
+   return mem;
+#else
+   return HTS_calloc(num, size);
+#endif
 }
 
 /* HTS_Free: wrapper for free */

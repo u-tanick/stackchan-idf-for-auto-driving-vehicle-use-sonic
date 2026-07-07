@@ -137,6 +137,9 @@ HTS_Boolean HTS_get_token_from_string_with_separator(const char *str, size_t * i
 /* HTS_calloc: wrapper for calloc */
 void *HTS_calloc(const size_t num, const size_t size);
 
+/* stackchan: HTS_calloc_fast: internal-RAM-first allocation for per-sample hot buffers */
+void *HTS_calloc_fast(const size_t num, const size_t size);
+
 /* HTS_strdup: wrapper for strdup */
 char *HTS_strdup(const char *string);
 
