@@ -15,6 +15,17 @@ enum class Voice : std::uint8_t {
     Female,  // 大人女性 (F0 ≈ 210 Hz、フォルマントを ~17% 持ち上げ)
 };
 
+// フォルマント エンジンの合成方式バリアント。
+//   V2      — 声門波励起 + カスケード声道 (a14bd75 以降の既定)
+//   Classic — インパルス列 + 並列 BPF×3 (それ以前の実装。ロボットらしい
+//             ブザー声が好みの場合に選ぶ)
+// 将来の単位連結エンジン (Engine 軸、docs/jtts-unit-tts-research.md) とは
+// 直交する軸。
+enum class SynthVariant : std::uint8_t {
+    V2 = 0,
+    Classic = 1,
+};
+
 struct Options {
     std::uint32_t sample_rate_hz = 16000;
     Voice voice = Voice::Male;
@@ -35,6 +46,19 @@ struct Options {
     // (100 セント = 1 半音)。老人の震え声には rate≈4-5, depth≈30-50 が良い。
     float vibrato_rate_hz = 0.0f;
     float vibrato_cents = 0.0f;
+
+    // ----- やわらかさ (V2 のみ、Classic では無視) -----
+    // 声門開大比 (open quotient)。上げると閉鎖が弱くなり高域が減って
+    // やわらかい発声になる。0.35–0.85、既定 0.56 (従来と同じ音)。
+    float glottal_oq = 0.56f;
+    // スペクトル傾斜: 3 kHz での追加減衰量 [dB] (1-pole LPF)。0 = OFF。
+    // やわらかめは 6–12。Klatt 合成器の TL パラメータ相当。
+    float tilt_db = 0.0f;
+    // フォルマント帯域幅の倍率。上げると共鳴ピークが鈍り金属的な鳴きが
+    // 減る。0.7–2.0、既定 1.0。(Classic でも有効)
+    float bw_scale = 1.0f;
+    // 合成方式。既定 V2。
+    SynthVariant synth = SynthVariant::V2;
 };
 
 enum class Error {

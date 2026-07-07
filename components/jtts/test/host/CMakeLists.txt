@@ -17,6 +17,7 @@ add_library(jtts STATIC
     ${JTTS_ROOT}/src/phoneme.cpp
     ${JTTS_ROOT}/src/formant_tables.cpp
     ${JTTS_ROOT}/src/formant_synth.cpp
+    ${JTTS_ROOT}/src/formant_synth_classic.cpp
     ${JTTS_ROOT}/src/prosody.cpp
     ${JTTS_ROOT}/src/jtts.cpp
     ${JTTS_ROOT}/src/jvox.cpp

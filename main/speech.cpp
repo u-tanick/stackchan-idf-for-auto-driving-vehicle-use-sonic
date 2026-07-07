@@ -69,6 +69,17 @@ void apply_number(float& dst, const cJSON* item)
     if (cJSON_IsNumber(item)) dst = static_cast<float>(item->valuedouble);
 }
 
+// synth は文字列 ("v2"/"classic")。missing / 不明値は現在値を維持。
+void apply_synth(jtts::Options& opt, const cJSON* item)
+{
+    if (!cJSON_IsString(item) || item->valuestring == nullptr) return;
+    if (std::strcmp(item->valuestring, "classic") == 0) {
+        opt.synth = jtts::SynthVariant::Classic;
+    } else if (std::strcmp(item->valuestring, "v2") == 0) {
+        opt.synth = jtts::SynthVariant::V2;
+    }
+}
+
 void build_envelope_from_pcm(const std::vector<std::int16_t>& pcm,
                              std::vector<float>& envelope, std::uint32_t sample_rate,
                              std::uint32_t step_ms)
@@ -109,6 +120,11 @@ void apply_options_json(jtts::Options& opt, const cJSON* root)
     apply_number(opt.frication_mul, cJSON_GetObjectItemCaseSensitive(root, "frication_mul"));
     apply_number(opt.vibrato_rate_hz, cJSON_GetObjectItemCaseSensitive(root, "vibrato_rate_hz"));
     apply_number(opt.vibrato_cents, cJSON_GetObjectItemCaseSensitive(root, "vibrato_cents"));
+    // やわらかさ系 (V2 のみ有効、bw_scale は Classic でも効く) + 合成方式。
+    apply_number(opt.glottal_oq, cJSON_GetObjectItemCaseSensitive(root, "glottal_oq"));
+    apply_number(opt.tilt_db, cJSON_GetObjectItemCaseSensitive(root, "tilt_db"));
+    apply_number(opt.bw_scale, cJSON_GetObjectItemCaseSensitive(root, "bw_scale"));
+    apply_synth(opt, cJSON_GetObjectItemCaseSensitive(root, "synth"));
 }
 
 } // namespace

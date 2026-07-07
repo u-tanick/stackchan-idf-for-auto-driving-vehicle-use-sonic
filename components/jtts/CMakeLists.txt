@@ -4,6 +4,7 @@ idf_component_register(
         "src/phoneme.cpp"
         "src/formant_tables.cpp"
         "src/formant_synth.cpp"
+        "src/formant_synth_classic.cpp"
         "src/prosody.cpp"
         "src/jtts.cpp"
         "src/jvox.cpp"

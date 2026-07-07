@@ -570,6 +570,12 @@
         <option value="male">Male (低め)</option>
       </select>
 
+      <label for="jtts-synth">合成方式</label>
+      <select id="jtts-synth">
+        <option value="v2">標準 (v2 — 声門波 + カスケード)</option>
+        <option value="classic">クラシック (旧方式 — ブザー声)</option>
+      </select>
+
       <div class="grid2">
         <div>
           <label for="jtts-f0">ピッチ F0 (Hz)</label>
@@ -599,7 +605,22 @@
           <label for="jtts-vibratoc">ビブラート depth (cents)</label>
           <input type="number" id="jtts-vibratoc" min="0" max="200" step="1" placeholder="0">
         </div>
+        <div>
+          <label for="jtts-oq">声門開大比 (やわらかさ)</label>
+          <input type="number" id="jtts-oq" min="0.35" max="0.85" step="0.01" placeholder="0.56">
+        </div>
+        <div>
+          <label for="jtts-tilt">高域減衰 tilt (dB)</label>
+          <input type="number" id="jtts-tilt" min="0" max="24" step="1" placeholder="0">
+        </div>
+        <div>
+          <label for="jtts-bwscale">帯域幅倍率 (鳴き抑え)</label>
+          <input type="number" id="jtts-bwscale" min="0.7" max="2.0" step="0.05" placeholder="1.00">
+        </div>
       </div>
+      <p class="hint" style="margin-top:0.25rem">
+        やわらかめの目安: 開大比 0.65–0.75 / tilt 6–12 dB / 帯域幅 1.2–1.5
+        (+息成分 0.1–0.25)。いずれも v2 方式で有効 (帯域幅はクラシックでも有効)。</p>
 
       <label for="jtts-phrases" style="margin-top:0.75rem">アイドル時の発話フレーズ (一行 1 つ)</label>
       <p class="hint" style="margin:0.2rem 0">
@@ -1012,12 +1033,17 @@ const JTTS_NUM_FIELDS = {
   breathiness:     'jtts-breath',
   vibrato_rate_hz: 'jtts-vibrate',
   vibrato_cents:   'jtts-vibratoc',
+  glottal_oq:      'jtts-oq',
+  tilt_db:         'jtts-tilt',
+  bw_scale:        'jtts-bwscale',
 };
 
 function readJttsForm() {
   const obj = {};
   const voice = $('jtts-voice').value;
   if (voice) obj.voice = voice;
+  const synth = $('jtts-synth').value;
+  if (synth && synth !== 'v2') obj.synth = synth;
   for (const [key, id] of Object.entries(JTTS_NUM_FIELDS)) {
     const v = $(id).value.trim();
     if (v !== '') obj[key] = Number(v);
@@ -1033,6 +1059,7 @@ function applyJttsToForm(json) {
   let obj;
   try { obj = JSON.parse(json); } catch { return; }
   if (obj.voice) $('jtts-voice').value = obj.voice;
+  if (obj.synth === 'classic' || obj.synth === 'v2') $('jtts-synth').value = obj.synth;
   for (const [key, id] of Object.entries(JTTS_NUM_FIELDS)) {
     if (obj[key] !== undefined) $(id).value = obj[key];
   }

@@ -58,7 +58,11 @@ FormantFrame vowel_frame(Vowel v, bool palatalized);
 FormantFrame nasal_frame(Consonant c);
 FormantFrame consonant_burst(Consonant c, Vowel next_v);
 
+// Options::synth で V2 / Classic をディスパッチする。
 void render_segments(std::span<const Segment> segs, std::vector<std::int16_t>& out, const Options& opt);
+// Classic バリアント本体 (formant_synth_classic.cpp)。
+void render_segments_classic(std::span<const Segment> segs, std::vector<std::int16_t>& out,
+                             const Options& opt);
 
 }  // namespace stackchan::jtts::internal
 

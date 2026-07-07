@@ -464,10 +464,12 @@ static bool g_servo_range_mode = false; // active state, mirrored for READ
 
 // Largest plaintext payload we accept on a single write — chosen to fit the
 // jtts config JSON comfortably. The encrypted wire form adds 12 (nonce) + 16
-// (tag) bytes; the scratch buffer below is sized accordingly. NimBLE
-// reassembles prepared writes into a single mbuf chain that ble_hs_mbuf_to_flat
-// then drops into our buffer.
-constexpr std::size_t kMaxJttsConfigBytes = 768;
+// (tag) bytes; the scratch buffer below is sized accordingly (1024-byte
+// scratch → ~996 B plaintext ceiling, so 960 leaves margin). Must match the
+// settings registry's jtts-config max_len so BLE and HTTP validate alike.
+// NimBLE reassembles prepared writes into a single mbuf chain that
+// ble_hs_mbuf_to_flat then drops into our buffer.
+constexpr std::size_t kMaxJttsConfigBytes = 960;
 
 // OTA firmware chunks are sent in 512-byte plaintext slices (~540 bytes on the
 // wire after AES-GCM framing). Comfortably under the 996-byte plaintext cap

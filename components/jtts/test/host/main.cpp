@@ -16,6 +16,8 @@
 //   breathy   息混じり (男声)
 //   breathy-f 息混じり (女声)
 //   tremor    軽い震え声 (歌う寸前の声)
+//   soft / soft-f       やわらかめ (OQ 0.70 + tilt 9 dB + 帯域幅 1.3)
+//   classic / classic-f 旧方式 (インパルス + 並列 BPF)
 
 #include <cstdio>
 #include <cstdlib>
@@ -115,6 +117,16 @@ int main(int argc, char** argv) {
         } else if (p == "tremor") {
             opt.vibrato_rate_hz = 5.0f;
             opt.vibrato_cents = 25.0f;
+        } else if (p == "soft" || p == "soft-f") {
+            // やわらかめ推奨値のショーケース (Options のコメント参照)。
+            opt.voice = (p == "soft") ? V::Male : V::Female;
+            opt.glottal_oq = 0.70f;
+            opt.tilt_db = 9.0f;
+            opt.bw_scale = 1.3f;
+            opt.breathiness = 0.15f;
+        } else if (p == "classic" || p == "classic-f") {
+            opt.voice = (p == "classic") ? V::Male : V::Female;
+            opt.synth = stackchan::jtts::SynthVariant::Classic;
         } else {
             std::fprintf(stderr, "Unknown preset: %s\n", p.c_str());
             return 1;

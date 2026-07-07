@@ -123,7 +123,7 @@ struct DeviceConfig {
     // JSON document carrying the user-tunable jtts babble parameters and
     // phrase list. The producer (BLE client) writes the raw JSON; the
     // consumer (main/speech.cpp) parses on startup. Empty → compile-time
-    // defaults. Capped at ~768 bytes plain text on the wire.
+    // defaults. Capped at ~960 bytes plain text on the wire.
     std::string jtts_config_json;
     // Conversation system prompt / persona for the OpenAI / Gemini backends
     // (XiaoZhi's server owns its own persona, so it's ignored there). Empty →

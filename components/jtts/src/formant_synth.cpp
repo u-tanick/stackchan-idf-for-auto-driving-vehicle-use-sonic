@@ -1,135 +1,35 @@
 // SPDX-FileCopyrightText: 2026 Kenta IDA <fuga@fugafuga.org>
 // SPDX-License-Identifier: BSL-1.0
+//
+// フォルマント合成 V2: Rosenberg 声門波励起 + Klatt 共振器カスケード。
+// Classic バリアント (インパルス + 並列) は formant_synth_classic.cpp。
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <random>
 
 #include "internal.hpp"
+#include "synth_dsp.hpp"
 
 namespace stackchan::jtts::internal {
 
 namespace {
 
-constexpr float kPi = 3.14159265358979323846f;
+using namespace dsp;
 
-// 定 peak-gain バンドパス biquad。無声 (摩擦) 成分の並列パス用。
-// 並列構成はフォルマントごとの振幅 (a1..a3) を直接制御できるので、
-// 子音テーブルのチューニング (「した」vs「ちた」問題など) をそのまま活かす。
-class Biquad {
-public:
-    void set_bpf(float f0, float bw, float fs) {
-        if (f0 < 50.0f) f0 = 50.0f;
-        if (f0 > fs * 0.45f) f0 = fs * 0.45f;
-        if (bw < 30.0f) bw = 30.0f;
-        if (bw > f0 * 2.0f) bw = f0 * 2.0f;
-        float w0 = 2.0f * kPi * f0 / fs;
-        float Q = f0 / bw;
-        float alpha = std::sin(w0) / (2.0f * Q);
-        float cos_w0 = std::cos(w0);
-        float a0 = 1.0f + alpha;
-        b0_ = alpha / a0;
-        b1_ = 0.0f;
-        b2_ = -alpha / a0;
-        a1_ = -2.0f * cos_w0 / a0;
-        a2_ = (1.0f - alpha) / a0;
-    }
-    float process(float x) {
-        float y = b0_ * x + b1_ * x1_ + b2_ * x2_ - a1_ * y1_ - a2_ * y2_;
-        x2_ = x1_;
-        x1_ = x;
-        y2_ = y1_;
-        y1_ = y;
-        return y;
-    }
-    void reset() { x1_ = x2_ = y1_ = y2_ = 0.0f; }
-
-private:
-    float b0_ = 0, b1_ = 0, b2_ = 0, a1_ = 0, a2_ = 0;
-    float x1_ = 0, x2_ = 0, y1_ = 0, y2_ = 0;
-};
-
-// Klatt 型 2-pole 共振器 (DC ゲイン 1)。有声パスのカスケード接続用。
-// カスケードにするとフォルマント間の相対振幅が声道の物理と同じ形で自動的に
-// 決まり、並列構成で起きるフォルマント間の位相打ち消しの谷が出ないため、
-// 母音の了解性が上がる (Klatt 1980 のカスケード分岐と同じ考え方)。
-class Resonator {
-public:
-    void set(float f, float bw, float fs) {
-        if (f < 50.0f) f = 50.0f;
-        if (f > fs * 0.47f) f = fs * 0.47f;
-        if (bw < 30.0f) bw = 30.0f;
-        const float T = 1.0f / fs;
-        c_ = -std::exp(-2.0f * kPi * bw * T);
-        b_ = 2.0f * std::exp(-kPi * bw * T) * std::cos(2.0f * kPi * f * T);
-        a_ = 1.0f - b_ - c_;
-    }
-    float process(float x) {
-        float y = a_ * x + b_ * y1_ + c_ * y2_;
-        y2_ = y1_;
-        y1_ = y;
-        return y;
-    }
-    void reset() { y1_ = y2_ = 0.0f; }
-
-private:
-    float a_ = 0, b_ = 0, c_ = 0;
-    float y1_ = 0, y2_ = 0;
-};
-
-// Rosenberg 声門流の微分 (glottal flow derivative) を励起源にする。
-// 旧実装のインパルス列は全帯域フラットなスペクトルでブザー的な耳障りさの
-// 主因だった。声門流微分は開大期のゆるい山 + 閉鎖時の鋭い負スパイクという
-// 形をしており、自然な -6 dB/oct 程度のスペクトル傾斜 (放射特性込み) が
-// 得られる。フォルマント合成の「機械のブザー」感がここで一番減る。
-//   flow g(ph):  0 ≤ ph < Tp : 0.5 (1 - cos(π ph / Tp))       (開大)
-//                Tp ≤ ph < Tc : cos(π (ph - Tp) / (2 Tn))      (閉小)
-//                Tc ≤ ph < 1  : 0                              (閉鎖)
-//   励起は dg/dph。Tp = 0.40, Tn = 0.16 (open quotient 0.56)。
-class GlottalSource {
-public:
-    float tick(float f0_hz, float fs) {
-        if (f0_hz <= 1.0f) return 0.0f;
-        phase_ += f0_hz / fs;
-        if (phase_ >= 1.0f) phase_ -= 1.0f;
-
-        constexpr float kTp = 0.40f;
-        constexpr float kTn = 0.16f;
-        constexpr float kTc = kTp + kTn;
-        if (phase_ < kTp) {
-            return (kPi / (2.0f * kTp)) * std::sin(kPi * phase_ / kTp);
-        }
-        if (phase_ < kTc) {
-            return -(kPi / (2.0f * kTn)) *
-                   std::sin(kPi * (phase_ - kTp) / (2.0f * kTn));
-        }
-        return 0.0f;
-    }
-    void reset() { phase_ = 0.0f; }
-
-private:
-    float phase_ = 0.0f;
-};
-
-inline float lerp(float a, float b, float t) { return a + (b - a) * t; }
-
-inline std::int16_t to_i16(float x) {
-    if (x > 1.0f) x = 1.0f;
-    if (x < -1.0f) x = -1.0f;
-    return static_cast<std::int16_t>(x * 32760.0f);
-}
-
-}  // namespace
-
-void render_segments(std::span<const Segment> segs, std::vector<std::int16_t>& out,
-                     const Options& opt) {
+void render_v2(std::span<const Segment> segs, std::vector<std::int16_t>& out,
+               const Options& opt) {
     const float fs = static_cast<float>(opt.sample_rate_hz);
+    const float bw_scale = (opt.bw_scale > 0.0f) ? opt.bw_scale : 1.0f;
 
-    // 有声パス: 声門波 → R1→R2→R3→R4→R5 カスケード。
+    // 有声パス: 声門波 → tilt → R1→R2→R3→R4→R5 カスケード。
     Resonator c1, c2, c3, c4, c5;
-    // 無声パス: ノイズ → 並列 BPF ×3 (従来どおり、a1..a3 で振幅制御)。
+    // 無声パス: ノイズ → 並列 BPF ×3 (a1..a3 で振幅制御)。
     Biquad p1, p2, p3;
     GlottalSource voice;
+    voice.set_oq(opt.glottal_oq);
+    TiltFilter tilt;
+    tilt.set(opt.tilt_db, fs);
     std::mt19937 rng(0xC0DECAFEu);
     auto noise = [&]() {
         std::uint32_t v = rng();
@@ -140,8 +40,8 @@ void render_segments(std::span<const Segment> segs, std::vector<std::int16_t>& o
     // では 3 kHz 以上がごっそり欠けて「こもった電話声」になるのを埋める。
     // 声道長の違い (formant_scale) には追従させる。
     const float fscale = (opt.formant_scale > 0.0f) ? opt.formant_scale : 1.0f;
-    c4.set(3300.0f * fscale, 280.0f, fs);
-    c5.set(3850.0f * fscale, 320.0f, fs);
+    c4.set(3300.0f * fscale, 280.0f * bw_scale, fs);
+    c5.set(3850.0f * fscale, 320.0f * bw_scale, fs);
 
     constexpr float step_ms = 5.0f;
     const std::size_t step_samples =
@@ -153,7 +53,7 @@ void render_segments(std::span<const Segment> segs, std::vector<std::int16_t>& o
     // ノイズ (一様乱数 [-1,1]、RMS = 1/√3) を声門波の実効振幅と揃えるための係数。
     constexpr float kNoiseGain = 1.73205081f;
     // カスケード出力の全体ゲイン。声門波振幅 (≈π/2Tn) とカスケードの帯域圧縮を
-    // 込みで、旧実装 (並列 + インパルス) と同程度の出力 RMS になるよう
+    // 込みで、Classic (並列 + インパルス) と同程度の出力 RMS になるよう
     // ホストの母音テスト (test_vowels) で合わせた値。
     constexpr float kVoicedMakeup = 0.015f;
 
@@ -169,9 +69,9 @@ void render_segments(std::span<const Segment> segs, std::vector<std::int16_t>& o
             float f1 = lerp(seg.start.f1, seg.end.f1, t);
             float f2 = lerp(seg.start.f2, seg.end.f2, t);
             float f3 = lerp(seg.start.f3, seg.end.f3, t);
-            float bw1 = lerp(seg.start.bw1, seg.end.bw1, t);
-            float bw2 = lerp(seg.start.bw2, seg.end.bw2, t);
-            float bw3 = lerp(seg.start.bw3, seg.end.bw3, t);
+            float bw1 = lerp(seg.start.bw1, seg.end.bw1, t) * bw_scale;
+            float bw2 = lerp(seg.start.bw2, seg.end.bw2, t) * bw_scale;
+            float bw3 = lerp(seg.start.bw3, seg.end.bw3, t) * bw_scale;
             float a1 = lerp(seg.start.a1, seg.end.a1, t);
             float a2 = lerp(seg.start.a2, seg.end.a2, t);
             float a3 = lerp(seg.start.a3, seg.end.a3, t);
@@ -179,9 +79,11 @@ void render_segments(std::span<const Segment> segs, std::vector<std::int16_t>& o
             float frication = lerp(seg.start.frication, seg.end.frication, t);
             float f0_base = lerp(seg.start.f0_hz, seg.end.f0_hz, t);
 
-            c1.set(f1, bw1, fs);
-            c2.set(f2, bw2, fs);
-            c3.set(f3, bw3, fs);
+            // カスケード係数はブロック長かけて補間 (係数ステップの広帯域
+            // 過渡が tilt の効きを覆い隠すのを防ぐ — Resonator のコメント参照)。
+            c1.set_target(f1, bw1, fs, static_cast<int>(n));
+            c2.set_target(f2, bw2, fs, static_cast<int>(n));
+            c3.set_target(f3, bw3, fs, static_cast<int>(n));
             p1.set_bpf(f1, bw1, fs);
             p2.set_bpf(f2, bw2, fs);
             p3.set_bpf(f3, bw3, fs);
@@ -203,7 +105,9 @@ void render_segments(std::span<const Segment> segs, std::vector<std::int16_t>& o
                 float pulse = voice.tick(f0_mod, fs);
                 float n1 = noise() * kNoiseGain;
                 float n2 = noise() * kNoiseGain;
-                float voiced_src = (1.0f - opt.breathiness) * pulse + opt.breathiness * n1;
+                // tilt はノイズ混合の後: 気息成分も一緒にやわらかくなる。
+                float voiced_src =
+                    tilt.process((1.0f - opt.breathiness) * pulse + opt.breathiness * n1);
 
                 float voiced =
                     c5.process(c4.process(c3.process(c2.process(c1.process(voiced_src)))));
@@ -219,6 +123,17 @@ void render_segments(std::span<const Segment> segs, std::vector<std::int16_t>& o
             k += n;
         }
     }
+}
+
+}  // namespace
+
+void render_segments(std::span<const Segment> segs, std::vector<std::int16_t>& out,
+                     const Options& opt) {
+    if (opt.synth == SynthVariant::Classic) {
+        render_segments_classic(segs, out, opt);
+        return;
+    }
+    render_v2(segs, out, opt);
 }
 
 }  // namespace stackchan::jtts::internal
