@@ -9,6 +9,163 @@ stackchan-idf の機能追加・修正の記録。新しいエントリを上に
 
 ---
 
+## 2026-07 (上旬) — 構造リファクタリング / v0.9.0 / jtts 大改修 (単位連結 TTS)
+
+このシーズンは「建て増し構造の一斉リファクタリング」と「jtts の聞き取り
+やすさ改修」の 2 本柱。リリースは v0.9.0 (カメラ VGA/RAW + リファクタ +
+プロビジョニング修正)。jtts 改修 (v0.9.0 以後の 23 コミット) は本記録
+時点で未リリース。
+
+**注**: v0.5.0 (6/16) 〜 v0.8.4 の期間はこの JOURNAL に未記録
+(one-touch mute = v0.8.5、カメラ撮影 P1/P2、release fetch OTA など)。
+必要になったら git log から補完する。
+
+### 構造リファクタリング Step 1〜7 (docs/refactoring-survey.md)
+
+コミット: `7f712cc` `f9a403f` `4eac045` `b7923da` (Step 1〜5)、
+`c4ccf2a` `f173c92` `52b7f9d` `f4ed82f` (Step 6)、
+`0cdd01e` `03e5332` `2cd997e` `c8a127e` (Step 7)
+
+「設定 1 項目 = 5 箇所への手作業配線」だった建て増し構造を一掃した。
+計画と互換固定点 (NVS キー 35 / BLE UUID 47 / 既存 /api ルート /
+OTA slug) はローカル ノート docs/refactoring-survey.md が正本。
+
+- Step 1-2: ワイヤ契約 enum の static_assert 網 + app_main (1962 行) を
+  demo_loop / settings_sinks / camera_service に分割 (~880 行に)。
+- Step 3: SharedState を face/servo/conv/battery/speaker/mic_lip/led/lt
+  のドメイン サブ構造体に再編、version+snapshot の手書き複製 4 つを
+  `VersionedValue<T>` に統合。
+- Step 4: `board::profile_for(kind)` — 散在していた per-board 分岐を
+  BoardProfile 1 switch に集約 (Module Audio 上書きは probe 直後 1 箇所)。
+- Step 5: `screens::Screen` スタック — AP QR / DeviceUi / AtomStatus の
+  3 系統オンデバイス UI を優先度付きスタック 1 本でディスパッチ。
+- Step 6 (本丸): **設定 registry** — 35 設定を {id, NVS キー, 型,
+  ApplyKind, 上限, accessor} の宣言テーブル 1 本に。NVS load/save の
+  テーブル駆動化 (キーは byte-identical 検証)、BLE/HTTP 両 staging を
+  registry 駆動 StagedConfig に統合、**バッチ GET/POST /api/settings**
+  を registry から生成 (secret は has_* フラグ、Live 行は専用ルートに
+  委譲)、sink 二重登録 ~32 本を SettingsHooks 1 構造体に。設定 1 項目の
+  追加は「registry 1 行 + DeviceConfig フィールド」で済むようになった。
+- Step 7: 両設定ページ (計 6.5k 行、概念重複 ~70%) の共通化。
+  `tools/settings_common.js` (window.StackchanSettings) に log / タブ /
+  board facts / DSL エディタ (transport アダプタ方式) / servo
+  キャリブレーション / MCP token・認証パスワード クリア / LT フォーム /
+  jtts フレーズ変換を抽出。BLE は sibling script src、Wi-Fi は
+  inject.mjs の SETTINGS_COMMON プレースホルダでビルド時インライン。
+- 実機スモークで実バグも 3 件発見 (下記プロビジョニング節)。
+  jtts フレーズは Wi-Fi ページが BLE 保存の {text, reading} ペアを
+  "[object Object]" に破壊するバグ (`e8e4aab`) — 共通化で根治。
+
+### v0.9.0 リリースと SoftAP プロビジョニングの実機バグ 3 件
+
+コミット: `ae39294` `6ada6fe` `a4a4fb8`、リリース `v0.9.0`
+
+保存 SSID が存在しない実機 (まさにプロビジョニングが必要な状態) で
+スモークしたところ、AP モードが実用にならないことが判明:
+
+- `ae39294`: STA の即時再接続ループが全チャネル スキャン (~5 s) で
+  電波を奪い、AP がスキャンに映らない / スマホが SA Query 失敗で数秒で
+  切断される。AP モード中は STA リトライを 30 s ワンショットに抑制し、
+  **クライアント接続中は完全停止** (AP_STACONNECTED/DISCONNECTED で追跡)。
+- `6ada6fe`: `set_provisioning_mode(true)` が cfg-wifi-init の mutex
+  生成前に呼ばれると黙って捨てられ、設定ページ全体が Basic 認証裏に
+  (Android の captive WebView は 401 を ERR_HTTP_RESPONSE_CODE_FAILURE
+  と表示 — 認証プロンプトが出ない)。g_wifi_connected と同型の init 順序
+  レースで、同じく atomic 化 + GET / の結果ログ追加。
+- `a4a4fb8`: 顔バイトコードの保存が ESP_ERR_NVS_NOT_ENOUGH_SPACE で失敗
+  (omega プリセット 1.8 KB)。メイン NVS 16 KiB は 35 設定キーで満杯で、
+  **PHY キャリブレーション保存すら毎ブート失敗していた**。partitions.csv
+  に昔からある未使用の storage パーティション (1 MB) を
+  nvs_flash_init_partition_ptr で専用 NVS 化して移行 (subtype=spiffs の
+  ままでも掴める _ptr 版が肝 — OTA はパーティション テーブルを書き換え
+  ないため)。旧領域からの自動マイグレーション + 両側 clear 付き。
+  副次効果で PHY cal も保存成功するようになった。
+
+シリアル ポートを開くだけで USB-Serial-JTAG がリセットされる件を
+2 回踏んだ (AP モードが揮発で消える)。対策: 検証前にロガーを開きっ
+ぱなしで常駐させる (メモリにも記録)。
+
+### jtts 案 A — フォルマント合成の品質改修 + ユーザー調整
+
+コミット: `a14bd75` `be29013`
+
+「若干聞き取りにくい」への第一弾。アーキテクチャは同じままで:
+
+- 励起源: インパルス列 (フラット スペクトル = ブザー感の主因) →
+  Rosenberg 声門流微分 (閉鎖スパイク + 自然な -6 dB/oct 傾斜)。
+- 有声路: 並列 BPF×3 → Klatt 共振器カスケード R1..R3 + 固定 R4/R5
+  (3.3/3.85 kHz)。並列の位相打ち消しの谷が消え、3 kHz 以上のこもりも
+  解消。摩擦音路は並列 + テーブル振幅を維持 (子音チューニング温存)。
+- 韻律: 句頭上昇 (0.90→1.05) + 漸降 + 文末降下の ProsodyCurve。
+- ユーザー調整 (`be29013`): glottal_oq (開大比) / tilt_db (高域減衰、
+  Klatt TL 相当) / bw_scale (帯域幅倍率) を jtts_config JSON + 両設定
+  ページに追加。旧方式は `"synth":"classic"` で選択可 (実装は
+  formant_synth_classic.cpp に保存、DSP 部品は synth_dsp.hpp に共通化)。
+  実装中に「カスケードの 5 ms 係数ステップの広帯域過渡が -18 dB の
+  ノイズ フロアになり tilt を無効化する」バグを発見 → 係数を per-sample
+  線形補間に変更 (tilt が設計カーブどおり効くように)。
+  jtts-config 上限は BLE/registry とも 960 B に統一 (BLE スクラッチ
+  1024 B - AES-GCM 28 B の天井内)。
+
+### jtts 案 B — モーラ単位連結 + TD-PSOLA エンジン (AquesTalk 方式)
+
+コミット: `5aab9ab` `aad80d4` `be261b4` `f696987` `69f22dd` `943abfd`
+`a652172` `e812258` `7e7a87c` `a151fb2`、設計ノート
+docs/jtts-unit-tts-research.md
+
+実音声由来の単位 DB で了解性を別次元に上げる第二エンジン。データの
+ライセンスとアルゴリズムを分離するため、まずフォルマント合成器で
+ブートストラップ DB を作って検証 → 実音声に差し替える段取り。
+
+- フォーマット `.jvox`: モーラ単位 PCM + ピッチマーク + 定常部 index。
+  codec=1 (IMA-ADPCM 4bit) で ~1/4 サイズ (NVS blob 上限 508 KB 内)。
+  ツールは tools/jvox/ (pack_jvox.py / gen_units_openjtalk.py)。
+- エンジン (unit_synth.cpp): 発話全体で連続な合成パルス列 + 2 周期
+  Hann グレイン OLA。聞き取り改善の反復で入れた仕掛け: グレイン
+  エネルギー正規化 (語尾減衰の持ち込み平坦化)、単位テール廃止 +
+  写像を「実のあるマーク」まで、連続継ぎ目のアタック スキップ +
+  3 周期クロスフェード、パック時の単位間レベル整列 + ゲイン平滑化。
+  包絡指標 (変調深度 / 深い谷率) が Mei 自然文と同水準になるまで詰めた。
+- データ: pyopenjtalk (Open JTalk, Modified BSD) で **キャリア文
+  「あー<モーラ>ー」から切り出し** (log-mel テンプレート マッチング) —
+  子音が母音先行の自然な遷移を持つ。CC ライセンス確認済みの 3 声:
+  Mei (CC BY 3.0, 女声, half_tone -6) / **tohoku-f01 (CC BY 4.0, 女声,
+  -2)** / nitech m001 (CC BY 3.0, 男声, 0)。ATTRIBUTION.md を DB と
+  一緒に自動生成。低い男声でピッチマーク抽出が崩壊する問題 (無正規化
+  自己相関の短ラグ バイアス / 気息音の擬似周期アンカー / 語尾 creak)
+  も修正 (`a151fb2`)。
+- 実機統合 (`a652172`): storage パーティション NVS (namespace jvox) に
+  ADPCM のまま保存、ブート時に PSRAM へ展開 (no-PSRAM の AtomS3 は
+  自動でフォルマントにフォールバック)。`GET/POST /api/voice-db` +
+  `/clear`、Wi-Fi 設定ページにアップロード UI。jtts_config に
+  `"engine": auto|formant|unit`。DB ビューは atomic shared_ptr 差し替え
+  で発話中アップロードと競合しない。CoreS3 実機で 234 KB アップロード
+  2.2 s → 102 単位 → 発話 → 再起動後の再ロードまで確認。
+- 試聴の結論 (ユーザー評): tohoku-f01 が一番聞き取りやすい。
+
+### その他
+
+- `f929d8e` `b1f110d`: 会話タスクの audio-TX 退避ログをレート制限 +
+  DEBUG 化、退避カウントを metrics に公開。
+- `ed96819` `1c76d30`: カメラ VGA 化 + RAW Bayer / カラーバー診断
+  (GC0308 を GRAYSCALE 初期化 + センサ レジスタでモザイク出力する
+  トリック、/api/camera/reg のレジスタ窓)。色調整チャート作業の準備。
+
+### このシーズンの持ち越し
+
+- **jtts 大改修が未リリース** (v0.9.0 の後 23 コミット、ローカルのみ)。
+  push + リリース時は versions.json / Pages の手順どおり。
+- nitech m001 の ぱ・きゃ 2 単位が verbatim 落ち (破裂音でマーク抽出
+  失敗)。頻度低・実用上軽微。
+- 音声 DB の BLE 転送は未対応 (HTTP のみ。~230 KB は BLE には過大)。
+- キャラクター性を突き詰めるなら自声録音で単位 DB を作る道がある
+  (フォーマット/エンジン共通、gen ツールの録音版だけ)。
+- カメラの色調整 (カラー チャート撮影 → AWB/CCM 追い込み) は未着手。
+- BLE 側の操作スモーク (Apply / servo 範囲設定 UI) は未実施
+  (DSL 送信は omega バグ調査で実施済み)。
+
+---
+
 ## 2026-06 (下旬) — aokko 顔 / 会話音声品質 / ネコミミ LED / AtomS3 slim
 
 このシーズンは「ハードウェア バリエーション + 設定 UI 拡張」が主軸。
