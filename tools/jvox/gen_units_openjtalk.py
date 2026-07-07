@@ -83,7 +83,10 @@ def main() -> int:
 
     index_lines = []
     for key_hex, kana in entries:
-        x48, sr = pyopenjtalk.tts(kana + "ー")
+        # half_tone=-6: Mei は単発モーラを ~370 Hz の高ピッチで読むため、
+        # -6 半音 (~260 Hz) に下げて目標 F0 (200-230 Hz) との PSOLA シフト量を
+        # 小さくする (シフトが大きいほどグレインの重なりが薄れ品質が落ちる)。
+        x48, sr = pyopenjtalk.tts(kana + "ー", half_tone=-6.0)
         assert sr == 48000, sr
         x16 = resample_48k_to_16k(np.asarray(x48, dtype=np.float64))
         x16 = trim_silence(x16, 16000)

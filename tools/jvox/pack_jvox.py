@@ -27,23 +27,31 @@ def load_wav(path: Path) -> tuple[np.ndarray, int]:
     return x.astype(np.float64), fs
 
 
-def estimate_f0(x: np.ndarray, fs: int, lo=70.0, hi=400.0) -> float:
-    """発話中央部の自己相関で平均 F0 を推定する。無声なら 0。"""
-    n = len(x)
-    seg = x[n // 4 : n * 3 // 4].copy()
-    if len(seg) < int(fs / lo) * 2:
-        seg = x
-    seg = seg - seg.mean()
-    ac = np.correlate(seg, seg, "full")[len(seg) - 1 :]
-    if ac[0] <= 0:
-        return 0.0
+def estimate_f0(x: np.ndarray, fs: int, lo=70.0, hi=450.0) -> float:
+    """フレームごとの自己相関 F0 の中央値。無声なら 0。
+
+    全体一括の自己相関だと、無声子音が長い単位 (「しー」等) で周期性が
+    薄まって推定に失敗する。30 ms フレームで周期性の高い (正規化相関 >0.5)
+    フレームだけ集めて中央値を取る。
+    """
+    fl = int(fs * 0.030)
     lag_lo, lag_hi = int(fs / hi), int(fs / lo)
-    if lag_hi >= len(ac):
-        lag_hi = len(ac) - 1
-    lag = lag_lo + int(np.argmax(ac[lag_lo:lag_hi]))
-    if ac[lag] < 0.25 * ac[0]:
+    f0s = []
+    for i in range(0, len(x) - fl, fl // 2):
+        seg = x[i : i + fl] - x[i : i + fl].mean()
+        e = float((seg * seg).sum())
+        if e < 1.0:
+            continue
+        ac = np.correlate(seg, seg, "full")[fl - 1 :]
+        hi_l = min(lag_hi, len(ac) - 1)
+        if hi_l <= lag_lo:
+            continue
+        pk = lag_lo + int(np.argmax(ac[lag_lo:hi_l]))
+        if ac[pk] > 0.5 * ac[0]:
+            f0s.append(fs / pk)
+    if not f0s:
         return 0.0
-    return fs / lag
+    return float(np.median(f0s))
 
 
 def pitch_marks(x: np.ndarray, fs: int, f0: float) -> list[int]:
@@ -65,21 +73,45 @@ def pitch_marks(x: np.ndarray, fs: int, f0: float) -> list[int]:
     thresh = rms.max() * 0.10
 
     marks: list[int] = []
-    # 最初の有声サンプルから開始し、以降 1 周期ずつ窓の最小値へスナップ。
-    voiced = np.nonzero(rms > thresh)[0]
-    if len(voiced) == 0:
+    # 開始点は「音量がある」ではなく「周期性がある」最初のフレーム。
+    # 音量基準だと無声破裂・摩擦の騒音部から歩き始めてしまい、子音と母音の
+    # 間の谷で打ち切られる (き・し 等で実測)。子音部はマークなし = verbatim
+    # ヘッドとして残るのが正しい。歩進周期はそのフレームの局所周期から
+    # 始める (単発モーラは単位内で F0 が滑るので、単位中央値との一致は
+    # 要求しない — 適応歩進が追従する)。
+    fl = int(fs * 0.030)
+    p_min, p_max = int(fs / 450), int(fs / 70)
+    pos = -1
+    for i in range(0, len(x) - fl, fl // 2):
+        seg = x[i : i + fl] - x[i : i + fl].mean()
+        e = float((seg * seg).sum())
+        if e < 1.0 or rms[min(i + fl // 2, len(rms) - 1)] <= thresh:
+            continue
+        ac = np.correlate(seg, seg, "full")[fl - 1 :]
+        hi_l = min(p_max, len(ac) - 1)
+        if hi_l <= p_min:
+            continue
+        pk = p_min + int(np.argmax(ac[p_min:hi_l]))
+        if ac[pk] > 0.5 * ac[0]:
+            pos = i + fl // 2  # rms 検査を通ったフレーム中点をアンカーにする
+            period = pk  # 局所周期で歩き始める
+            break
+    if pos < 0:
         return []
-    pos = int(voiced[0])
     # 最初のマーク: pos から 1.5 周期以内の最小値。
     w_end = min(len(x), pos + period + period // 2)
     if w_end - pos < period // 2:
         return []
     pos = pos + int(np.argmin(x[pos:w_end]))
     marks.append(pos)
+    # 歩進周期は直近のマーク間隔で適応させる (単発モーラ発話は単位内で
+    # F0 が 25% 以上滑ることがあり、固定周期だと途中で外れる)。
+    cur = float(period)
     while True:
-        center = marks[-1] + period
-        lo = center - period // 3
-        hi = center + period // 3
+        p = int(round(cur))
+        center = marks[-1] + p
+        lo = center - p // 3
+        hi = center + p // 3
         if hi >= len(x):
             break
         if rms[min(center, len(rms) - 1)] <= thresh:
@@ -87,6 +119,8 @@ def pitch_marks(x: np.ndarray, fs: int, f0: float) -> list[int]:
         m = lo + int(np.argmin(x[lo:hi]))
         if m <= marks[-1]:
             break
+        if len(marks) >= 1:
+            cur = min(max(0.7 * cur + 0.3 * (m - marks[-1]), p_min), p_max)
         marks.append(m)
     # u16 に収まることを検査 (unit ≤ ~65k サンプル)。
     if marks and marks[-1] > 0xFFFF:
