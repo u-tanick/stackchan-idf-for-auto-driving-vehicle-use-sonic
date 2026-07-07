@@ -47,3 +47,8 @@ add_executable(jtts_test_unit test_unit.cpp wav_writer.cpp)
 target_link_libraries(jtts_test_unit PRIVATE jtts)
 target_include_directories(jtts_test_unit PRIVATE ${JTTS_ROOT}/src)
 target_compile_options(jtts_test_unit PRIVATE -Wall -Wextra)
+
+add_executable(jtts_unit_demo unit_demo.cpp wav_writer.cpp)
+target_link_libraries(jtts_unit_demo PRIVATE jtts)
+target_include_directories(jtts_unit_demo PRIVATE ${JTTS_ROOT}/src)
+target_compile_options(jtts_unit_demo PRIVATE -Wall -Wextra)
