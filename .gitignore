@@ -39,4 +39,5 @@ node_modules/
 
 # host test outputs
 components/jtts/test/host/*.wav
+components/jtts/generated/
 components/jtts/test/host/build/
