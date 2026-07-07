@@ -3,7 +3,16 @@
 """gen_units_openjtalk: pyopenjtalk (Open JTalk) でモーラ単位 WAV を生成する。
 
 Usage:
-    <venv>/bin/python gen_units_openjtalk.py <ref_index.tsv> <outdir>
+    <venv>/bin/python gen_units_openjtalk.py <ref_index.tsv> <outdir> \
+        [--voice <path.htsvoice>] [--half-tone <n>]
+
+--voice: 使用する HTS 音声モデル (省略時は pyopenjtalk 同梱の Mei)。
+         CC ライセンスで確認済みの候補:
+           - Mei (同梱, mei_normal)          … CC BY 3.0, 女声, 素の単発 F0 ~375 Hz → --half-tone -6
+           - tohoku-f01-{neutral,happy,...}  … CC BY 4.0, 女声, ~254 Hz → --half-tone -2
+           - nitech_jp_atr503_m001           … CC BY 3.0, 男声, ~123 Hz → --half-tone 0
+--half-tone: 半音単位のピッチシフト (負で低く)。単位の素のピッチを合成目標
+         (女声 ~210 / 男声 ~130 Hz) に近づけて PSOLA のシフト量を減らす。
 
 <ref_index.tsv> は jtts_gen_units が書く index.tsv (key_hex \t kana \t ...) —
 キー採番の正本として流用する。各モーラは「<かな>ー」(長音付き) で合成する:
@@ -23,6 +32,7 @@ from pathlib import Path
 
 import numpy as np
 import pyopenjtalk
+from pyopenjtalk import HTSEngine
 
 
 def mel_frames(x: np.ndarray, fs: int) -> np.ndarray:
@@ -92,29 +102,77 @@ def trim_silence(x: np.ndarray, fs: int, thresh_ratio=0.02, pad_ms=15) -> np.nda
     return x[lo:hi]
 
 
-ATTRIBUTION = """# Voice-unit DB attribution
+ATTRIBUTION_HEADER = """# Voice-unit DB attribution
 
 This mora-unit voice database was generated with Open JTalk
 (Modified BSD) using:
 
-    HTS Voice "Mei" (mei_normal)
+"""
+ATTRIBUTION_FOOTER = """
+The derived unit waveforms in this directory / the packed .jvox file
+are redistributable under the same attribution requirement.
+"""
+# .htsvoice ファイル名の部分文字列 → 帰属文。
+ATTRIBUTIONS = {
+    "mei_": """    HTS Voice "Mei"
     Copyright (c) 2009-2013 Nagoya Institute of Technology,
     Department of Computer Science (MMDAgent Project Team)
     Licensed under the Creative Commons Attribution 3.0 license
     https://creativecommons.org/licenses/by/3.0/
+""",
+    "tohoku-f01": """    HTS voice tohoku-f01
+    Copyright (c) 2015 Intelligent Communication Network (Ito-Nose)
+    Laboratory, Tohoku University
+    Licensed under the Creative Commons Attribution 4.0 license
+    https://creativecommons.org/licenses/by/4.0/
+""",
+    "nitech_jp_atr503_m001": """    Nitech Japanese Speech Database "NIT ATR503 M001"
+    Copyright (c) 2003-2012 Nagoya Institute of Technology,
+    Department of Computer Science (HTS Working Group)
+    Licensed under the Creative Commons Attribution 3.0 license
+    https://creativecommons.org/licenses/by/3.0/
+""",
+}
 
-The derived unit waveforms in this directory / the packed .jvox file
-are redistributable under the same attribution requirement.
-"""
+
+def attribution_for(voice_path: str) -> str:
+    for key, text in ATTRIBUTIONS.items():
+        if key in voice_path:
+            return ATTRIBUTION_HEADER + text + ATTRIBUTION_FOOTER
+    return (ATTRIBUTION_HEADER +
+            f"    (unknown voice model: {voice_path} — 帰属文を手で確認すること)\n" +
+            ATTRIBUTION_FOOTER)
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
+    argv = sys.argv[1:]
+    voice = None
+    half_tone = -6.0
+    if "--voice" in argv:
+        i = argv.index("--voice")
+        voice = argv[i + 1]
+        del argv[i : i + 2]
+    if "--half-tone" in argv:
+        i = argv.index("--half-tone")
+        half_tone = float(argv[i + 1])
+        del argv[i : i + 2]
+    if len(argv) != 2:
         print(__doc__, file=sys.stderr)
         return 1
-    ref_index = Path(sys.argv[1])
-    outdir = Path(sys.argv[2])
+    ref_index = Path(argv[0])
+    outdir = Path(argv[1])
     outdir.mkdir(parents=True, exist_ok=True)
+
+    voice_path = voice if voice else pyopenjtalk.DEFAULT_HTS_VOICE.decode()
+    engine = HTSEngine(voice_path.encode())
+
+    def tts(text: str):
+        engine.set_speed(1.0)
+        engine.add_half_tone(half_tone)
+        x = engine.synthesize(pyopenjtalk.extract_fullcontext(text))
+        return x, engine.get_sampling_frequency()
+
+    print(f"voice: {voice_path} (half_tone={half_tone:+.1f})")
 
     entries = []
     for line in ref_index.read_text().splitlines():
@@ -132,10 +190,10 @@ def main() -> int:
         # キャリアから切り出す: 単発だと子音が発話頭のコールド スタートに
         # なるが、キャリア内の子音は先行母音からの自然な遷移
         # (コアーティキュレーション) を持つ — 連結時の「途切れ」感が減る。
-        t48, sr = pyopenjtalk.tts(kana + "ー", half_tone=-6.0)
+        t48, sr = tts(kana + "ー")
         assert sr == 48000, sr
         tpl = trim_silence(resample_48k_to_16k(np.asarray(t48, dtype=np.float64)), 16000)
-        c48, _ = pyopenjtalk.tts("あー" + kana + "ー", half_tone=-6.0)
+        c48, _ = tts("あー" + kana + "ー")
         car = trim_silence(resample_48k_to_16k(np.asarray(c48, dtype=np.float64)), 16000)
         x16 = cut_from_carrier(car, tpl, 16000)
         peak = np.abs(x16).max()
@@ -151,7 +209,7 @@ def main() -> int:
         print(f"  {kana:4s} {fname} {len(x16)} samples")
 
     (outdir / "index.tsv").write_text("\n".join(index_lines) + "\n")
-    (outdir / "ATTRIBUTION.md").write_text(ATTRIBUTION)
+    (outdir / "ATTRIBUTION.md").write_text(attribution_for(str(voice_path)))
     print(f"wrote {len(index_lines)} units to {outdir}")
     return 0
 
