@@ -28,15 +28,21 @@ namespace {
 constexpr float kPi = 3.14159265358979323846f;
 
 // レンダリング計画 1 エントリ = 1 単位の出力配置。
+// テール (最終マーク以降の残差) は出力しない: 中身は元発話の消え際 +
+// トリム余白のほぼ無音で、有声部の間に挟まると単位ごとに音量が落ち込む
+// (実聴で確認)。時間はぜんぶ有声部に配分する。
 struct Placed {
     jvox::UnitView unit;
     float amp = 1.0f;         // 無声化母音などの減衰
     std::size_t out0 = 0;     // 単位出力の先頭 (mix 内)
     std::size_t head_len = 0; // 無声オンセット (verbatim コピー) の長さ
     std::size_t v_out_len = 0;// 有声部の出力長 (PSOLA)
-    std::size_t tail_len = 0; // 残差テール (verbatim) の長さ
-    std::size_t total = 0;    // head+voiced+tail+gap を含む占有長
+    std::size_t total = 0;    // head+voiced+gap を含む占有長
     float ref_rms = 0.0f;     // グレイン正規化の目標 RMS (単位の代表値)
+    // 分析写像の範囲 (マーク添字)。末尾は「実のある」(local RMS ≥ 0.4×ref)
+    // 最後のマークまで — 元発話の減衰しきった尻尾へ写像すると、正規化の
+    // クランプ (≤4×) を超えて音量の谷になる。
+    std::size_t mark_last = 0;
 };
 
 // 分析マーク周辺 ±p の生 RMS。グレイン正規化の分子/分母に使う。
@@ -118,14 +124,19 @@ bool render_units(std::span<const Mora> moras, const jvox::Db& db,
                 const std::size_t target = ms_to_samples(dur_ms);
                 if (e.unit.marks.size() >= 3) {
                     const std::size_t v_in0 = e.unit.marks.front();
-                    const std::size_t v_in1 = e.unit.marks.back();
                     e.head_len = std::min<std::size_t>(v_in0, target);
-                    const std::size_t tail_in = e.unit.pcm.size() - 1 - v_in1;
-                    e.tail_len = std::min(tail_in, target - e.head_len);
-                    e.v_out_len = (target > e.head_len + e.tail_len)
-                                      ? target - e.head_len - e.tail_len
-                                      : 0;
+                    e.v_out_len = target - e.head_len;
                     e.ref_rms = unit_ref_rms(e.unit);
+                    // 写像の末尾: 実のある最後のマーク。
+                    e.mark_last = e.unit.marks.size() - 1;
+                    while (e.mark_last > 2) {
+                        const std::size_t j = e.mark_last;
+                        const std::size_t p = e.unit.marks[j] - e.unit.marks[j - 1];
+                        if (local_rms(e.unit.pcm, e.unit.marks[j], p) >= 0.4f * e.ref_rms) {
+                            break;
+                        }
+                        --e.mark_last;
+                    }
                 } else {
                     // ピッチマークなし (無声単位): 等速コピーのみ。
                     e.head_len = std::min(e.unit.pcm.size(), target);
@@ -162,13 +173,9 @@ bool render_units(std::span<const Mora> moras, const jvox::Db& db,
 
     std::vector<float> mix(total_len, 0.0f);
 
-    // --- 無声部 (head / tail) の verbatim コピー ---
+    // --- 無声部 (head) の verbatim コピー ---
     for (const Placed& e : plan) {
         copy_with_fade(e.unit.pcm, 0, e.head_len, e.amp, mix, e.out0, fs);
-        if (e.tail_len > 0) {
-            copy_with_fade(e.unit.pcm, e.unit.marks.back() + 1, e.tail_len, e.amp, mix,
-                           e.out0 + e.head_len + e.v_out_len, fs);
-        }
     }
 
     // --- 有声部: 発話全体で連続な合成パルス列による PSOLA ---
@@ -189,7 +196,8 @@ bool render_units(std::span<const Mora> moras, const jvox::Db& db,
         }
 
         const float v_in0 = static_cast<float>(e.unit.marks.front());
-        const float v_in_len = static_cast<float>(e.unit.marks.back() - e.unit.marks.front());
+        const float v_in_len =
+            static_cast<float>(e.unit.marks[e.mark_last] - e.unit.marks.front());
 
         while (s < v1) {
             const std::size_t out_pos = static_cast<std::size_t>(s);
@@ -200,7 +208,7 @@ bool render_units(std::span<const Mora> moras, const jvox::Db& db,
             const float uu =
                 v_in0 + ((s - v0) / static_cast<float>(e.v_out_len)) * v_in_len;
             std::size_t j = 1;
-            while (j + 1 < e.unit.marks.size() && static_cast<float>(e.unit.marks[j]) < uu) {
+            while (j + 1 <= e.mark_last && static_cast<float>(e.unit.marks[j]) < uu) {
                 ++j;
             }
             const std::size_t m = e.unit.marks[j];
