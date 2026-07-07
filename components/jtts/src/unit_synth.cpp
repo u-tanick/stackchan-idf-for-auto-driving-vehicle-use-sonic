@@ -43,6 +43,10 @@ struct Placed {
     // 最後のマークまで — 元発話の減衰しきった尻尾へ写像すると、正規化の
     // クランプ (≤4×) を超えて音量の谷になる。
     std::size_t mark_last = 0;
+    // 先頭側の「立ち上がり完了」マーク。前の単位から有声が連続している
+    // 継ぎ目では、単位ごとの母音アタックを再生すると「毎モーラ言い直す」
+    // ような途切れに聞こえるため、連続時はここから写像を始める。
+    std::size_t mark_first = 0;
 };
 
 // 分析マーク周辺 ±p の生 RMS。グレイン正規化の分子/分母に使う。
@@ -137,6 +141,20 @@ bool render_units(std::span<const Mora> moras, const jvox::Db& db,
                         }
                         --e.mark_last;
                     }
+                    // 写像の先頭 (連続継ぎ目用): 立ち上がりが完了したマーク。
+                    // 上限はマーク列の 30% (それより奥だと子音遷移まで捨てて
+                    // しまう)。
+                    const std::size_t first_cap =
+                        std::max<std::size_t>(1, e.unit.marks.size() * 3 / 10);
+                    e.mark_first = 1;
+                    while (e.mark_first < first_cap && e.mark_first + 2 < e.mark_last) {
+                        const std::size_t j = e.mark_first;
+                        const std::size_t p = e.unit.marks[j + 1] - e.unit.marks[j];
+                        if (local_rms(e.unit.pcm, e.unit.marks[j], p) >= 0.6f * e.ref_rms) {
+                            break;
+                        }
+                        ++e.mark_first;
+                    }
                 } else {
                     // ピッチマークなし (無声単位): 等速コピーのみ。
                     e.head_len = std::min(e.unit.pcm.size(), target);
@@ -179,6 +197,37 @@ bool render_units(std::span<const Mora> moras, const jvox::Db& db,
     }
 
     // --- 有声部: 発話全体で連続な合成パルス列による PSOLA ---
+
+    // 1 グレイン (2 周期 Hann 窓) の overlap-add。
+    auto emit_grain = [&](const Placed& e, std::size_t j, std::size_t p_a,
+                          std::size_t out_pos, float gain) {
+        const std::size_t m = e.unit.marks[j];
+        for (std::size_t k = 0; k < 2 * p_a + 1; ++k) {
+            const std::ptrdiff_t src =
+                static_cast<std::ptrdiff_t>(m + k) - static_cast<std::ptrdiff_t>(p_a);
+            if (src < 0 || src >= static_cast<std::ptrdiff_t>(e.unit.pcm.size())) continue;
+            const std::ptrdiff_t dst = static_cast<std::ptrdiff_t>(out_pos + k) -
+                                       static_cast<std::ptrdiff_t>(p_a);
+            if (dst < 0 || dst >= static_cast<std::ptrdiff_t>(total_len)) continue;
+            const float w = 0.5f - 0.5f * std::cos(2.0f * kPi * static_cast<float>(k) /
+                                                   static_cast<float>(2 * p_a));
+            mix[static_cast<std::size_t>(dst)] +=
+                gain * w *
+                static_cast<float>(e.unit.pcm[static_cast<std::size_t>(src)]) / 32768.0f;
+        }
+    };
+    auto local_period = [](const Placed& e, std::size_t j) {
+        const std::size_t p_prev = e.unit.marks[j] - e.unit.marks[j - 1];
+        const std::size_t p_next =
+            (j + 1 < e.unit.marks.size()) ? e.unit.marks[j + 1] - e.unit.marks[j] : p_prev;
+        return std::max<std::size_t>(8, std::min(p_prev, p_next));
+    };
+
+    // 直前単位の「鳴り納め」グレイン (継ぎ目クロスフェード用)。
+    const Placed* ring_e = nullptr;
+    std::size_t ring_j = 0;
+    float ring_gain = 0.0f;
+
     float s = -1.0f;  // 次の合成マーク位置 (負 = 未開始)
     for (const Placed& e : plan) {
         if (e.v_out_len == 0 || e.unit.marks.size() < 3) continue;
@@ -189,19 +238,26 @@ bool render_units(std::span<const Mora> moras, const jvox::Db& db,
         // リセット (子音・無音を挟んだら位相合わせは不要)。それ以下なら
         // 周期を刻んだまま次の有声部に入る — 境界でパルス間隔が乱れない。
         const float period0 = fs / f0_at(static_cast<std::size_t>(v0));
+        bool continuous = false;
         if (s < 0.0f || v0 - s > 2.0f * period0 + fs * 0.020f) {
             s = v0;
         } else {
+            continuous = true;
             while (s < v0) s += fs / f0_at(static_cast<std::size_t>(s));
         }
 
-        const float v_in0 = static_cast<float>(e.unit.marks.front());
-        const float v_in_len =
-            static_cast<float>(e.unit.marks[e.mark_last] - e.unit.marks.front());
+        // 連続継ぎ目では母音アタックを飛ばして写像する (毎モーラ言い直す
+        // ような再アタックが「途切れ」に聞こえる)。位相リセット後 (文頭・
+        // 子音後) は自然なアタックとして先頭から。
+        const std::size_t m_first = continuous ? e.mark_first : 0;
+        const float v_in0 = static_cast<float>(e.unit.marks[m_first]);
+        const float v_in_len = static_cast<float>(e.unit.marks[e.mark_last]) - v_in0;
 
         // グレイン正規化ゲインの平滑化状態。毎グレイン独立にゲインが跳ねると
         // ピッチ周期の振幅変調 (ざらついたノイズ) になる。
         float g_smooth = -1.0f;
+        std::size_t gi = 0;         // この単位内のグレイン番号
+        std::size_t last_j = m_first + 1;
 
         while (s < v1) {
             const std::size_t out_pos = static_cast<std::size_t>(s);
@@ -211,15 +267,11 @@ bool render_units(std::span<const Mora> moras, const jvox::Db& db,
             // 分析位置: 有声部の進捗を入力へ線形写像し、最寄りのマークを選ぶ。
             const float uu =
                 v_in0 + ((s - v0) / static_cast<float>(e.v_out_len)) * v_in_len;
-            std::size_t j = 1;
+            std::size_t j = std::max<std::size_t>(1, m_first);
             while (j + 1 <= e.mark_last && static_cast<float>(e.unit.marks[j]) < uu) {
                 ++j;
             }
-            const std::size_t m = e.unit.marks[j];
-            const std::size_t p_prev = e.unit.marks[j] - e.unit.marks[j - 1];
-            const std::size_t p_next =
-                (j + 1 < e.unit.marks.size()) ? e.unit.marks[j + 1] - e.unit.marks[j] : p_prev;
-            const std::size_t p_a = std::max<std::size_t>(8, std::min(p_prev, p_next));
+            const std::size_t p_a = local_period(e, j);
 
             // グレイン エネルギー正規化: このグレインの生 RMS を単位の代表
             // RMS に揃える。元発話の語尾減衰・強勢の持ち込みを平らにする。
@@ -228,7 +280,7 @@ bool render_units(std::span<const Mora> moras, const jvox::Db& db,
             // ノイズになる)。
             float gain = e.amp;
             if (e.ref_rms > 0.0f) {
-                const float g_rms = local_rms(e.unit.pcm, m, p_a);
+                const float g_rms = local_rms(e.unit.pcm, e.unit.marks[j], p_a);
                 if (g_rms > 1e-5f) {
                     const float target = std::clamp(e.ref_rms / g_rms, 0.5f, 2.0f);
                     g_smooth = (g_smooth < 0.0f) ? target : 0.6f * g_smooth + 0.4f * target;
@@ -239,24 +291,27 @@ bool render_units(std::span<const Mora> moras, const jvox::Db& db,
             // 上がるぶんの補正。
             gain *= std::clamp(syn_period / static_cast<float>(p_a), 0.5f, 2.0f);
 
-            // 2 周期 Hann 窓グレイン。自単位の区間に閉じず mix 全体に置く —
-            // 境界で窓の重なりが切れてエネルギーの谷ができないように。
-            for (std::size_t k = 0; k < 2 * p_a + 1; ++k) {
-                const std::ptrdiff_t src =
-                    static_cast<std::ptrdiff_t>(m + k) - static_cast<std::ptrdiff_t>(p_a);
-                if (src < 0 || src >= static_cast<std::ptrdiff_t>(e.unit.pcm.size())) continue;
-                const std::ptrdiff_t dst = static_cast<std::ptrdiff_t>(out_pos + k) -
-                                           static_cast<std::ptrdiff_t>(p_a);
-                if (dst < 0 || dst >= static_cast<std::ptrdiff_t>(total_len)) continue;
-                const float w =
-                    0.5f - 0.5f * std::cos(2.0f * kPi * static_cast<float>(k) /
-                                           static_cast<float>(2 * p_a));
-                mix[static_cast<std::size_t>(dst)] +=
-                    gain * w *
-                    static_cast<float>(e.unit.pcm[static_cast<std::size_t>(src)]) / 32768.0f;
+            // 継ぎ目クロスフェード: 連続継ぎ目の最初の 3 グレインは、前の
+            // 単位の最終グレインを重み付きで重ね、こちらを控えめに立ち上げる。
+            // 1 周期でスペクトルが切り替わる「ぶつ切り」感をならす。
+            constexpr std::size_t kXfade = 3;
+            if (continuous && gi < kXfade && ring_e != nullptr) {
+                const float wx =
+                    static_cast<float>(gi + 1) / static_cast<float>(kXfade + 1);
+                emit_grain(*ring_e, ring_j, local_period(*ring_e, ring_j), out_pos,
+                           ring_gain * (1.0f - wx));
+                emit_grain(e, j, p_a, out_pos, gain * wx);
+            } else {
+                emit_grain(e, j, p_a, out_pos, gain);
             }
+
+            last_j = j;
+            ring_gain = gain;
+            ++gi;
             s += syn_period;
         }
+        ring_e = &e;
+        ring_j = last_j;
     }
 
     // 発話全体の端のフェード (2 ms) — 先頭/末尾の DC ステップ除去。
