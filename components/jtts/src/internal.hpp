@@ -34,8 +34,21 @@ bool parse_kana(std::u32string_view kana, std::vector<Mora>& out);
 // 該当する Mora の devoiced フラグを立てる。
 void apply_devoicing(std::vector<Mora>& moras);
 
-// 文末 F0 降下 (declination)。最終 ~280 ms で F0 を base*1.0 → base*0.78 に
-// 線形低下させ、フラット過ぎる音声にイントネーションを付ける。
+// 句レベルの F0 輪郭 (句頭上昇 → 漸降 → 文末降下)。base F0 に掛ける倍率を
+// 発話内時刻から返す。フォルマント/単位連結の両エンジンで共有する。
+class ProsodyCurve {
+public:
+    explicit ProsodyCurve(float total_ms);
+    float at(float t_ms) const;
+
+private:
+    float total_ms_;
+    float rise_ms_;
+    float fall_start_ms_;
+    float fall_ms_;
+};
+
+// ProsodyCurve をセグメント列の F0 に適用する (フォルマント エンジン用)。
 void apply_prosody(std::vector<Segment>& segs, const Options& opt);
 
 void build_segments(std::span<const Mora> moras, std::span<Segment> /*unused-placeholder*/);
@@ -46,5 +59,19 @@ FormantFrame nasal_frame(Consonant c);
 FormantFrame consonant_burst(Consonant c, Vowel next_v);
 
 void render_segments(std::span<const Segment> segs, std::vector<std::int16_t>& out, const Options& opt);
+
+}  // namespace stackchan::jtts::internal
+
+namespace stackchan::jtts::jvox {
+class Db;
+}
+
+namespace stackchan::jtts::internal {
+
+// 単位連結 + TD-PSOLA エンジン (unit_synth.cpp)。必要な単位が DB に揃って
+// いれば out に追記して true。欠けがあれば out を触らず false (呼び出し側が
+// フォルマント エンジンへフォールバックする)。
+bool render_units(std::span<const Mora> moras, const jvox::Db& db,
+                  std::vector<std::int16_t>& out, const Options& opt);
 
 }  // namespace stackchan::jtts::internal

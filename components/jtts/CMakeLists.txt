@@ -6,6 +6,8 @@ idf_component_register(
         "src/formant_synth.cpp"
         "src/prosody.cpp"
         "src/jtts.cpp"
+        "src/jvox.cpp"
+        "src/unit_synth.cpp"
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "src"
     REQUIRES tl_expected

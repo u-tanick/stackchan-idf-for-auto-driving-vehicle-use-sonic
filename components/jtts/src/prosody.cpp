@@ -22,6 +22,30 @@ constexpr float kFallRatio = 0.78f;     // 最終降下の相対倍率 (kPreFall
 
 }  // namespace
 
+ProsodyCurve::ProsodyCurve(float total_ms) : total_ms_(total_ms) {
+    // 短い発話では区間をスケールする: 上昇は総長の 1/4 まで、最終降下は
+    // 総長の 1/2 まで。1 モーラの発話でも rise→fall の山なり輪郭になる。
+    rise_ms_ = std::min(kRiseMs, total_ms * 0.25f);
+    fall_ms_ = std::min(kFallMs, total_ms * 0.50f);
+    fall_start_ms_ = total_ms - fall_ms_;
+}
+
+float ProsodyCurve::at(float t_ms) const {
+    if (total_ms_ <= 0.0f) return 1.0f;
+    if (t_ms < rise_ms_) {
+        float u = t_ms / rise_ms_;
+        return kRiseStart + (kPeak - kRiseStart) * u;
+    }
+    if (t_ms <= fall_start_ms_) {
+        float span = fall_start_ms_ - rise_ms_;
+        float u = (span > 0.0f) ? (t_ms - rise_ms_) / span : 1.0f;
+        return kPeak + (kPreFall - kPeak) * u;
+    }
+    float u = (t_ms - fall_start_ms_) / fall_ms_;
+    if (u > 1.0f) u = 1.0f;
+    return kPreFall * (1.0f - u * (1.0f - kFallRatio));
+}
+
 void apply_prosody(std::vector<Segment>& segs, const Options& /*opt*/) {
     if (segs.empty()) return;
 
@@ -29,34 +53,14 @@ void apply_prosody(std::vector<Segment>& segs, const Options& /*opt*/) {
     for (const auto& s : segs) total_ms += s.duration_ms;
     if (total_ms <= 0.0f) return;
 
-    // 短い発話では区間をスケールする: 上昇は総長の 1/4 まで、最終降下は
-    // 総長の 1/2 まで。1 モーラの発話でも rise→fall の山なり輪郭になる。
-    const float rise_ms = std::min(kRiseMs, total_ms * 0.25f);
-    const float fall_ms = std::min(kFallMs, total_ms * 0.50f);
-    const float fall_start_ms = total_ms - fall_ms;
-
-    auto multiplier_at = [&](float t_ms) {
-        if (t_ms < rise_ms) {
-            float u = t_ms / rise_ms;
-            return kRiseStart + (kPeak - kRiseStart) * u;
-        }
-        if (t_ms <= fall_start_ms) {
-            float span = fall_start_ms - rise_ms;
-            float u = (span > 0.0f) ? (t_ms - rise_ms) / span : 1.0f;
-            return kPeak + (kPreFall - kPeak) * u;
-        }
-        float u = (t_ms - fall_start_ms) / fall_ms;
-        if (u > 1.0f) u = 1.0f;
-        return kPreFall * (1.0f - u * (1.0f - kFallRatio));
-    };
-
+    const ProsodyCurve curve(total_ms);
     float cursor_ms = 0.0f;
     for (auto& seg : segs) {
         const float seg_start = cursor_ms;
         const float seg_end = cursor_ms + seg.duration_ms;
         cursor_ms = seg_end;
-        seg.start.f0_hz *= multiplier_at(seg_start);
-        seg.end.f0_hz *= multiplier_at(seg_end);
+        seg.start.f0_hz *= curve.at(seg_start);
+        seg.end.f0_hz *= curve.at(seg_end);
     }
 }
 
