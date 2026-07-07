@@ -106,21 +106,33 @@ def pitch_marks(x: np.ndarray, fs: int, f0: float) -> list[int]:
     marks.append(pos)
     # 歩進周期は直近のマーク間隔で適応させる (単発モーラ発話は単位内で
     # F0 が 25% 以上滑ることがあり、固定周期だと途中で外れる)。
+    # 有声区間内の短い谷 (有声子音のわたり: ら行のはじき、ば行の閉鎖など)
+    # は最大 50 ms までマークなしで前進し、回復したら再アンカーする —
+    # 谷で打ち切ると母音側が丸ごとマークなしになる (べ・ら・る で実測)。
     cur = float(period)
+    max_gap = int(fs * 0.050)
+    anchor = marks[-1]  # 次のマーク探索の基準 (谷スキップ中も前進する)
+    gap = 0
     while True:
         p = int(round(cur))
-        center = marks[-1] + p
+        center = anchor + p
         lo = center - p // 3
         hi = center + p // 3
         if hi >= len(x):
             break
         if rms[min(center, len(rms) - 1)] <= thresh:
-            break  # 有声区間の終わり
+            gap += p
+            if gap > max_gap:
+                break  # 有声区間の終わり
+            anchor = center  # 谷を素通り (マークは打たない)
+            continue
         m = lo + int(np.argmin(x[lo:hi]))
-        if m <= marks[-1]:
+        if m <= anchor:
             break
-        if len(marks) >= 1:
+        if gap == 0 and marks:
             cur = min(max(0.7 * cur + 0.3 * (m - marks[-1]), p_min), p_max)
+        gap = 0
+        anchor = m
         marks.append(m)
     # u16 に収まることを検査 (unit ≤ ~65k サンプル)。
     if marks and marks[-1] > 0xFFFF:

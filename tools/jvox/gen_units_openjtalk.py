@@ -25,6 +25,47 @@ import numpy as np
 import pyopenjtalk
 
 
+def mel_frames(x: np.ndarray, fs: int) -> np.ndarray:
+    """粗い log-mel 風スペクトル列 (25 ms 窓 / 10 ms ホップ / 20 帯域)。
+
+    キャリア発話からの単位切り出しのテンプレート マッチング用。同一合成声
+    どうしの比較なので厳密な MFCC は不要。
+    """
+    fl, hop = int(fs * 0.025), int(fs * 0.010)
+    n_bands = 20
+    edges = np.geomspace(100.0, 7000.0, n_bands + 1)
+    frames = []
+    for i in range(0, len(x) - fl, hop):
+        seg = x[i : i + fl] * np.hanning(fl)
+        p = np.abs(np.fft.rfft(seg)) ** 2
+        fr = np.fft.rfftfreq(fl, 1 / fs)
+        bands = [np.log10(p[(fr >= edges[b]) & (fr < edges[b + 1])].sum() + 1e3)
+                 for b in range(n_bands)]
+        frames.append(bands)
+    return np.asarray(frames)
+
+
+def cut_from_carrier(carrier: np.ndarray, template: np.ndarray, fs: int) -> np.ndarray:
+    """キャリア「あー<モーラ>ー」から <モーラ>ー 部分を切り出す。
+
+    単発合成した同モーラをテンプレートに、キャリアの 25%〜85% の範囲で
+    スペクトル距離が最小になる開始フレームを探す。8 ms 手前から切ることで
+    先行母音 /a/ からの遷移 (コアーティキュレーション) を少しだけ残す。
+    """
+    car = mel_frames(carrier, fs)
+    tpl = mel_frames(template, fs)
+    k = min(len(tpl), 15)  # テンプレート先頭 ~150 ms
+    if k < 3 or len(car) < k + 4:
+        return template  # 短すぎ → 単発版へフォールバック
+    lo = max(1, int(len(car) * 0.25))
+    hi = max(lo + 1, min(len(car) - k, int(len(car) * 0.85)))
+    costs = [np.mean((car[o : o + k] - tpl[:k]) ** 2) for o in range(lo, hi)]
+    o_best = lo + int(np.argmin(costs))
+    hop = int(fs * 0.010)
+    start = max(0, o_best * hop)
+    return carrier[start:]
+
+
 def resample_48k_to_16k(x: np.ndarray) -> np.ndarray:
     """48 kHz → 16 kHz。1/3 間引きの前に簡易 FIR LPF (fc≈7.2 kHz) を掛ける。"""
     # windowed-sinc LPF (63 taps, cutoff 0.15 = 7.2 kHz @48k)
@@ -86,10 +127,17 @@ def main() -> int:
         # half_tone=-6: Mei は単発モーラを ~370 Hz の高ピッチで読むため、
         # -6 半音 (~260 Hz) に下げて目標 F0 (200-230 Hz) との PSOLA シフト量を
         # 小さくする (シフトが大きいほどグレインの重なりが薄れ品質が落ちる)。
-        x48, sr = pyopenjtalk.tts(kana + "ー", half_tone=-6.0)
+        #
+        # 単発版 (テンプレート) とキャリア版「あー<モーラ>ー」の両方を合成し、
+        # キャリアから切り出す: 単発だと子音が発話頭のコールド スタートに
+        # なるが、キャリア内の子音は先行母音からの自然な遷移
+        # (コアーティキュレーション) を持つ — 連結時の「途切れ」感が減る。
+        t48, sr = pyopenjtalk.tts(kana + "ー", half_tone=-6.0)
         assert sr == 48000, sr
-        x16 = resample_48k_to_16k(np.asarray(x48, dtype=np.float64))
-        x16 = trim_silence(x16, 16000)
+        tpl = trim_silence(resample_48k_to_16k(np.asarray(t48, dtype=np.float64)), 16000)
+        c48, _ = pyopenjtalk.tts("あー" + kana + "ー", half_tone=-6.0)
+        car = trim_silence(resample_48k_to_16k(np.asarray(c48, dtype=np.float64)), 16000)
+        x16 = cut_from_carrier(car, tpl, 16000)
         peak = np.abs(x16).max()
         if peak > 0:
             x16 = x16 * (0.7 * 32767 / peak)
