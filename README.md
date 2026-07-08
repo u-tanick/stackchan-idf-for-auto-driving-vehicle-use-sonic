@@ -174,3 +174,12 @@ Submodule (`components/M5GFX` / `components/M5Unified` / `components/tl_expected
 と managed_components (`espressif/esp_audio_codec` / `espressif/esp_websocket_client` /
 `espressif/mdns` / `espressif/esp_jpeg` / `espressif/esp32-camera` 等)
 はそれぞれの upstream ライセンスに従います。
+
+### 第三者ソフトウェア・音声データの帰属表示
+
+HMM 音声合成に使う **hts_engine API** (Modified BSD / 名古屋工業大学・東京工業大学)
+と、同梱・配布する **HMM ボイス "Mei"** (CC BY 3.0 / 名古屋工業大学・MMDAgent
+Project Team) をはじめとする第三者コンポーネントの帰属表示は
+**[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)** にまとめています。
+HTML 版 (Web フラッシャー・設定ページからも参照可):
+<https://ciniml.github.io/stackchan-idf/licenses.html>。

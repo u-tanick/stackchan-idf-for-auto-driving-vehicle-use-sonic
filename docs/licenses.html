@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stack-chan IDF — 第三者ライセンス / 帰属表示</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+         margin: 0; padding: 1.5rem; max-width: 820px; margin-inline: auto; line-height: 1.6; }
+  h1 { font-size: 1.4rem; margin: 0 0 .3rem; }
+  h2 { font-size: 1.1rem; margin: 1.6rem 0 .4rem; border-bottom: 1px solid #888; padding-bottom: .2rem; }
+  h3 { font-size: 1rem; margin: 1rem 0 .3rem; }
+  .sub { opacity: .7; font-size: .9rem; margin-bottom: 1rem; }
+  a { color: #1976d2; }
+  code { background: rgba(128,128,128,.18); padding: 0 .3em; border-radius: 3px;
+         font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .9em; }
+  blockquote { border-left: 3px solid #888; margin: .5rem 0; padding: .2rem 0 .2rem .8rem;
+               opacity: .85; font-size: .9rem; }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; margin: .5rem 0; }
+  th, td { border: 1px solid #999; padding: .35rem .5rem; text-align: left; }
+  .links { margin: .5rem 0 1.2rem; font-size: .9rem; }
+  .card { border: 1px solid #888; border-radius: 6px; padding: .3rem 1rem 1rem; margin: 0 0 1rem; }
+</style>
+</head>
+<body>
+<h1>🤖 Stack-chan IDF — 第三者ライセンス / 帰属表示</h1>
+<p class="sub">Third-Party Notices — firmware / Web フラッシャー配布物に含まれる第三者ソフトウェアと音声データの帰属表示。</p>
+<p class="links">
+  ▶ <a href="./index.html">Web フラッシャー</a>
+  ▶ <a href="./settings.html">設定ページ (BLE)</a>
+  ▶ <a href="https://github.com/ciniml/stackchan-idf/blob/main/THIRD_PARTY_NOTICES.md" target="_blank" rel="noopener">この文書のソース (GitHub)</a>
+</p>
+
+<p>stackchan-idf の<strong>自前ソース</strong>は
+<a href="https://github.com/ciniml/stackchan-idf/blob/main/LICENSE" target="_blank" rel="noopener">Boost Software License 1.0</a>
+で配布されます。以下は同梱・配布する第三者コンポーネントです。</p>
+
+<div class="card">
+<h2>音声合成エンジン</h2>
+<h3>hts_engine API 1.10 — Modified BSD (3-clause BSD)</h3>
+<p>HMM 音声合成エンジン (組み込み向け改変コピーを firmware に同梱)。</p>
+<ul>
+  <li>Copyright (c) 2001-2015 Nagoya Institute of Technology, Department of Computer Science</li>
+  <li>Copyright (c) 2001-2008 Tokyo Institute of Technology, Interdisciplinary Graduate School of Science and Engineering</li>
+  <li>上流: <a href="https://hts-engine.sourceforge.net/" target="_blank" rel="noopener">hts-engine.sourceforge.net</a></li>
+  <li>ライセンス全文: <a href="https://github.com/ciniml/stackchan-idf/blob/main/components/hts_engine/COPYING" target="_blank" rel="noopener">components/hts_engine/COPYING</a></li>
+</ul>
+<blockquote>Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met … THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" …</blockquote>
+</div>
+
+<div class="card">
+<h2>音声モデル (HMM ボイス)</h2>
+<p>firmware にバンドル、または設定ページの「サーバーから取得」で配布するボイス。
+いずれも Creative Commons 表示ライセンスで、帰属表示のうえ再配布しています。</p>
+
+<h3>HTS Voice "Mei" — CC BY 3.0</h3>
+<ul>
+  <li>HTS Voice "Mei" © 2009-2013 Nagoya Institute of Technology / MMDAgent Project Team</li>
+  <li>License: <a href="https://creativecommons.org/licenses/by/3.0/" target="_blank" rel="noopener">Creative Commons Attribution 3.0</a></li>
+  <li>ライセンス全文: <a href="https://github.com/ciniml/stackchan-idf/blob/main/assets/voices/LICENSE_mei.txt" target="_blank" rel="noopener">assets/voices/LICENSE_mei.txt</a></li>
+  <li>上流: <a href="http://www.mmdagent.jp/" target="_blank" rel="noopener">mmdagent.jp</a></li>
+</ul>
+
+<h3>その他の CC BY ボイス (ユーザーがアップロードして利用可能)</h3>
+<p>firmware は任意の <code>.htsvoice</code> を読み込めます。以下は検証に用いた
+ライセンス クリーンなボイス (リポジトリには同梱しません)。</p>
+<ul>
+  <li><strong>htsvoice-tohoku-f01</strong> (女声) — CC BY 4.0, © 東北大学 乾・鈴木研究室 (icn-lab)</li>
+  <li><strong>hts_voice_nitech_jp_atr503_m001</strong> (男声) — CC BY 3.0, © Nagoya Institute of Technology</li>
+</ul>
+</div>
+
+<div class="card">
+<h2>ライブラリ・ツール</h2>
+<table>
+  <tr><th>コンポーネント</th><th>ライセンス</th><th>著作権表示</th></tr>
+  <tr><td>M5GFX</td><td>MIT</td><td>© 2021 M5Stack</td></tr>
+  <tr><td>M5Unified</td><td>MIT</td><td>© 2021 M5Stack</td></tr>
+  <tr><td>tl::expected</td><td>CC0 1.0 (public domain)</td><td>Sy Brand</td></tr>
+  <tr><td>ESP-IDF managed_components (<code>espressif/*</code>)</td><td>Apache-2.0</td><td>© Espressif Systems</td></tr>
+  <tr><td>esptool-js (Web フラッシャー)</td><td>Apache-2.0</td><td>© Espressif Systems</td></tr>
+  <tr><td>pako (esptool-js 同梱)</td><td>MIT AND Zlib</td><td>© 2014-2017 Vitaly Puzrin, Andrey Tupitsin</td></tr>
+</table>
+</div>
+
+<p class="sub">各ライセンスの全文はリンク先および各コンポーネントの LICENSE / COPYING を参照してください。</p>
+</body>
+</html>
