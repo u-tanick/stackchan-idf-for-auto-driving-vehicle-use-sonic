@@ -142,10 +142,18 @@ tl::expected<httpd_handle_t, Error> start_http_server()
     // remapping flash. PSRAM is cached, so a PSRAM-resident stack becomes
     // unreadable during the cache-disable window and the kernel asserts
     // (cache_utils.c:152 esp_task_stack_is_sane_cache_disabled). Same
-    // constraint applies to NVS writes triggered by /api/apply. 6 KiB is
-    // enough for cJSON + esp_ota_write + the few hundred bytes of mbedtls
-    // state nothing actually uses here (no TLS in plain HTTP mode).
-    cfg.stack_size = 6144;
+    // constraint applies to NVS writes triggered by /api/apply.
+    //
+    // 12 KiB (was 6): POST /api/hmm-voice runs hmm_voice::store → the
+    // hts_engine model parser (HTS_ModelSet_load) synchronously on THIS
+    // task. That parser nests ~1 KiB HTS_MAXBUFLEN token buffers several
+    // frames deep (ModelSet → Model → Tree/Question), which overflowed the
+    // old 6 KiB stack and corrupted the adjacent httpd session struct — the
+    // crash surfaced one request later in httpd_resp_set_hdr. (This mirrors
+    // the earlier main-task bump to 16 KiB for the same parser on the idle
+    // synth path.) Allocated once at httpd_start, before internal RAM
+    // fragments, so the larger contiguous block is available.
+    cfg.stack_size = 12288;
     cfg.lru_purge_enable = true;
     // 2 sockets: SSE long-poll (held open by the Channel adapter) + one
     // regular slot for /api/*, /mcp/say, /mcp/state, etc. esp_http_server
