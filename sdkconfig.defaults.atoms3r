@@ -16,3 +16,7 @@ CONFIG_SPIRAM_SPEED_80M=y
 # + 1 MB storage), comfortably under 8 MB.
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+
+# アプリが 3 MB を超えたため app 領域を拡張した 8 MB 表を使う (partitions_8mb.csv)。
+# 移行は USB 書き込み必須・storage データはリセット (旧表の機体は OTA 不可)。
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_8mb.csv"

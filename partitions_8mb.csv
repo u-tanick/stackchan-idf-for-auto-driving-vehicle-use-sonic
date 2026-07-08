@@ -1,0 +1,12 @@
+# ESP-IDF Partition Table (8 MB flash, 大きいアプリ向け: atoms3r)
+# atoms3r は PSRAM + カメラ等でアプリが 3 MB を超えたため app 領域を 3.44 MB に
+# 拡張した表。この表への移行は USB 書き込み必須で storage のデータ (顔バイト
+# コード / 音声 DB) は引き継がれない。nvs / otadata / phy_init は固定オフセット。
+# 小さいアプリの atoms3 (slim, PSRAM なし) は従来 partitions.csv のまま (OTA 互換)。
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x4000,
+otadata,  data, ota,     0xd000,   0x2000,
+phy_init, data, phy,     0xf000,   0x1000,
+ota_0,    app,  ota_0,   0x10000,  0x350000,
+ota_1,    app,  ota_1,   0x360000, 0x350000,
+storage,  data, spiffs,  0x6b0000, 0x100000,
