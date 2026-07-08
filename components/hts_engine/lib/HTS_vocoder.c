@@ -148,17 +148,94 @@ static float HTS_mlsadf1(float x, const float *b, const int m, const float a, co
 }
 
 /* HTS_mlsadf2: sub functions for MLSA filter */
+/* stackchan: mlsadf2 の PADEORDER 本の mlsafir 呼び出しは、入力 pt[i-1] が
+ * すべて前サンプルの状態 (この関数内でまだ書かれていない値) なので互いに独立。
+ * 元は 1 本ずつ直列に mlsafir を回していたが、mlsafir の漸化式
+ *   cur = d[k] + a*(d[k+1] - prev);  y += cur*b[k];  prev = cur;
+ * は cur→prev の直列依存で、S3 の FPU (~4 cycle レイテンシ) が毎ステップ
+ * ストールする。そこで PADEORDER 本の独立チェーンを 1 つの k ループで
+ * インターリーブし、独立な madd をパイプラインに詰めてレイテンシを隠す。
+ * 各チェーンの演算列・順序は元と同一なので結果は bit 一致 (ハーネスで確認)。 */
+#define HTS_MLSA_MAXPD 6
 static float HTS_mlsadf2(float x, const float *b, const int m, const float a, const float aa, const int pd, float *d, const float *ppade)
 {
-   float v, out = 0.0, *pt;
-   int i;
+   float *pt = &d[pd * (m + 2)];
+   float in[HTS_MLSA_MAXPD + 1];
+   float y[HTS_MLSA_MAXPD + 1];
+   float prev[HTS_MLSA_MAXPD + 1];
+   float *dj[HTS_MLSA_MAXPD + 1];
+   float v, out = 0.0;
+   int i, k;
 
-   pt = &d[pd * (m + 2)];
+   /* 入力 (すべて old 値) と各チェーンの状態配列を先に確保して独立化 */
+   for (i = 1; i <= pd; i++) {
+      in[i] = pt[i - 1];
+      dj[i] = &d[(i - 1) * (m + 2)];
+      y[i] = 0.0;
+   }
+   /* 各チェーン先頭 2 タップ (mlsafir の d[0], d[1] 相当) */
+   for (i = 1; i <= pd; i++) {
+      dj[i][0] = in[i];
+      dj[i][1] = aa * dj[i][0] + a * dj[i][1];
+      prev[i] = dj[i][1];
+   }
+   /* 漸化式 k=2..m を pd 本インターリーブ。内側 i ループは独立なので
+    * unroll させ、pd 本の madd をパイプラインに並べて FPU レイテンシを隠す。 */
+   if (pd == 4) {
+      /* HTS_EMBEDDED の PADEORDER=4 を明示スカラで特殊化。配列 prev[]/y[] を
+       * 名前付き変数にして FP レジスタに載せ、汎用ループ版で発生する spill
+       * (lsi/ssi f11) を排除する。累積 y0..3・prev0..3 のみ register 常駐で
+       * S3 の 16 本に収まる。演算列・順序は上の汎用ループと完全一致。 */
+      float *d1 = dj[1], *d2 = dj[2], *d3 = dj[3], *d4 = dj[4];
+      float p1 = prev[1], p2 = prev[2], p3 = prev[3], p4 = prev[4];
+      float y1 = 0.0, y2 = 0.0, y3 = 0.0, y4 = 0.0;
+      for (k = 2; k <= m; k++) {
+         const float bk = b[k];
+         float c1 = d1[k] + a * (d1[k + 1] - p1);
+         float c2 = d2[k] + a * (d2[k + 1] - p2);
+         float c3 = d3[k] + a * (d3[k + 1] - p3);
+         float c4 = d4[k] + a * (d4[k + 1] - p4);
+         y1 += c1 * bk;
+         y2 += c2 * bk;
+         y3 += c3 * bk;
+         y4 += c4 * bk;
+         d1[k] = p1;
+         d2[k] = p2;
+         d3[k] = p3;
+         d4[k] = p4;
+         p1 = c1;
+         p2 = c2;
+         p3 = c3;
+         p4 = c4;
+      }
+      d1[m + 1] = p1;
+      d2[m + 1] = p2;
+      d3[m + 1] = p3;
+      d4[m + 1] = p4;
+      y[1] = y1;
+      y[2] = y2;
+      y[3] = y3;
+      y[4] = y4;
+   } else {
+      for (k = 2; k <= m; k++) {
+#if defined(__GNUC__)
+#pragma GCC unroll 6
+#endif
+         for (i = 1; i <= pd; i++) {
+            float cur = dj[i][k] + a * (dj[i][k + 1] - prev[i]);
+            y[i] += cur * b[k];
+            dj[i][k] = prev[i];   /* シフト */
+            prev[i] = cur;
+         }
+      }
+      for (i = 1; i <= pd; i++)
+         dj[i][m + 1] = prev[i];
+   }
 
+   /* pt 更新 + x/out 累積 — 元の i=pd..1 順を保って float 丸めを一致させる */
    for (i = pd; i >= 1; i--) {
-      pt[i] = HTS_mlsafir(pt[i - 1], b, m, a, aa, &d[(i - 1) * (m + 2)]);
+      pt[i] = y[i];
       v = pt[i] * ppade[i];
-
       x += (1 & i) ? v : -v;
       out += v;
    }
