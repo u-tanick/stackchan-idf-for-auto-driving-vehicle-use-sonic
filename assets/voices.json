@@ -8,6 +8,15 @@
       "license": "CC BY 3.0",
       "attribution": "HTS Voice \"Mei\" © 2009-2013 Nagoya Institute of Technology / MMDAgent Project Team — CC BY 3.0",
       "url": "voices/mei.htsvoice"
+    },
+    {
+      "id": "mei16",
+      "label": "Mei (女声・16kHz 高速)",
+      "size": 862503,
+      "sample_rate": 16000,
+      "license": "CC BY 3.0",
+      "attribution": "HTS Voice \"Mei\" © 2009-2013 Nagoya Institute of Technology / MMDAgent Project Team — CC BY 3.0. Modified: down-sampled to 16 kHz offline (band-limited mel-cepstral conversion) by Kenta IDA, 2026.",
+      "url": "voices/mei16.htsvoice"
     }
   ]
 }

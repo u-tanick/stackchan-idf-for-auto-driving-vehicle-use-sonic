@@ -46,6 +46,9 @@ HMM 音声合成エンジン。`components/hts_engine/` に組み込み向け改
 - License: [Creative Commons Attribution 3.0](https://creativecommons.org/licenses/by/3.0/)
 - ライセンス全文: [assets/voices/LICENSE_mei.txt](assets/voices/LICENSE_mei.txt)
 - 上流: <http://www.mmdagent.jp/>
+- **改変版**: `assets/voices/mei16.htsvoice` は上記 Mei を **16 kHz にオフライン
+  ダウンサンプル**した派生物 (帯域制限メルケプストラム変換、Kenta IDA 2026)。
+  CC BY 3.0 に基づき改変を明示。合成負荷を下げる高速版として同カタログで配布。
 
 ### その他の CC BY ボイス (ユーザーがアップロードして利用可能)
 
