@@ -40,8 +40,10 @@ ServoLimits parse_servo_limits(std::string_view json)
     apply_u16(root, "pitch_zero", l.pitch_zero);
     apply_int(root, "pitch_min", l.pitch_min_deg);
     apply_int(root, "pitch_max", l.pitch_max_deg);
-    // Defensive: keep min ≤ max.
+    // Defensive: keep min ≤ max, and ensure at least ±90 deg for autonomous navigation.
     if (l.yaw_min_deg > l.yaw_max_deg) std::swap(l.yaw_min_deg, l.yaw_max_deg);
+    l.yaw_min_deg = std::min(l.yaw_min_deg, -90);
+    l.yaw_max_deg = std::max(l.yaw_max_deg, 90);
     if (l.pitch_min_deg > l.pitch_max_deg) std::swap(l.pitch_min_deg, l.pitch_max_deg);
     cJSON_Delete(root);
     return l;
