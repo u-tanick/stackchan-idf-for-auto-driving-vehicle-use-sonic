@@ -161,38 +161,47 @@ constexpr const char* kTag = "stackchan";
     constexpr std::uint32_t kShakeCooldownMs = 800;
     std::uint32_t next_shake_ms = 0;
 
-    // 起動時サーボセルフテスト（右 → 左 → 上 → 下 → 正面待機: 10度上向き）
+    // 起動時サーボセルフテスト:
+    // 正面(90°: 0°) → 右(30°: -60°) → 左(150°: +60°) → 正面(90°: 0°) → 上(45°: +45°) → 下(初期位置: 0°) → 最終位置(10°上向き: +10°)
     if (!external_servo_control) {
-        ESP_LOGI(kTag, "Starting servo self-test (Right -> Left -> Up -> Down -> Center[Pitch+10])...");
+        ESP_LOGI(kTag, "Starting servo self-test (Center -> Right -> Left -> Center -> Up -> Down -> Final +10)...");
         g_state->servo.speed_override.store(350, std::memory_order_relaxed);
 
-        const float test_yaw = 25.0f;
+        // 0. 正面（90度: Yaw=0°, Pitch=0°）
+        g_state->servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
+        g_state->servo.target_pitch_deg.store(0.0f, std::memory_order_relaxed);
+        vTaskDelay(pdMS_TO_TICKS(600));
 
-        // 1. 右へ (Yaw -25°)
-        g_state->servo.target_yaw_deg.store(-test_yaw, std::memory_order_relaxed);
-        g_state->servo.target_pitch_deg.store(kHomePitchDeg, std::memory_order_relaxed);
-        vTaskDelay(pdMS_TO_TICKS(700));
-
-        // 2. 左へ (Yaw +25°)
-        g_state->servo.target_yaw_deg.store(+test_yaw, std::memory_order_relaxed);
+        // 1. 右（30度: Yaw -60°）
+        g_state->servo.target_yaw_deg.store(-60.0f, std::memory_order_relaxed);
+        g_state->servo.target_pitch_deg.store(0.0f, std::memory_order_relaxed);
         vTaskDelay(pdMS_TO_TICKS(900));
 
-        // 3. 正面に戻してから上へ (Pitch +22°)
-        g_state->servo.target_yaw_deg.store(kHomeYawDeg, std::memory_order_relaxed);
-        g_state->servo.target_pitch_deg.store(22.0f, std::memory_order_relaxed);
-        vTaskDelay(pdMS_TO_TICKS(700));
+        // 2. 左（150度: Yaw +60°）
+        g_state->servo.target_yaw_deg.store(+60.0f, std::memory_order_relaxed);
+        g_state->servo.target_pitch_deg.store(0.0f, std::memory_order_relaxed);
+        vTaskDelay(pdMS_TO_TICKS(1200));
 
-        // 4. 下へ (Pitch -5°)
-        g_state->servo.target_pitch_deg.store(-5.0f, std::memory_order_relaxed);
-        vTaskDelay(pdMS_TO_TICKS(800));
+        // 3. 正面（90度: Yaw 0°）★完全に正面に戻して静止
+        g_state->servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
+        g_state->servo.target_pitch_deg.store(0.0f, std::memory_order_relaxed);
+        vTaskDelay(pdMS_TO_TICKS(900));
 
-        // 5. 正面・10度上向き（Yaw=0, Pitch=10）に戻して完了
-        g_state->servo.target_yaw_deg.store(kHomeYawDeg, std::memory_order_relaxed);
+        // 4. 上（45度: Pitch +45°）★正面のまま上を向く
+        g_state->servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
+        g_state->servo.target_pitch_deg.store(45.0f, std::memory_order_relaxed);
+        vTaskDelay(pdMS_TO_TICKS(900));
+
+        // 5. 下（初期位置: Pitch 0°）
+        g_state->servo.target_pitch_deg.store(0.0f, std::memory_order_relaxed);
+        vTaskDelay(pdMS_TO_TICKS(900));
+
+        // 6. 最終位置（10度上を向く: Pitch +10°）
         g_state->servo.target_pitch_deg.store(kHomePitchDeg, std::memory_order_relaxed);
         vTaskDelay(pdMS_TO_TICKS(700));
 
         g_state->servo.speed_override.store(0, std::memory_order_relaxed);
-        ESP_LOGI(kTag, "Servo self-test finished. Head centered at (0, +10).");
+        ESP_LOGI(kTag, "Servo self-test complete. Head centered at (0, +10).");
     }
 
     for (;;) {

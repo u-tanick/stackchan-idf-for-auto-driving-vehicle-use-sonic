@@ -15,11 +15,11 @@ namespace stackchan::app {
 // pitch -10..+25°), so an empty/missing config reproduces the original head.
 struct ServoLimits {
     std::uint16_t yaw_zero = 460;
-    int yaw_min_deg = -40;
-    int yaw_max_deg = 40;
+    int yaw_min_deg = -65;
+    int yaw_max_deg = 65;
     std::uint16_t pitch_zero = 620;
-    int pitch_min_deg = -10;
-    int pitch_max_deg = 25;
+    int pitch_min_deg = -15;
+    int pitch_max_deg = 50;
 };
 
 // Parse the compact JSON the BLE / Wi-Fi settings UI sends into a ServoLimits.
