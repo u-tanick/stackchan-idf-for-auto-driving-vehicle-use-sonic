@@ -50,6 +50,9 @@ const std::array<SettingDescriptor, kSettingCount> kTable = {{
     str_row("xiaozhi-url",    "xz_url",     ApplyKind::Staged, &DeviceConfig::xiaozhi_url, 256),
     str_row("xiaozhi-token",  "xz_token",   ApplyKind::Staged, &DeviceConfig::xiaozhi_token, 256, true),
     str_row("jtts-config",    "jtts_cfg",   ApplyKind::Staged, &DeviceConfig::jtts_config_json, 960),
+    str_row("llm-url",        "llm_url",    ApplyKind::Staged, &DeviceConfig::llm_url, 256),
+    str_row("llm-model",      "llm_model",  ApplyKind::Staged, &DeviceConfig::llm_model, 64),
+    str_row("llm-api-key",    "llm_key",    ApplyKind::Staged, &DeviceConfig::llm_api_key, 256, true),
     str_row("system-prompt",  "sys_prompt", ApplyKind::Staged, &DeviceConfig::system_prompt, 2048),
     str_row("conv-headers",   "conv_hdrs",  ApplyKind::Staged, &DeviceConfig::conv_extra_headers, 1024, true),
     str_row("face-config",    "face_cfg",   ApplyKind::Both,   &DeviceConfig::face_config_json, 768),
@@ -88,7 +91,7 @@ const std::array<SettingDescriptor, kSettingCount> kTable = {{
              [](DeviceConfig& c, std::uint32_t v) { c.barge_in_enabled = (v != 0); }),
     // --- enums (u8 on the wire, bounds-checked, out-of-range keeps default) -
     num_row("provider",       "provider",   ValueType::U8, ApplyKind::Staged,
-            static_cast<std::uint32_t>(Provider::XiaoZhi), false,
+            static_cast<std::uint32_t>(Provider::LocalLlm), false,
             [](const DeviceConfig& c) -> std::uint32_t { return static_cast<std::uint32_t>(c.provider); },
             [](DeviceConfig& c, std::uint32_t v) { c.provider = static_cast<Provider>(v); }),
     num_row("operation-mode", "op_mode",    ValueType::U8, ApplyKind::Staged,
@@ -134,6 +137,12 @@ const std::array<SettingDescriptor, kSettingCount> kTable = {{
     num_row("espnow-receiver-id", "enow_id",  ValueType::U8, ApplyKind::Staged, 254, true,
             [](const DeviceConfig& c) -> std::uint32_t { return c.espnow_receiver_id; },
             [](DeviceConfig& c, std::uint32_t v) { c.espnow_receiver_id = static_cast<std::uint8_t>(v); }),
+    num_row("obstacle-distance",        "obs_dist",  ValueType::U16, ApplyKind::Both, 100, true,
+            [](const DeviceConfig& c) -> std::uint32_t { return c.obstacle_distance_cm; },
+            [](DeviceConfig& c, std::uint32_t v) { c.obstacle_distance_cm = static_cast<std::uint16_t>(v); }),
+    num_row("obstacle-alert-distance",  "obs_alert", ValueType::U16, ApplyKind::Both, 50, true,
+            [](const DeviceConfig& c) -> std::uint32_t { return c.obstacle_alert_distance_cm; },
+            [](DeviceConfig& c, std::uint32_t v) { c.obstacle_alert_distance_cm = static_cast<std::uint16_t>(v); }),
 }};
 
 } // namespace

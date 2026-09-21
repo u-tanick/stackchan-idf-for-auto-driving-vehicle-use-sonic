@@ -21,6 +21,10 @@ namespace {
 
 constexpr const char* kTag = "vlm_client";
 
+static std::string s_endpoint = VlmClient::kDefaultEndpoint;
+static std::string s_model = VlmClient::kDefaultModel;
+static std::string s_api_key;
+
 struct HttpResponseContext {
     std::string body;
 };
@@ -72,6 +76,15 @@ std::string extract_json_block(const std::string& text)
 }
 
 } // namespace
+
+void VlmClient::configure(std::string endpoint, std::string model, std::string api_key)
+{
+    if (!endpoint.empty()) s_endpoint = std::move(endpoint);
+    if (!model.empty()) s_model = std::move(model);
+    s_api_key = std::move(api_key);
+    ESP_LOGI(kTag, "Configured VLM: endpoint=%s, model=%s, has_key=%d",
+             s_endpoint.c_str(), s_model.c_str(), !s_api_key.empty());
+}
 
 VlmEvaluation VlmClient::evaluate_current_view(const char* direction_label)
 {
@@ -142,7 +155,7 @@ VlmEvaluation VlmClient::evaluate_current_view(const char* direction_label)
     std::string payload;
     payload.reserve(written + 512);
     payload += "{\"model\":\"";
-    payload += kDefaultModel;
+    payload += s_model;
     payload += "\",\"messages\":[{\"role\":\"user\",\"content\":[";
     payload += "{\"type\":\"text\",\"text\":\"";
     payload += prompt_escaped;
@@ -159,7 +172,7 @@ VlmEvaluation VlmClient::evaluate_current_view(const char* direction_label)
     // 4. HTTP POST 送信
     HttpResponseContext resp_ctx;
     esp_http_client_config_t http_cfg{};
-    http_cfg.url = kDefaultEndpoint;
+    http_cfg.url = s_endpoint.c_str();
     http_cfg.method = HTTP_METHOD_POST;
     http_cfg.timeout_ms = 25000;
     http_cfg.buffer_size = 2048;
@@ -175,6 +188,10 @@ VlmEvaluation VlmClient::evaluate_current_view(const char* direction_label)
     }
 
     esp_http_client_set_header(client, "Content-Type", "application/json");
+    if (!s_api_key.empty()) {
+        std::string auth = "Bearer " + s_api_key;
+        esp_http_client_set_header(client, "Authorization", auth.c_str());
+    }
 
     esp_err_t err = esp_http_client_open(client, payload.size());
     if (err == ESP_OK) {

@@ -374,6 +374,16 @@ void set_board_kind(std::uint8_t kind)
     http::set_board_kind(kind);
 }
 
+void set_obstacle_distance_sink(ObstacleDistanceSink sink)
+{
+    http::set_obstacle_distance_sink(std::move(sink));
+}
+
+void set_obstacle_alert_distance_sink(ObstacleAlertDistanceSink sink)
+{
+    http::set_obstacle_alert_distance_sink(std::move(sink));
+}
+
 void set_avatar_bytecode_sink(AvatarBytecodeSink sink)
 {
     http::set_avatar_bytecode_sink(std::move(sink));

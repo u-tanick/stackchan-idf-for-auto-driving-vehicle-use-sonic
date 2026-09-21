@@ -63,6 +63,9 @@ void set_lt_state_getter(config::LtStateGetter getter);
 // Record the booted board kind for /api/status. See wifi_config_service.hpp.
 void set_board_kind(std::uint8_t kind);
 
+void set_obstacle_distance_sink(ObstacleDistanceSink sink);
+void set_obstacle_alert_distance_sink(ObstacleAlertDistanceSink sink);
+
 // Set the avatar bytecode sink (called by POST /api/avatar-dsl after the
 // payload has been validated and persisted). See wifi_config_service.hpp.
 void set_avatar_bytecode_sink(AvatarBytecodeSink sink);

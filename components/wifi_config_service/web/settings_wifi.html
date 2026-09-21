@@ -428,7 +428,7 @@
   <input type="text" id="ssid" maxlength="32" placeholder="MyNetwork">
   <p class="hint">空欄のままにすると現在の値を変更しません</p>
 
-  <label for="password">Wi-Fi パスワード</label>
+  <label for="password">Wi-Fi パスワード <span id="wifi-password-state" class="hint" style="font-weight:normal"></span></label>
   <input type="password" id="password" maxlength="64" placeholder="（変更しない場合は空欄）">
 
   <h2 class="section-title" style="margin-top:0.5rem">デバイス名 (BLE / mDNS)</h2>
@@ -769,22 +769,47 @@
         <option value="0">OpenAI Realtime</option>
         <option value="1">Google Gemini Live</option>
         <option value="2">XiaoZhi サーバー</option>
+        <option value="3">ローカルLLM / VLM (OpenAI Compatible)</option>
       </select>
-      <p class="hint">どの会話バックエンドを使うかを切り替えます。キー / 設定は下記すべてに保存できます。</p>
+      <p class="hint">どの会話・推論バックエンドを使うかを切り替えます。選択したプロバイダに必要な設定項目のみ表示されます。</p>
 
-      <label for="apikey">OpenAI API キー</label>
-      <input type="password" id="apikey" maxlength="256" placeholder="sk-… （変更しない場合は空欄）">
+      <!-- OpenAI Realtime 専用 -->
+      <div id="prov-fields-openai" class="prov-fields">
+        <label for="apikey">OpenAI API キー</label>
+        <input type="password" id="apikey" maxlength="256" placeholder="sk-… （変更しない場合は空欄）">
+      </div>
 
-      <label for="gemini-apikey">Gemini API キー</label>
-      <input type="password" id="gemini-apikey" maxlength="256" placeholder="AIza… （変更しない場合は空欄）">
+      <!-- Google Gemini Live 専用 -->
+      <div id="prov-fields-gemini" class="prov-fields">
+        <label for="gemini-apikey">Gemini API キー</label>
+        <input type="password" id="gemini-apikey" maxlength="256" placeholder="AIza… （変更しない場合は空欄）">
+      </div>
 
-      <label for="xiaozhi-url">XiaoZhi サーバー URL</label>
-      <input type="text" id="xiaozhi-url" maxlength="256" placeholder="ws://192.168.1.10:8000/xiaozhi/v1/">
+      <!-- XiaoZhi 専用 -->
+      <div id="prov-fields-xiaozhi" class="prov-fields">
+        <label for="xiaozhi-url">XiaoZhi サーバー URL</label>
+        <input type="text" id="xiaozhi-url" maxlength="256" placeholder="ws://192.168.1.10:8000/xiaozhi/v1/">
 
-      <label for="xiaozhi-token">XiaoZhi トークン</label>
-      <input type="password" id="xiaozhi-token" maxlength="256" placeholder="（任意 / 変更しない場合は空欄）">
+        <label for="xiaozhi-token">XiaoZhi トークン</label>
+        <input type="password" id="xiaozhi-token" maxlength="256" placeholder="（任意 / 変更しない場合は空欄）">
+      </div>
 
-      <label for="system-prompt">システムプロンプト (会話の人格)</label>
+      <!-- ローカルLLM / VLM 専用 -->
+      <div id="prov-fields-localllm" class="prov-fields">
+        <label for="llm-url">ローカルLLM / VLM 接続 URL (HTTP REST)</label>
+        <input type="text" id="llm-url" maxlength="256" placeholder="http://192.168.11.6:1234/v1/chat/completions">
+        <p class="hint">自律走行時の画像推論やローカル会話で使用する OpenAI Chat Completions 互換エンドポイント</p>
+
+        <label for="llm-model">モデル名</label>
+        <input type="text" id="llm-model" maxlength="64" placeholder="qwen3.5-9b-vlm">
+
+        <label for="llm-apikey">API キー <span id="llm-api-key-state" class="hint" style="font-weight:normal"></span></label>
+        <input type="password" id="llm-apikey" maxlength="256" placeholder="（ローカル接続等で不要な場合は空欄）">
+      </div>
+
+      <!-- 共通 -->
+      <div id="prov-fields-common">
+        <label for="system-prompt">システムプロンプト (会話の人格 / 指示文)</label>
       <textarea id="system-prompt" rows="6" maxlength="2048"
                 style="width:100%;box-sizing:border-box;font-size:0.8rem;padding:0.4rem;border:1px solid #ccc;border-radius:4px;white-space:pre-wrap"
                 placeholder="空欄にすると組み込みの既定プロンプトを使用します"></textarea>
@@ -794,7 +819,8 @@
       <textarea id="conv-headers" rows="3" maxlength="1024"
                 style="width:100%;box-sizing:border-box;font-size:0.8rem;padding:0.4rem;border:1px solid #ccc;border-radius:4px;white-space:pre-wrap;font-family:monospace"
                 placeholder="CF-Access-Client-Id: xxxxx.access&#10;CF-Access-Client-Secret: yyyyy"></textarea>
-      <p class="hint">会話 API への WebSocket 接続に付与する追加ヘッダ。1 行 1 つ「ヘッダ名: 値」。Cloudflare Access のサービストークン等に使用。全プロバイダ共通。保存後の再起動で反映されます。</p>
+      <p class="hint">会話 API への接続に付与する追加ヘッダ。1 行 1 つ「ヘッダ名: 値」。Cloudflare Access のサービストークン等に使用。全プロバイダ共通。保存後の再起動で反映されます。</p>
+      </div><!-- /#prov-fields-common -->
 
       <!-- Hidden legacy toggle — operation_mode (selectable in 接続 tab) is
            the real switch now. Kept in the DOM so the refresh/apply JS
@@ -815,6 +841,41 @@
 
   <!-- ===== デバイス ===== -->
   <section class="tab-panel" data-tab="device">
+    <div id="drive-section" style="margin-bottom:1.5rem;padding-bottom:1.2rem;border-bottom:1px solid #eee">
+      <h2 class="section-title">自律走行・接近検知設定</h2>
+      <p class="hint" style="margin-bottom:0.6rem">
+        超音波センサーで前方の壁を検知し、進行方向を変えるための首振り・画像認識を開始する距離を設定します。
+        狭い場所では 10cm、広い場所では 30cm または 50cm など部屋の広さに合わせて調整できます。
+      </p>
+      <label for="obstacle-distance-range">接近検知距離: <strong id="obstacle-distance-val" style="color:#1976d2">10</strong> cm</label>
+      <div style="display:flex;align-items:center;gap:0.8rem;margin-top:0.3rem">
+        <input type="range" id="obstacle-distance-range" min="5" max="100" step="1" value="10" style="flex:1 1 auto;accent-color:#1976d2">
+        <input type="number" id="obstacle-distance-num" min="5" max="100" step="1" value="10" style="width:4.5rem;text-align:right">
+        <span style="font-size:0.9rem;font-weight:600">cm</span>
+      </div>
+      <div style="display:flex;gap:0.4rem;margin-top:0.5rem;flex-wrap:wrap">
+        <button type="button" class="preset-dist-btn" data-dist="10" style="padding:0.35rem 0.6rem;font-size:0.82rem;background:#e3f2fd;color:#1565c0;border:1px solid #90caf9">10 cm (標準・狭小)</button>
+        <button type="button" class="preset-dist-btn" data-dist="30" style="padding:0.35rem 0.6rem;font-size:0.82rem;background:#e3f2fd;color:#1565c0;border:1px solid #90caf9">30 cm (中規模)</button>
+        <button type="button" class="preset-dist-btn" data-dist="50" style="padding:0.35rem 0.6rem;font-size:0.82rem;background:#e3f2fd;color:#1565c0;border:1px solid #90caf9">50 cm (広場・大部屋)</button>
+      </div>
+      <div style="margin-top:1rem;padding-top:0.8rem;border-top:1px dashed #ddd">
+        <label for="obstacle-alert-range">最接近（赤色）アラート距離: <strong id="obstacle-alert-val" style="color:#d32f2f">5</strong> cm</label>
+        <p class="hint" style="margin-bottom:0.4rem">
+          壁に衝突寸前（または急接近）したときのパニック表情＋赤色アラートの距離です。
+          ※マスター（上の接近検知距離）を変更すると自動的に半分の距離（例: 10cm→5cm, 30cm→15cm）に連動しますが、ここで個別に微調整することもできます。
+        </p>
+        <div style="display:flex;align-items:center;gap:0.8rem;margin-top:0.3rem">
+          <input type="range" id="obstacle-alert-range" min="2" max="50" step="1" value="5" style="flex:1 1 auto;accent-color:#d32f2f">
+          <input type="number" id="obstacle-alert-num" min="2" max="50" step="1" value="5" style="width:4.5rem;text-align:right">
+          <span style="font-size:0.9rem;font-weight:600">cm</span>
+        </div>
+      </div>
+
+      <p class="hint" style="margin-top:0.6rem">
+        スライダーやボタン操作で<strong>即座に反映</strong>されます。「保存 &amp; 再起動」で NVS に保存され次回起動時にも維持されます。
+      </p>
+    </div>
+
     <div id="device-toggles-section">
       <h2 class="section-title">デバイス機能の有効/無効</h2>
       <label class="toggle-label" for="bat-gauge-enabled">
@@ -1525,6 +1586,19 @@ function applyBoardGating(kind) {
   }
 }
 
+function updateProviderFields() {
+  const p = String($('provider').value ?? '0');
+  const elOpenAI = $('prov-fields-openai');
+  const elGemini = $('prov-fields-gemini');
+  const elXiaoZhi = $('prov-fields-xiaozhi');
+  const elLocalLLM = $('prov-fields-localllm');
+  if (elOpenAI)   elOpenAI.style.display   = (p === '0') ? 'block' : 'none';
+  if (elGemini)   elGemini.style.display   = (p === '1') ? 'block' : 'none';
+  if (elXiaoZhi)  elXiaoZhi.style.display  = (p === '2') ? 'block' : 'none';
+  if (elLocalLLM) elLocalLLM.style.display = (p === '3') ? 'block' : 'none';
+}
+$('provider').addEventListener('change', updateProviderFields);
+
 async function refresh() {
   try {
     const s = await fetchJSON('/api/status');
@@ -1587,7 +1661,17 @@ async function refresh() {
     $('bat-gauge-enabled').checked = (s.battery_gauge_enabled !== false); // default on if absent
     $('startup-arpeggio-enabled').checked = (s.startup_arpeggio_enabled !== false); // default on if absent
     $('servo-enabled').checked = (s.servo_enabled !== false); // default on if absent
+    if (typeof s.obstacle_distance === 'number') {
+      syncObstacleDistance(s.obstacle_distance, false, false);
+    }
+    if (typeof s.obstacle_alert_distance === 'number') {
+      syncObstacleAlertDistance(s.obstacle_alert_distance, false);
+    }
     $('mcp-token-state').textContent = s.has_mcp_token ? '設定済' : '未設定';
+    const pwStateEl = document.getElementById('wifi-password-state');
+    if (pwStateEl) {
+      pwStateEl.textContent = s.has_password ? '(設定済 — 変更しない場合は空欄)' : '(未設定)';
+    }
     // Device name + auth password (auth password is write-only — never
     // returned, only a has_* flag).
     $('device-name').value = s.device_name || '';
@@ -1614,6 +1698,13 @@ async function refresh() {
       servoCal.syncRangeOn(s.servo_range_mode);
     }
     $('xiaozhi-url').value = s.xiaozhi_url || '';
+    $('llm-url').value = s.llm_url || '';
+    $('llm-model').value = s.llm_model || '';
+    const llmKeyEl = document.getElementById('llm-api-key-state');
+    if (llmKeyEl) {
+      llmKeyEl.textContent = s.has_llm_key ? '(設定済 — 変更しない場合は空欄)' : '(未設定)';
+    }
+    updateProviderFields();
     $('system-prompt').value = s.system_prompt || '';
     $('system-prompt').dataset.initial = s.system_prompt || '';
     $('conv-headers').value = s.conv_extra_headers || '';
@@ -1691,6 +1782,12 @@ async function apply() {
     const xzToken = $('xiaozhi-token').value;
     if (xzUrl)     { await postText('/api/xiaozhi-url', xzUrl);               log('XiaoZhi URL 送信', 'ok'); }
     if (xzToken)   { await postText('/api/xiaozhi-token', xzToken);           log('XiaoZhi トークン送信', 'ok'); }
+    const llmUrl = $('llm-url').value.trim();
+    const llmModel = $('llm-model').value.trim();
+    const llmKey = $('llm-apikey').value;
+    if (llmUrl)    { await postText('/api/llm-url', llmUrl);                   log('LLM URL 送信', 'ok'); }
+    if (llmModel)  { await postText('/api/llm-model', llmModel);               log('LLM モデル送信', 'ok'); }
+    if (llmKey)    { await postText('/api/llm-api-key', llmKey);               log('LLM キー送信', 'ok'); }
     await postText('/api/provider', provider);
     await postText('/api/operation-mode', $('operation-mode').value);
     await postText('/api/audio-output', $('audio-output').value);
@@ -1719,6 +1816,16 @@ async function apply() {
     await postText('/api/battery-gauge', batGauge ? '1' : '0');
     await postText('/api/startup-arpeggio', startupArp ? '1' : '0');
     await postText('/api/servo-enabled', servoEn ? '1' : '0');
+    const obsDist = $('obstacle-distance-num').value;
+    if (obsDist) {
+      await postText('/api/obstacle-distance', obsDist);
+      log(`接近検知距離送信: ${obsDist} cm`, 'ok');
+    }
+    const obsAlert = $('obstacle-alert-num').value;
+    if (obsAlert) {
+      await postText('/api/obstacle-alert-distance', obsAlert);
+      log(`最接近アラート距離送信: ${obsAlert} cm`, 'ok');
+    }
     // MCP token: send only when the user typed something OR explicitly hit
     // "clear" (signalled by data-cleared="1"). An untouched blank field is
     // "leave as-is".
@@ -2150,6 +2257,72 @@ $('ota-release-select').addEventListener('change', (e) => {
   if (e.target.value) $('ota-release-tag').value = e.target.value;
 });
 
+// --- 自律走行 接近検知距離 & 最接近アラート距離 ---
+function syncObstacleDistance(val, sendToServer = true, autoSyncAlert = true) {
+  const clamped = Math.max(5, Math.min(100, parseInt(val, 10) || 10));
+  $('obstacle-distance-range').value = clamped;
+  $('obstacle-distance-num').value = clamped;
+  $('obstacle-distance-val').textContent = clamped;
+  // 最接近アラートの上限をマスター未満に設定
+  const maxAlert = Math.max(2, Math.min(50, clamped - 1));
+  $('obstacle-alert-range').max = maxAlert;
+  $('obstacle-alert-num').max = maxAlert;
+
+  if (sendToServer) {
+    postText('/api/obstacle-distance', String(clamped))
+      .then(() => log(`接近検知距離を ${clamped} cm に設定`, 'ok'))
+      .catch(e => log('接近検知距離の設定失敗: ' + e.message, 'err'));
+  }
+
+  // マスター変更時は自動的に半分の距離（最小2cm）に自動連動
+  if (autoSyncAlert) {
+    const autoAlert = Math.max(2, Math.min(maxAlert, Math.floor(clamped / 2)));
+    syncObstacleAlertDistance(autoAlert, sendToServer);
+  }
+}
+
+function syncObstacleAlertDistance(val, sendToServer = true) {
+  const masterVal = parseInt($('obstacle-distance-range').value, 10) || 10;
+  const maxAllowed = Math.max(2, Math.min(50, masterVal - 1));
+  const clamped = Math.max(2, Math.min(maxAllowed, parseInt(val, 10) || 5));
+  $('obstacle-alert-range').value = clamped;
+  $('obstacle-alert-num').value = clamped;
+  $('obstacle-alert-val').textContent = clamped;
+  if (sendToServer) {
+    postText('/api/obstacle-alert-distance', String(clamped))
+      .then(() => log(`最接近アラート距離を ${clamped} cm に設定`, 'ok'))
+      .catch(e => log('最接近アラート距離の設定失敗: ' + e.message, 'err'));
+  }
+}
+
+$('obstacle-distance-range').addEventListener('input', (e) => {
+  $('obstacle-distance-val').textContent = e.target.value;
+  $('obstacle-distance-num').value = e.target.value;
+});
+$('obstacle-distance-range').addEventListener('change', (e) => {
+  syncObstacleDistance(e.target.value, true, true);
+});
+$('obstacle-distance-num').addEventListener('change', (e) => {
+  syncObstacleDistance(e.target.value, true, true);
+});
+document.querySelectorAll('.preset-dist-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const d = btn.dataset.dist;
+    if (d) syncObstacleDistance(d, true, true);
+  });
+});
+
+$('obstacle-alert-range').addEventListener('input', (e) => {
+  $('obstacle-alert-val').textContent = e.target.value;
+  $('obstacle-alert-num').value = e.target.value;
+});
+$('obstacle-alert-range').addEventListener('change', (e) => {
+  syncObstacleAlertDistance(e.target.value, true);
+});
+$('obstacle-alert-num').addEventListener('change', (e) => {
+  syncObstacleAlertDistance(e.target.value, true);
+});
+
 refresh();
 
 // 設定ごとの「再起動が必要 / 即時反映」バッジを /api/reboot-required から
@@ -2165,6 +2338,9 @@ const BADGE_FIELDS = {
   'openai-enabled':'openai-enabled', 'rtp-enabled':'rtp-enabled',
   'jtts-idle-enabled':'jtts-idle-enabled', 'auth-password':'auth-password',
   'mcp-token':'mcp-token', 'system-prompt':'system-prompt', 'mic-lip-agc':'mic-lip-agc',
+  'llm-url':'llm-url', 'llm-model':'llm-model', 'llm-api-key':'llm-apikey',
+  'obstacle-distance':'obstacle-distance-range',
+  'obstacle-alert-distance':'obstacle-alert-range',
 };
 async function stampRebootBadges() {
   let reboot;

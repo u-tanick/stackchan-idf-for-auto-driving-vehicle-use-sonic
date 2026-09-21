@@ -70,6 +70,7 @@
 #endif
 #include "wifi_sta.hpp"
 #include "ws_camera_stream.hpp"
+#include "vlm_client.hpp"
 
 #include <jtts/jtts.hpp>
 #ifdef CONFIG_TELEGRAM_PHASE1_ENABLED
@@ -325,6 +326,32 @@ extern "C" void app_main()
         }
     }
     static stackchan::config::DeviceConfig cfg = stackchan::config::load();
+
+    // SDカードからWi-Fi設定の読み取りとNVS永続化
+    // SDカードが挿入されていればSSID/パスワードを読み取って本体内部(NVS)に記憶し、
+    // 次回以降SDカードを抜いてもそのまま接続可能＆Web管理画面上にも反映されるようにする
+    {
+        char sd_ssid[33] = {0};
+        char sd_pw[65] = {0};
+        if (stackchan::app::wifi_read_sd_credentials(sd_ssid, sizeof(sd_ssid), sd_pw, sizeof(sd_pw))) {
+            if (cfg.wifi_ssid != sd_ssid || cfg.wifi_password != sd_pw) {
+                ESP_LOGI(kTag, "Updating Wi-Fi credentials from SD card to NVS (SSID: %s)", sd_ssid);
+                cfg.wifi_ssid = sd_ssid;
+                cfg.wifi_password = sd_pw;
+                auto res = stackchan::config::store::save(cfg);
+                if (!res) {
+                    ESP_LOGE(kTag, "Failed to save SD Wi-Fi credentials to NVS: %d", static_cast<int>(res.error()));
+                } else {
+                    ESP_LOGI(kTag, "Successfully saved SD Wi-Fi credentials into NVS");
+                }
+            } else {
+                ESP_LOGI(kTag, "SD Wi-Fi credentials match current NVS config (SSID: %s)", sd_ssid);
+            }
+        }
+    }
+
+    // Configure VLM endpoint, model, and optional API key from persistent config
+    stackchan::app::VlmClient::configure(cfg.llm_url, cfg.llm_model, cfg.llm_api_key);
 
 #if defined(CONFIG_STACKCHAN_ESPNOW_POC)
     // [ESP-NOW PoC] 通常起動をスキップし、M5Stack 公式 Stack-chan 互換の ESP-NOW
@@ -647,6 +674,12 @@ extern "C" void app_main()
     if (!cfg.lt_config_json.empty()) {
         g_state->set_lt_config(cfg.lt_config_json);
     }
+    g_state->driving.scan_distance_cm.store(
+        cfg.obstacle_distance_cm > 0 ? cfg.obstacle_distance_cm : 10,
+        std::memory_order_relaxed);
+    g_state->driving.alert_distance_cm.store(
+        cfg.obstacle_alert_distance_cm > 0 ? cfg.obstacle_alert_distance_cm : 5,
+        std::memory_order_relaxed);
     g_state->battery.gauge_enabled.store(cfg.battery_gauge_enabled, std::memory_order_relaxed);
     // LED state: replay the persisted values so the strip lights up the same
     // way it did before the reboot. NVS-missing → DeviceConfig's struct

@@ -126,6 +126,14 @@ void set_lt_state_getter(config::LtStateGetter getter);
 // config_service::set_board_kind for the byte values.
 void set_board_kind(std::uint8_t kind);
 
+// 接近検知・画像認識探索開始距離 (cm) の即時反映シンク (`POST /api/obstacle-distance`)。
+using ObstacleDistanceSink = std::function<void(std::uint16_t dist_cm)>;
+void set_obstacle_distance_sink(ObstacleDistanceSink sink);
+
+// 最接近アラート（赤色・危険）距離 (cm) の即時反映シンク (`POST /api/obstacle-alert-distance`)。
+using ObstacleAlertDistanceSink = std::function<void(std::uint16_t dist_cm)>;
+void set_obstacle_alert_distance_sink(ObstacleAlertDistanceSink sink);
+
 // Sink called by `POST /api/avatar-dsl` after the bytecode has been
 // validated and persisted to NVS. The app passes Avatar::load_face_bytecode
 // here so an upload takes effect live, without rebooting.

@@ -195,6 +195,8 @@ McpSayKanaSink g_mcp_say_sink = nullptr;
 LtConfigSink g_lt_config_sink = nullptr;
 McpExpressionSink g_mcp_expression_sink = nullptr;
 McpBalloonSink g_mcp_balloon_sink = nullptr;
+ObstacleDistanceSink g_obstacle_distance_sink = nullptr;
+ObstacleAlertDistanceSink g_obstacle_alert_distance_sink = nullptr;
 bool g_servo_range_mode = false;
 // Active /mcp/* bearer. NVS-resolved at register_handlers() time; empty →
 // /mcp/* answers 404. Defined here (rather than next to the /mcp/* code
@@ -480,6 +482,9 @@ esp_err_t handle_status_get(httpd_req_t* req)
     body += "\"has_gemini_key\":" + std::string(cfg.gemini_api_key.empty() ? "false" : "true") + ",";
     body += "\"xiaozhi_url\":\"" + escape_json(cfg.xiaozhi_url) + "\",";
     body += "\"has_xiaozhi_token\":" + std::string(cfg.xiaozhi_token.empty() ? "false" : "true") + ",";
+    body += "\"llm_url\":\"" + escape_json(cfg.llm_url) + "\",";
+    body += "\"llm_model\":\"" + escape_json(cfg.llm_model) + "\",";
+    body += "\"has_llm_key\":" + std::string(cfg.llm_api_key.empty() ? "false" : "true") + ",";
     body += "\"openai_enabled\":" + std::string(cfg.openai_enabled ? "true" : "false") + ",";
     body += "\"rtp_audio_enabled\":" + std::string(cfg.rtp_audio_enabled ? "true" : "false") + ",";
     body += "\"jtts_idle_enabled\":" + std::string(cfg.jtts_idle_enabled ? "true" : "false") + ",";
@@ -509,6 +514,8 @@ esp_err_t handle_status_get(httpd_req_t* req)
     body += "\"servo_range_mode\":" + std::string(range_mode ? "true" : "false") + ",";
     body += "\"servo_yaw_raw\":" + std::to_string(pos.yaw_raw) + ",";
     body += "\"servo_pitch_raw\":" + std::to_string(pos.pitch_raw) + ",";
+    body += "\"obstacle_distance\":" + std::to_string(cfg.obstacle_distance_cm) + ",";
+    body += "\"obstacle_alert_distance\":" + std::to_string(cfg.obstacle_alert_distance_cm) + ",";
     body += "\"board\":" + std::to_string(g_board_kind);
     body += "}";
     return send_json(req, body);
@@ -580,6 +587,39 @@ esp_err_t handle_xiaozhi_token_post(httpd_req_t* req)
     if (read_body_str(req, body, kMaxApiKey) != ESP_OK) return ESP_OK;
     xSemaphoreTake(g_mutex, portMAX_DELAY);
     g_staging.set_str("xiaozhi-token", std::move(body));
+    xSemaphoreGive(g_mutex);
+    return send_empty(req);
+}
+
+esp_err_t handle_llm_url_post(httpd_req_t* req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    std::string body;
+    if (read_body_str(req, body, kMaxApiKey) != ESP_OK) return ESP_OK;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_staging.set_str("llm-url", std::move(body));
+    xSemaphoreGive(g_mutex);
+    return send_empty(req);
+}
+
+esp_err_t handle_llm_model_post(httpd_req_t* req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    std::string body;
+    if (read_body_str(req, body, 64) != ESP_OK) return ESP_OK;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_staging.set_str("llm-model", std::move(body));
+    xSemaphoreGive(g_mutex);
+    return send_empty(req);
+}
+
+esp_err_t handle_llm_api_key_post(httpd_req_t* req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    std::string body;
+    if (read_body_str(req, body, kMaxApiKey) != ESP_OK) return ESP_OK;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_staging.set_str("llm-api-key", std::move(body));
     xSemaphoreGive(g_mutex);
     return send_empty(req);
 }
@@ -742,6 +782,76 @@ esp_err_t handle_servo_enabled_post(httpd_req_t* req)
     xSemaphoreTake(g_mutex, portMAX_DELAY);
     g_staging.set_num("servo-enabled", enabled ? 1 : 0);
     xSemaphoreGive(g_mutex);
+    return send_empty(req);
+}
+
+esp_err_t handle_obstacle_distance_get(httpd_req_t* req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    const uint16_t dist = g_active.obstacle_distance_cm;
+    xSemaphoreGive(g_mutex);
+    return send_text(req, std::to_string(dist));
+}
+
+esp_err_t handle_obstacle_distance_post(httpd_req_t* req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    std::string body;
+    if (read_body_str(req, body, 16) != ESP_OK) return ESP_OK;
+    if (body.empty()) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return send_text(req, "expected integer 5..100");
+    }
+    const int v = std::atoi(body.c_str());
+    if (v < 5 || v > 100) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return send_text(req, "obstacle-distance out of range (5..100)");
+    }
+    ObstacleDistanceSink sink = nullptr;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_staging.set_num("obstacle-distance", static_cast<std::uint32_t>(v));
+    g_active.obstacle_distance_cm = static_cast<std::uint16_t>(v);
+    sink = g_obstacle_distance_sink;
+    xSemaphoreGive(g_mutex);
+    if (sink != nullptr) {
+        sink(static_cast<std::uint16_t>(v));
+    }
+    return send_empty(req);
+}
+
+esp_err_t handle_obstacle_alert_distance_get(httpd_req_t* req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    const uint16_t dist = g_active.obstacle_alert_distance_cm;
+    xSemaphoreGive(g_mutex);
+    return send_text(req, std::to_string(dist));
+}
+
+esp_err_t handle_obstacle_alert_distance_post(httpd_req_t* req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    std::string body;
+    if (read_body_str(req, body, 16) != ESP_OK) return ESP_OK;
+    if (body.empty()) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return send_text(req, "expected integer 2..50");
+    }
+    const int v = std::atoi(body.c_str());
+    if (v < 2 || v > 50) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return send_text(req, "obstacle-alert-distance out of range (2..50)");
+    }
+    ObstacleAlertDistanceSink sink = nullptr;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_staging.set_num("obstacle-alert-distance", static_cast<std::uint32_t>(v));
+    g_active.obstacle_alert_distance_cm = static_cast<std::uint16_t>(v);
+    sink = g_obstacle_alert_distance_sink;
+    xSemaphoreGive(g_mutex);
+    if (sink != nullptr) {
+        sink(static_cast<std::uint16_t>(v));
+    }
     return send_empty(req);
 }
 
@@ -995,6 +1105,10 @@ esp_err_t handle_settings_post(httpd_req_t* req)
     // Pass 2: stage the whole batch under one lock.
     LtConfigSink lt_sink = nullptr;
     std::string lt_json;
+    ObstacleDistanceSink obs_sink = nullptr;
+    std::uint16_t obs_dist_cm = 0;
+    ObstacleAlertDistanceSink obs_alert_sink = nullptr;
+    std::uint16_t obs_alert_dist_cm = 0;
     xSemaphoreTake(g_mutex, portMAX_DELAY);
     for (const cJSON* item = root->child; item != nullptr; item = item->next) {
         const auto* d = config::registry::find(item->string);
@@ -1010,12 +1124,24 @@ esp_err_t handle_settings_post(httpd_req_t* req)
         } else if (d->type == ValueType::Bool) {
             g_staging.set_num(*d, cJSON_IsTrue(item) || (cJSON_IsNumber(item) && item->valuedouble != 0) ? 1 : 0);
         } else {
-            g_staging.set_num(*d, static_cast<std::uint32_t>(item->valuedouble));
+            const auto val = static_cast<std::uint32_t>(item->valuedouble);
+            g_staging.set_num(*d, val);
+            if (std::strcmp(d->id, "obstacle-distance") == 0) {
+                obs_sink = g_obstacle_distance_sink;
+                obs_dist_cm = static_cast<std::uint16_t>(val);
+                g_active.obstacle_distance_cm = obs_dist_cm;
+            } else if (std::strcmp(d->id, "obstacle-alert-distance") == 0) {
+                obs_alert_sink = g_obstacle_alert_distance_sink;
+                obs_alert_dist_cm = static_cast<std::uint16_t>(val);
+                g_active.obstacle_alert_distance_cm = obs_alert_dist_cm;
+            }
         }
     }
     xSemaphoreGive(g_mutex);
     cJSON_Delete(root);
     if (lt_sink != nullptr) lt_sink(lt_json);
+    if (obs_sink != nullptr) obs_sink(obs_dist_cm);
+    if (obs_alert_sink != nullptr) obs_alert_sink(obs_alert_dist_cm);
     return send_empty(req);
 }
 
@@ -2103,6 +2229,9 @@ void register_handlers(httpd_handle_t server, const config::DeviceConfig& curren
     add(server, "/api/gemini-api-key",  HTTP_POST, handle_gemini_api_key_post);
     add(server, "/api/xiaozhi-url",      HTTP_POST, handle_xiaozhi_url_post);
     add(server, "/api/xiaozhi-token",    HTTP_POST, handle_xiaozhi_token_post);
+    add(server, "/api/llm-url",          HTTP_POST, handle_llm_url_post);
+    add(server, "/api/llm-model",        HTTP_POST, handle_llm_model_post);
+    add(server, "/api/llm-api-key",      HTTP_POST, handle_llm_api_key_post);
     add(server, "/api/openai-enabled",  HTTP_POST, handle_openai_enabled_post);
     add(server, "/api/rtp-enabled",     HTTP_POST, handle_rtp_enabled_post);
     add(server, "/api/jtts-idle-enabled", HTTP_POST, handle_jtts_idle_enabled_post);
@@ -2123,6 +2252,10 @@ void register_handlers(httpd_handle_t server, const config::DeviceConfig& curren
     add(server, "/api/servo-range-mode", HTTP_POST, handle_servo_range_mode_post);
     add(server, "/api/system-prompt",   HTTP_POST, handle_system_prompt_post);
     add(server, "/api/conv-headers",     HTTP_POST, handle_conv_headers_post);
+    add(server, "/api/obstacle-distance", HTTP_GET,  handle_obstacle_distance_get);
+    add(server, "/api/obstacle-distance", HTTP_POST, handle_obstacle_distance_post);
+    add(server, "/api/obstacle-alert-distance", HTTP_GET,  handle_obstacle_alert_distance_get);
+    add(server, "/api/obstacle-alert-distance", HTTP_POST, handle_obstacle_alert_distance_post);
     add(server, "/api/settings",        HTTP_GET,  handle_settings_get);
     add(server, "/api/settings",        HTTP_POST, handle_settings_post);
     add(server, "/api/reboot-required", HTTP_GET,  handle_reboot_required_get);
@@ -2560,6 +2693,20 @@ void set_mcp_balloon_sink(McpBalloonSink sink)
     if (g_mutex == nullptr) { g_mcp_balloon_sink = std::move(sink); return; }
     xSemaphoreTake(g_mutex, portMAX_DELAY);
     g_mcp_balloon_sink = std::move(sink);
+    xSemaphoreGive(g_mutex);
+}
+void set_obstacle_distance_sink(ObstacleDistanceSink sink)
+{
+    if (g_mutex == nullptr) { g_obstacle_distance_sink = std::move(sink); return; }
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_obstacle_distance_sink = std::move(sink);
+    xSemaphoreGive(g_mutex);
+}
+void set_obstacle_alert_distance_sink(ObstacleAlertDistanceSink sink)
+{
+    if (g_mutex == nullptr) { g_obstacle_alert_distance_sink = std::move(sink); return; }
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_obstacle_alert_distance_sink = std::move(sink);
     xSemaphoreGive(g_mutex);
 }
 

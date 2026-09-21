@@ -20,6 +20,9 @@ public:
     static constexpr const char* kDefaultEndpoint = "http://192.168.11.6:1234/v1/chat/completions";
     static constexpr const char* kDefaultModel = "qwen3.5-9b-vlm";
 
+    // エンドポイント、モデル名、APIキーを設定（空欄の場合はデフォルト/キーなし）
+    static void configure(std::string endpoint, std::string model, std::string api_key);
+
     // 現在のカメラフレームを取得し、ローカルVLMに送信して指定方向の通行可否とスコアを評価
     static VlmEvaluation evaluate_current_view(const char* direction_label = "front");
 };
