@@ -33,8 +33,9 @@ enum class AutoDriveState {
     ScanWait,       // 首振り静止待ち（1秒）
     ScanEvaluate,   // 撮影 & VLM評価
     Decision,       // 全4方向の評価結果集計 & 最善方向決定
-    Turning,        // IMUジャイロ積分による旋回中
-    VerifyPath,     // 旋回完了後の進路確認
+    Turning,        // IMUジャイロ積分による旋回中（「次の進路に向きを変えるよ」）
+    VerifyCamera,   // 旋回完了後、カメラで新進路を視認（「進路に障害がないかカメラで調べるよ」）
+    VerifySonic,    // カメラ確認後、超音波ONに戻して距離確認（「センサーでも調べるよ」）
 };
 
 struct ScanPoint {
@@ -217,10 +218,11 @@ void AtomicMotionClient::tick(SharedState& state)
         }
 
         // 障害物検知時の画面演出（フキダシ・セリフ・表情フィードバック）
-        // ※左右確認・探索・旋回モード中は超音波センサーの演出をOFFにし、探索のセリフに専念させる
-        const bool is_scanning_or_turning = (current_mode == SharedState::Driving::Mode::Autonomous &&
-                                             s_drive_state != AutoDriveState::Forward &&
-                                             s_drive_state != AutoDriveState::InitWait);
+        // ※超音波センサーをONに戻すタイミング: VerifySonic / Forward / InitWait のみ
+        const bool ultrasonic_active = (s_drive_state == AutoDriveState::Forward ||
+                                        s_drive_state == AutoDriveState::InitWait ||
+                                        s_drive_state == AutoDriveState::VerifySonic);
+        const bool is_ultrasonic_enabled = (current_mode != SharedState::Driving::Mode::Autonomous) || ultrasonic_active;
 
         static bool s_last_obstacle = false;
         static uint32_t s_last_balloon_update_ms = 0;
@@ -228,7 +230,7 @@ void AtomicMotionClient::tick(SharedState& state)
         const bool obstacle = (status.obstacle_flags & 0x01) != 0;
         const uint16_t dist_cm = status.distance_mm / 10;
 
-        if (!is_scanning_or_turning) {
+        if (is_ultrasonic_enabled) {
             if (obstacle) {
                 // 新規検知または検知継続中の定期更新（2秒ごと）
                 if (!s_last_obstacle || (now_ms - s_last_balloon_update_ms >= 2000)) {
@@ -386,9 +388,14 @@ void AtomicMotionClient::tick(SharedState& state)
                     s_turn_spin_right = (best_pt.yaw_deg < 0); // 負が右、正が左
                 }
 
-                // IMU 旋回開始（クリーンな状態から角度積分を開始）
+                // 机上テスト対応: 車体が自力旋回できない場合でも進路方向を視認できるよう首を進路に向ける
+                state.servo.target_yaw_deg.store(best_idx >= 0 ? kScanPoints[best_idx].yaw_deg : 0.0f, std::memory_order_relaxed);
+
+                // 旋回開始（机上テスト時は1.2秒の旋回演出後にカメラ視認へ進行）
                 s_turn_integrated_deg = 0.0f;
                 s_turn_last_us = esp_timer_get_time();
+                state.set_balloon_text("次の進路に向きを変えるよ", 2000);
+                state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
                 send_command(s_turn_spin_right ? CmdSpinRight : CmdSpinLeft);
                 s_drive_state = AutoDriveState::Turning;
                 s_state_start_ms = now_ms;
@@ -396,7 +403,8 @@ void AtomicMotionClient::tick(SharedState& state)
             break;
 
         case AutoDriveState::Turning: {
-            // IMU ジャイロ Z 角速度を積分
+            // 机上テスト対応（DCモーター未接続時）:
+            // 手動旋回によるジャイロ積分、または1.2秒の旋回演出完了で次ステップへ進む
             const int64_t now_us = esp_timer_get_time();
             const float dt = (now_us - s_turn_last_us) / 1000000.0f;
             s_turn_last_us = now_us;
@@ -406,29 +414,56 @@ void AtomicMotionClient::tick(SharedState& state)
                 s_turn_integrated_deg += std::abs(gz) * dt;
             }
 
-            // 目標角度到達判定 (または安全タイムアウト: 4秒)
-            if (s_turn_integrated_deg >= s_target_turn_deg || (now_ms - s_state_start_ms >= 4000)) {
+            // 目標角度到達（手動旋回含む）または机上旋回シミュレーション時間（1200ms）経過
+            if (s_turn_integrated_deg >= s_target_turn_deg || (now_ms - s_state_start_ms >= 1200)) {
                 send_command(CmdStop);
-                ESP_LOGI(kTag, "Turn complete: integrated=%.1f deg (target=%.1f deg)",
+                ESP_LOGI(kTag, "Turn complete: integrated=%.1f deg (target=%.1f deg). Proceeding to camera visual check.",
                          s_turn_integrated_deg, s_target_turn_deg);
-                state.set_balloon_text("向きを変えたよ！", 1500);
-                s_drive_state = AutoDriveState::VerifyPath;
+                state.set_balloon_text("進路に障害がないかカメラで調べるよ", 2500);
+                s_drive_state = AutoDriveState::VerifyCamera;
                 s_state_start_ms = now_ms;
             }
             break;
         }
 
-        case AutoDriveState::VerifyPath:
-            // 旋回完了後、500ms 静止して正面の超音波距離を確認
-            if (now_ms - s_state_start_ms >= 500) {
-                if (dist_mm > 0 && dist_mm <= 120) {
-                    // まだ前方に障害物がある場合は再探索
-                    state.set_balloon_text("あれ？前が近いな…再確認！", 2000);
+        case AutoDriveState::VerifyCamera:
+            // 旋回直後の手ブレ静止待ち (800ms)
+            if (now_ms - s_state_start_ms >= 800) {
+                ESP_LOGI(kTag, "Verifying new path with camera view (front_check)...");
+                VlmEvaluation eval = VlmClient::evaluate_current_view("front_check");
+                if (eval.success && (!eval.passable || eval.score < 40)) {
+                    ESP_LOGW(kTag, "Camera detected obstacle in new path (score=%d). Rescanning...", eval.score);
+                    state.set_balloon_text("カメラで見たら障害物があったよ！再探索！", 2500);
                     state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
                     s_drive_state = AutoDriveState::StartScan;
                     s_state_start_ms = now_ms;
                 } else {
-                    // 新進路クリア！前進再開
+                    ESP_LOGI(kTag, "Camera path clear (score=%d). Now verifying with ultrasonic sensor...", eval.score);
+                    // カメラ確認OK → 首を正面に戻して超音波センサーをONにし距離確認
+                    state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
+                    state.set_balloon_text("センサーでも調べるよ", 2000);
+                    state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
+                    s_drive_state = AutoDriveState::VerifySonic;
+                    s_state_start_ms = now_ms;
+                }
+            }
+            break;
+
+        case AutoDriveState::VerifySonic:
+            // 超音波センサーの測定値反映待ち (600ms)
+            if (now_ms - s_state_start_ms >= 600) {
+                const uint16_t current_dist = state.driving.distance_mm.load(std::memory_order_relaxed);
+                if (current_dist > 0 && current_dist <= 120) {
+                    ESP_LOGW(kTag, "Ultrasonic sensor detected obstacle (%u mm). Rescanning...", current_dist);
+                    char buf[64];
+                    snprintf(buf, sizeof(buf), "センサーで壁を検知！(%u cm) 再探索！", current_dist / 10);
+                    state.set_balloon_text(buf, 2500);
+                    state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
+                    s_drive_state = AutoDriveState::StartScan;
+                    s_state_start_ms = now_ms;
+                } else {
+                    // カメラ・超音波ともにOK！
+                    ESP_LOGI(kTag, "Both camera and ultrasonic clear! Resuming forward drive.");
                     state.servo.speed_override.store(0, std::memory_order_relaxed);
                     state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
                     state.set_balloon_text("よし、クリア！進むよ！", 1500);
