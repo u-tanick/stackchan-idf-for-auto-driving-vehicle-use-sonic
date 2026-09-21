@@ -25,6 +25,8 @@ set(_main_priv_reqs
     espnow_poc
     espnow_remote
     flash_layout
+    fatfs
+    esp_http_server
 )
 
 # Slim-build per-source gates. The PRIV_REQUIRES list above can't be made
@@ -65,6 +67,8 @@ set(_main_srcs
     "sano_weights.cpp"
     "sano_bench.cpp"
     "wifi_sta.cpp"
+    "ws_camera_stream.cpp"
+    "atomic_motion_client.cpp"
 )
 if(CONFIG_STACKCHAN_CONVERSATION_ENABLED)
     list(APPEND _main_srcs "conversation_task.cpp")

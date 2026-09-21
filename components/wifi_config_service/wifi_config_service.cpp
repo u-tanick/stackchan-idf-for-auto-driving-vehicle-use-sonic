@@ -27,6 +27,7 @@ constexpr const char* kTag = "cfg-wifi";
 bool g_started = false;
 httpd_handle_t g_server = nullptr;
 char g_hostname[32] = "stackchan";
+PostStartHook g_post_start_hook;
 
 // Build the mDNS hostname. If the operator set DeviceConfig.device_name we
 // sanitize that to RFC-1123 (lowercase alphanumerics + single-hyphen runs, no
@@ -206,6 +207,10 @@ void init_task(void* arg)
     g_server = *server;
     http::register_handlers(g_server, *current);
 
+    if (g_post_start_hook) {
+        g_post_start_hook(g_server);
+    }
+
     // Belt-and-braces seed of the STA-connected flag. notify_wifi_connected()
     // (from IP_EVENT_STA_GOT_IP) can fire ~4 s before we reach this point;
     // g_wifi_connected being atomic means that early notification is no longer
@@ -255,6 +260,14 @@ bool http_started()
 httpd_handle_t handle()
 {
     return g_server;
+}
+
+void set_post_start_hook(PostStartHook hook)
+{
+    g_post_start_hook = std::move(hook);
+    if (g_server != nullptr && g_post_start_hook) {
+        g_post_start_hook(g_server);
+    }
 }
 
 void notify_wifi_connected(bool connected)

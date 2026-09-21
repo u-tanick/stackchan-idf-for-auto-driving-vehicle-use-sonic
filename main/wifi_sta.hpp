@@ -19,6 +19,20 @@ void wifi_start(const config::DeviceConfig& cfg);
 // True once Wi-Fi has an IP address. Becomes false again on disconnect.
 bool wifi_is_connected();
 
+// True when 3 connection attempts failed and Wi-Fi gave up (offline mode).
+bool wifi_is_failed();
+
+// Current connection retry count (0..3).
+int wifi_retry_count();
+
+// Trigger a Wi-Fi re-test / reconnect attempt from the UI.
+void wifi_retry_connect();
+
+// Try to read Wi-Fi credentials from SD card (/sdcard/wifi.txt or wifi.json).
+// Returns true if valid credentials were read.
+bool wifi_read_sd_credentials(char* out_ssid, std::size_t ssid_cap,
+                              char* out_pw, std::size_t pw_cap);
+
 // --- SoftAP provisioning ---
 // Switch Wi-Fi into APSTA so iOS (no Web Bluetooth) can join the device's own
 // AP and use the existing wifi_config HTTP settings page to configure home

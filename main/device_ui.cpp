@@ -347,12 +347,35 @@ void draw_info()
     // extending to ~y=224 — comfortable headroom under kH=240. Caller can
     // also now swipe to navigate so visual continuity matters more than
     // squeezing every pixel.
-    const int dy = 18;
+    const int dy = 16;
     draw_kv(y, "FW", app ? app->version : "?", fg); y += dy;
     draw_kv(y, "SSID", g_ssid.empty() ? "(未設定)" : g_ssid.c_str(), fg); y += dy;
     draw_kv(y, "mDNS", g_host.c_str(), fg); y += dy;
     draw_kv(y, "IP", ip.c_str(), wifi ? fg : off); y += dy;
-    draw_kv(y, "Wi-Fi", wifi ? "接続中" : "未接続", wifi ? ok : off); y += dy;
+
+    const char* wifi_status = wifi ? "接続中" : (wifi_is_failed() ? "オフライン(3回失敗)" : "接続試行中");
+    draw_kv(y, "Wi-Fi", wifi_status, wifi ? ok : (wifi_is_failed() ? warn : off)); y += dy;
+
+    const bool is_manual = (g_state && g_state->driving.mode.load(std::memory_order_relaxed) == SharedState::Driving::Mode::Manual);
+    draw_kv(y, "走行", is_manual ? "手動操縦(JoyC)" : "自動運転", is_manual ? ok : fg); y += dy;
+
+    if (g_state) {
+        char drive_info[32];
+        const uint16_t dist = g_state->driving.distance_mm.load(std::memory_order_relaxed);
+        const bool joy = g_state->driving.joy_active.load(std::memory_order_relaxed);
+        if (is_manual) {
+            snprintf(drive_info, sizeof(drive_info), "%s", joy ? "JoyC受信中" : "JoyC待機中");
+            draw_kv(y, "JoyC", drive_info, joy ? ok : dim); y += dy;
+        } else {
+            if (dist >= 9000) {
+                snprintf(drive_info, sizeof(drive_info), "遠方/待機");
+            } else {
+                snprintf(drive_info, sizeof(drive_info), "%u cm%s", dist / 10, (dist < 250) ? " [検知]" : "");
+            }
+            draw_kv(y, "超音波", drive_info, (dist < 250) ? warn : fg); y += dy;
+        }
+    }
+
     draw_kv(y, "BLE", ble ? "接続中" : "待受中", ble ? ok : fg); y += dy;
     draw_kv(y, "稼働", uptime, fg); y += dy;
     draw_kv(y, "空きRAM", heap, fg); y += dy;
@@ -460,33 +483,30 @@ void draw_settings2()
                      12, kContentY + 3 * kSettingsRowH + 4);
 }
 
+constexpr int kCtrlRowH = 36;
+
 void draw_control()
 {
-    const bool servo_on = g_state->servo.enabled.load(std::memory_order_relaxed);
-    draw_toggle_row(0, "サーボ（脱力/復帰）", servo_on);
-    draw_button(1, "姿勢をリセット", g_cv->color565(60, 120, 200));
+    const bool is_manual = (g_state && g_state->driving.mode.load(std::memory_order_relaxed) == SharedState::Driving::Mode::Manual);
+    draw_value_row(0, "走行モード", is_manual ? "手動操縦(JoyC)" : "自動運転", kCtrlRowH);
 
-    // Speaker volume row: 3 hit zones — left third = -10 %, right third =
-    // +10 %, center shows the current value and toggles mute. Live (no
-    // reboot) — applied by demo_loop on the next iteration.
+    const bool servo_on = g_state->servo.enabled.load(std::memory_order_relaxed);
+    draw_toggle_row(1, "サーボ（脱力/復帰）", servo_on, kCtrlRowH);
+
+    // Speaker volume row
     const std::uint16_t pct = g_state->speaker.volume_pct.load(std::memory_order_relaxed);
     int rx, ry, rw, rh;
-    row_rect(2, rx, ry, rw, rh);
+    row_rect(2, rx, ry, rw, rh, kCtrlRowH);
     g_cv->fillRoundRect(rx, ry, rw, rh, 6, g_cv->color565(40, 44, 54));
     g_cv->setFont(kFontBody);
     g_cv->setTextDatum(lgfx::textdatum_t::middle_left);
     g_cv->setTextColor(g_cv->color565(245, 245, 245));
     g_cv->drawString("音量", rx + 12, ry + rh / 2);
-    // − / + visual hints on the row edges so the user knows they can tap
-    // there to nudge the value.
+
     g_cv->setTextDatum(lgfx::textdatum_t::middle_center);
-    // ASCII '-' / '+' so the default lgfx font renders both correctly
-    // (the Unicode minus U+2212 doesn't have a glyph in this build).
     g_cv->drawString("-", rx + rw / 6, ry + rh / 2);
     g_cv->drawString("+", rx + (5 * rw) / 6, ry + rh / 2);
-    // Value in the middle, big enough to read at a glance. While muted the
-    // value is replaced by a red ミュート label — tapping the center toggles
-    // it back (same zone as the mute tap).
+
     if (g_state->speaker.muted.load(std::memory_order_relaxed)) {
         g_cv->setTextColor(g_cv->color565(230, 110, 110));
         g_cv->drawString("ミュート中", rx + rw / 2, ry + rh / 2);
@@ -496,16 +516,31 @@ void draw_control()
         g_cv->drawString(buf, rx + rw / 2, ry + rh / 2);
     }
 
-    // Row 3: AP-mode toggle. Surfaced on Control (= live runtime actions)
-    // rather than Settings because it doesn't stage / require reboot —
-    // wifi_enable_ap_mode brings the SoftAP up immediately so iOS users
-    // can join and configure Wi-Fi via http://192.168.4.1/. The label
-    // reflects the live state so the same row dismisses it.
+    // Row 3: Wi-Fi 再接続テストボタン
+    const bool wifi = wifi_is_connected();
+    const bool failed = wifi_is_failed();
+    const std::string ip = current_ip();
+
+    char btn_label[64];
+    if (wifi) {
+        std::snprintf(btn_label, sizeof(btn_label), "Wi-Fi 接続中 (IP: %s)", ip.c_str());
+    } else if (failed) {
+        std::snprintf(btn_label, sizeof(btn_label), "Wi-Fi 再テスト (失敗・オフライン)");
+    } else {
+        std::snprintf(btn_label, sizeof(btn_label), "Wi-Fi 接続試行中...");
+    }
+
+    draw_button(3, btn_label,
+                wifi ? g_cv->color565(30, 160, 80) : (failed ? g_cv->color565(200, 100, 30) : g_cv->color565(60, 120, 220)),
+                kCtrlRowH);
+
+    // Row 4: AP モード切替
     const bool ap_on = wifi_ap_active();
-    draw_button(3,
+    draw_button(4,
                 ap_on ? "AP モード（停止）" : "AP モード（Wi-Fi 再設定）",
                 ap_on ? g_cv->color565(200, 90, 60)
-                       : g_cv->color565(60, 120, 200));
+                       : g_cv->color565(70, 80, 110),
+                kCtrlRowH);
 }
 
 // --- 範囲設定 (servo range-setting) page --------------------------------------
@@ -972,20 +1007,27 @@ bool handle_tap(int x, int y)
             apply_and_reboot(); // does not return
         }
     } else if (page == kControl) {
-        if (hit_row(0)) {
+        auto hit_ctrl = [&](int i) {
+            return y >= kContentY + i * kCtrlRowH && y < kContentY + (i + 1) * kCtrlRowH;
+        };
+        if (hit_ctrl(0)) {
+            // 走行モード切替（自動運転 ⇔ 手動操縦）
+            if (g_state) {
+                auto cur = g_state->driving.mode.load(std::memory_order_relaxed);
+                auto next = (cur == SharedState::Driving::Mode::Autonomous)
+                                ? SharedState::Driving::Mode::Manual
+                                : SharedState::Driving::Mode::Autonomous;
+                g_state->driving.mode.store(next, std::memory_order_relaxed);
+                g_dirty.store(true, std::memory_order_relaxed);
+            }
+        } else if (hit_ctrl(1)) {
             g_state->servo.enabled.store(!g_state->servo.enabled.load(std::memory_order_relaxed),
                                          std::memory_order_relaxed);
             g_dirty.store(true, std::memory_order_relaxed);
-        } else if (hit_row(1)) {
-            g_state->servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
-            g_state->servo.target_pitch_deg.store(0.0f, std::memory_order_relaxed);
-        } else if (hit_row(2)) {
-            // Speaker-volume row: left third = -10 %, right third = +10 %,
-            // center = mute toggle. Bumps SharedState; demo_loop watches
-            // both atoms and pushes the change through the M5.Speaker
-            // volume (the pct also persists to NVS; mute does not).
+        } else if (hit_ctrl(2)) {
+            // Speaker-volume row
             int rx, ry, rw, rh;
-            row_rect(2, rx, ry, rw, rh);
+            row_rect(2, rx, ry, rw, rh, kCtrlRowH);
             std::uint16_t pct = g_state->speaker.volume_pct.load(std::memory_order_relaxed);
             const int local_x = x - rx;
             if (local_x < rw / 3) {
@@ -1002,16 +1044,18 @@ bool handle_tap(int x, int y)
                     std::memory_order_relaxed);
                 g_dirty.store(true, std::memory_order_relaxed);
             }
-        } else if (hit_row(3)) {
-            // AP-mode toggle. The enable path also starts mDNS / the http
-            // settings server (idempotently) and brings up the captive
-            // portal so iOS users joining the AP land on the settings
-            // page directly. Disable returns the driver to STA-only.
+        } else if (hit_ctrl(3)) {
+            // Wi-Fi 再接続テスト
+            wifi_retry_connect();
+            g_dirty.store(true, std::memory_order_relaxed);
+        } else if (hit_ctrl(4)) {
+            // AP-mode toggle
             if (wifi_ap_active()) {
                 wifi_disable_ap_mode();
             } else {
                 wifi_enable_ap_mode();
             }
+            g_dirty.store(true, std::memory_order_relaxed);
         }
     } else if (page == kRange) {
         const RangeLayout L = layout_range();
@@ -1128,7 +1172,7 @@ bool draw(avatar::RichCanvas& canvas)
     // fields (present-position from the servo task) and wants a faster refresh
     // so the captured raw doesn't lag the user's hand.
     const int page = g_page.load(std::memory_order_relaxed);
-    if (page == kInfo || page == kConversation || page == kLtTimer) {
+    if (page == kInfo || page == kConversation || page == kLtTimer || page == kControl) {
         const std::uint32_t t = now_ms();
         if (t - g_last_info_ms > 500) {
             g_last_info_ms = t;

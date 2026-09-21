@@ -28,6 +28,7 @@
 #include "settings_sinks.hpp"
 #include "speech.hpp"
 #include "wifi_sta.hpp"
+#include "atomic_motion_client.hpp"
 
 namespace stackchan::app {
 
@@ -73,6 +74,9 @@ constexpr const char* kTag = "stackchan";
 
     static app::Speech speech;
     speech.configure(jtts_config_json);
+
+    // Initialize AtomicMotion I2C client on CoreS3 Port A (SDA: GPIO 2, SCL: GPIO 1)
+    app::AtomicMotionClient::init(GPIO_NUM_2, GPIO_NUM_1);
 
     // LT timekeeper — ticked every loop iteration; speaks through the same
     // Speech instance (so the avatar's mouth moves) and publishes state for
@@ -156,6 +160,41 @@ constexpr const char* kTag = "stackchan";
     constexpr float kShakeThresholdG = 1.6f;       // |a| ≥ 1.6 g (≈ 0.6 g jerk)
     constexpr std::uint32_t kShakeCooldownMs = 800;
     std::uint32_t next_shake_ms = 0;
+
+    // 起動時サーボセルフテスト（右 → 左 → 上 → 下 → 正面で待機）
+    if (!external_servo_control) {
+        ESP_LOGI(kTag, "Starting servo self-test (Right -> Left -> Up -> Down -> Center)...");
+        g_state->servo.speed_override.store(350, std::memory_order_relaxed);
+
+        const float test_yaw = std::min(20.0f, std::min(std::abs(kYawMinDeg), std::abs(kYawMaxDeg)) * 0.7f);
+        const float test_pitch = std::min(12.0f, std::min(std::abs(kPitchMinDeg), std::abs(kPitchMaxDeg)) * 0.7f);
+
+        // 1. 右へ
+        g_state->servo.target_yaw_deg.store(-test_yaw, std::memory_order_relaxed);
+        g_state->servo.target_pitch_deg.store(0.0f, std::memory_order_relaxed);
+        vTaskDelay(pdMS_TO_TICKS(600));
+
+        // 2. 左へ
+        g_state->servo.target_yaw_deg.store(+test_yaw, std::memory_order_relaxed);
+        vTaskDelay(pdMS_TO_TICKS(800));
+
+        // 3. 正面に戻してから上へ
+        g_state->servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
+        g_state->servo.target_pitch_deg.store(+test_pitch, std::memory_order_relaxed);
+        vTaskDelay(pdMS_TO_TICKS(600));
+
+        // 4. 下へ
+        g_state->servo.target_pitch_deg.store(-test_pitch, std::memory_order_relaxed);
+        vTaskDelay(pdMS_TO_TICKS(700));
+
+        // 5. 正面（Yaw=0, Pitch=0）に戻して完了
+        g_state->servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
+        g_state->servo.target_pitch_deg.store(0.0f, std::memory_order_relaxed);
+        vTaskDelay(pdMS_TO_TICKS(600));
+
+        g_state->servo.speed_override.store(0, std::memory_order_relaxed);
+        ESP_LOGI(kTag, "Servo self-test finished. Head centered at (0, 0).");
+    }
 
     for (;;) {
         // Camera session in progress: every In_I2C touch (M5.update's
@@ -269,6 +308,9 @@ constexpr const char* kTag = "stackchan";
                 wifi_config::set_battery(mv, ma, pct);
             }
         }
+
+        // Synchronize driving mode and sensor telemetry with AtomS3 Lite over Port A I2C
+        app::AtomicMotionClient::tick(*g_state);
 
         // On-device overlay input. Button-driven screens (atom_status's
         // BtnA gesture vocab) poll every tick; the LCD-touch block below is
@@ -526,13 +568,14 @@ constexpr const char* kTag = "stackchan";
             }
         }
 
-        // Random yaw + pitch every 10–20 s. Suppressed when an external source
-        // (ESP-NOW remote) or the dance task owns the head.
-        if (!external_servo_control && !g_state->servo.dance_active.load(std::memory_order_relaxed) &&
-            now_ms >= next_pose_ms) {
-            g_state->servo.target_yaw_deg.store(rand_in(kYawMinDeg, kYawMaxDeg), std::memory_order_relaxed);
-            g_state->servo.target_pitch_deg.store(rand_in(kPitchMinDeg, kPitchMaxDeg), std::memory_order_relaxed);
-            next_pose_ms = now_ms + rand_range_ms(kPoseMinMs, kPoseMaxMs);
+        // 自動運転・手動操縦時のカメラ画角安定のため、ランダム動作は行わず常に正面 (0, 0) を維持
+        if (!external_servo_control && !g_state->servo.dance_active.load(std::memory_order_relaxed)) {
+            if (g_state->servo.target_yaw_deg.load(std::memory_order_relaxed) != 0.0f) {
+                g_state->servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
+            }
+            if (g_state->servo.target_pitch_deg.load(std::memory_order_relaxed) != 0.0f) {
+                g_state->servo.target_pitch_deg.store(0.0f, std::memory_order_relaxed);
+            }
         }
 
         // Cycle expression every 5 s — full demo only; during a conversation

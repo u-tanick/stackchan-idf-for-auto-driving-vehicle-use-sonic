@@ -8,11 +8,13 @@
 # そのまま流用する (IDF 非依存の C)。
 set(_fl "${CMAKE_CURRENT_LIST_DIR}/../../components/flash_layout")
 
+file(TO_CMAKE_PATH "$ENV{IDF_PATH}" _idf_path)
+
 idf_component_register(
     SRCS "bootloader_start.c" "${_fl}/format.c"
     INCLUDE_DIRS "${_fl}/include"
     # bootloader_hooks.h は IDF の bootloader/subproject/main にしか無い。
-    PRIV_INCLUDE_DIRS "$ENV{IDF_PATH}/components/bootloader/subproject/main"
+    PRIV_INCLUDE_DIRS "${_idf_path}/components/bootloader/subproject/main"
     REQUIRES bootloader bootloader_support spi_flash
 )
 

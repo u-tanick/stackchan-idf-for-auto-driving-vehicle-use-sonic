@@ -119,6 +119,7 @@ CONFIG_HTTPD_MAX_URI_LEN=128
 # "Header fields are too long" 431 responses from esp_http_server. 4 KiB
 # leaves plenty of headroom for Chrome's growing client-hint set.
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=4096
+CONFIG_HTTPD_WS_SUPPORT=y
 
 # mDNS hostname is set at runtime to "stackchan-XXXXXX", but Kconfig still
 # wants a build-time default; keep it short and meaningless.

@@ -46,6 +46,11 @@ void notify_wifi_connected(bool connected);
 // open sockets, see start_http_server).
 httpd_handle_t handle();
 
+// Hook called immediately after httpd_start and handler registration.
+// Can be used to register custom WebSocket / extra URI handlers.
+using PostStartHook = std::function<void(httpd_handle_t server)>;
+void set_post_start_hook(PostStartHook hook);
+
 // Mark the HTTP service as serving the on-device SoftAP (provisioning)
 // rather than the home Wi-Fi STA. While set:
 //   - require_auth() is bypassed (physical AP button = implicit trust;

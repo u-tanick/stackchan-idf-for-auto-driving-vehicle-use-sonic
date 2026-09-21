@@ -152,6 +152,19 @@ public:
     };
     Dance dance;
 
+    // --- Driving Mode (Autonomous vs Manual / JoyC) ------------------------
+    struct Driving {
+        enum class Mode : uint8_t {
+            Autonomous = 0,
+            Manual = 1,
+        };
+        std::atomic<Mode> mode{Mode::Autonomous};
+        std::atomic<std::uint16_t> distance_mm{9999};
+        std::atomic<std::uint8_t> obstacle_flags{0};
+        std::atomic<bool> joy_active{false};
+    };
+    Driving driving;
+
     // --- Conversation backend (conversation_task writes) -------------------
     struct Conversation {
         // True while a conversation session is live.

@@ -39,16 +39,6 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 1.8.0
-  espressif/esp-nn:
-    component_hash: d655eee0d597b1bfc12ff81efc49b835c1832a5521e1ff69691e50674399dbdc
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=5.1'
-    source:
-      registry_url: https://components.espressif.com
-      type: service
-    version: 1.4.0
   espressif/esp-now:
     component_hash: 217f4e2c1672bcc71e5890fb3659528bbce5f1a8a995b1668fec9374acbd0f45
     dependencies:
@@ -85,20 +75,6 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 2.4.7
-  espressif/esp-tflite-micro:
-    component_hash: bdb2625ed976d5b861177cdc295abc6738724f84f4c7c60fc58c721d2b30bed6
-    dependencies:
-    - name: espressif/esp-nn
-      registry_url: https://components.espressif.com
-      require: private
-      version: '>=1.3.0'
-    - name: idf
-      require: private
-      version: '>=5.1'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 1.4.1
   espressif/esp32-camera:
     component_hash: bc9c8a6b51df777a014fa295825b3de5069bc0300c317acff20c97cf4a10ac7d
     dependencies:
@@ -154,7 +130,7 @@ dependencies:
       type: service
     version: 3.0.3
   espressif/mdns:
-    component_hash: b679eafd0acae2066e2645bd91d073e33ca5be515e2545cd3c4e55a3e3bce3cb
+    component_hash: 8bcf12e37c58c1d584aef32a02b92548124c7a3a9fcf548d3235c844a035e0f0
     dependencies:
     - name: idf
       require: private
@@ -162,7 +138,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 1.13.1
+    version: 1.11.1
   espressif/quirc:
     component_hash: 3be250a06364f0d71a7903b66ac93084d2ce3998c2e75a168b9f1f0621dd6218
     dependencies:
@@ -176,18 +152,17 @@ dependencies:
   idf:
     source:
       type: idf
-    version: 5.5.5
+    version: 5.5.4
   m5stack/m5gfx:
     dependencies: []
     source:
-      path: third_party/m5gfx
+      path: C:\Users\funky\Documents\_work\_history\202609_sonic\repo\stackchan-idf-for-auto-driving-vehicle\third_party\m5gfx
       type: local
     version: 0.2.23
 direct_dependencies:
 - espressif/esp-dsp
 - espressif/esp-now
 - espressif/esp-sr
-- espressif/esp-tflite-micro
 - espressif/esp32-camera
 - espressif/esp_audio_codec
 - espressif/esp_websocket_client
@@ -195,6 +170,6 @@ direct_dependencies:
 - espressif/mdns
 - espressif/quirc
 - m5stack/m5gfx
-manifest_hash: bfbe74dff92f10c7c54b537ff84d98e5d465b33116e5ce1f3abee62178e71dac
+manifest_hash: f354f2d47690daeb1634bacfb39602e875397a7176a8a2ab857e09e597b2c4b3
 target: esp32s3
 version: 2.0.0

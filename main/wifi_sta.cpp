@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <cctype>
 
 #include <esp_event.h>
 #include <esp_log.h>
@@ -18,6 +19,14 @@
 #include <freertos/task.h>
 #include <time.h>
 #include <M5Unified.h>
+
+#include <esp_vfs_fat.h>
+#include <driver/sdmmc_host.h>
+#include <driver/sdspi_host.h>
+#include <driver/spi_common.h>
+#include <sdmmc_cmd.h>
+#include <soc/gpio_sig_map.h>
+#include <soc/gpio_reg.h>
 
 #include <config_service/config_service.hpp>
 #include <wifi_config_service/wifi_config_service.hpp>
@@ -45,6 +54,9 @@ void copy_field(std::uint8_t* dst, std::size_t cap, const char* src)
 
 std::atomic<bool> g_connected{false};
 std::atomic<bool> g_ap_active{false};
+std::atomic<int>  g_retry_count{0};
+std::atomic<bool> g_wifi_failed{false};
+
 // Cached AP credentials so wifi_ap_info() can serve the on-device QR screen
 // without re-querying the driver. Derived from ESP_MAC_WIFI_STA.
 char g_ap_ssid[33] = {0};
@@ -96,8 +108,15 @@ void event_handler(void* /*arg*/, esp_event_base_t base, int32_t id, void* data)
                     esp_timer_start_once(g_sta_retry_timer, kApModeStaRetryUs);
                 }
             } else {
-                ESP_LOGW(kTag, "disconnected, retrying");
-                esp_wifi_connect();
+                int retries = g_retry_count.fetch_add(1, std::memory_order_acq_rel) + 1;
+                if (retries >= 3) {
+                    ESP_LOGW(kTag, "Wi-Fi connection failed %d times. Switching to offline operation mode.", retries);
+                    g_wifi_failed.store(true, std::memory_order_release);
+                    esp_wifi_disconnect();
+                } else {
+                    ESP_LOGW(kTag, "disconnected, retrying (%d/3)...", retries);
+                    esp_wifi_connect();
+                }
             }
         } else if (id == WIFI_EVENT_AP_STACONNECTED) {
             // A provisioning client joined — give it quiet air: no STA
@@ -120,6 +139,8 @@ void event_handler(void* /*arg*/, esp_event_base_t base, int32_t id, void* data)
         const auto* event = static_cast<ip_event_got_ip_t*>(data);
         ESP_LOGI(kTag, "got IP: " IPSTR, IP2STR(&event->ip_info.ip));
         g_connected.store(true, std::memory_order_release);
+        g_retry_count.store(0, std::memory_order_release);
+        g_wifi_failed.store(false, std::memory_order_release);
         config::notify_wifi_connected(true);
 
         // Bring up mDNS + HTTP settings server on the first successful STA
@@ -179,6 +200,141 @@ void event_handler(void* /*arg*/, esp_event_base_t base, int32_t id, void* data)
 
 } // namespace
 
+bool wifi_read_sd_credentials(char* out_ssid, std::size_t ssid_cap,
+                              char* out_pw, std::size_t pw_cap)
+{
+    if (out_ssid == nullptr || out_pw == nullptr || ssid_cap < 2 || pw_cap < 2) {
+        return false;
+    }
+    out_ssid[0] = 0;
+    out_pw[0] = 0;
+
+    // Ensure CoreS3 TF card slot power (ALDO4 3.3V) is enabled
+    M5.Power.Axp2101.setALDO4(3300);
+
+    // Ensure LCD CS (GPIO 3) is HIGH (deselected) so GPIO 35 functions as MISO
+    gpio_set_direction(GPIO_NUM_3, GPIO_MODE_OUTPUT);
+    gpio_set_level(GPIO_NUM_3, 1);
+
+    // Configure GPIO 35 as FSPIQ (MISO)
+    *(volatile uint32_t*)GPIO_FUNC35_OUT_SEL_CFG_REG = FSPIQ_OUT_IDX;
+    *(volatile uint32_t*)GPIO_ENABLE1_W1TC_REG = 1u << (GPIO_NUM_35 & 31);
+    gpio_set_direction(GPIO_NUM_35, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(GPIO_NUM_35, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(GPIO_NUM_36, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(GPIO_NUM_37, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(GPIO_NUM_4, GPIO_PULLUP_ONLY);
+
+    // Initialize SPI2 bus if not already initialized by LGFX
+    spi_bus_config_t bus_cfg = {};
+    bus_cfg.mosi_io_num = GPIO_NUM_37;
+    bus_cfg.miso_io_num = GPIO_NUM_35;
+    bus_cfg.sclk_io_num = GPIO_NUM_36;
+    bus_cfg.quadwp_io_num = -1;
+    bus_cfg.quadhd_io_num = -1;
+    bus_cfg.max_transfer_sz = 4000;
+    spi_bus_initialize(SPI2_HOST, &bus_cfg, SDSPI_DEFAULT_DMA);
+
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    host.slot = SPI2_HOST;
+    host.max_freq_khz = SDMMC_FREQ_DEFAULT;
+
+    sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
+    slot_config.gpio_cs = GPIO_NUM_4;
+    slot_config.host_id = SPI2_HOST;
+
+    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+        .format_if_mount_failed = false,
+        .max_files = 2,
+        .allocation_unit_size = 16 * 1024,
+        .disk_status_check_enable = false
+    };
+
+    sdmmc_card_t* card = nullptr;
+    esp_err_t ret = esp_vfs_fat_sdspi_mount("/sdcard", &host, &slot_config, &mount_config, &card);
+    if (ret != ESP_OK) {
+        ESP_LOGD(kTag, "SD card mount failed or card not present (%s)", esp_err_to_name(ret));
+        return false;
+    }
+
+    bool found = false;
+
+    // 1. Try /sdcard/wifi.txt
+    FILE* f = std::fopen("/sdcard/wifi.txt", "r");
+    if (f != nullptr) {
+        char line[128];
+        while (std::fgets(line, sizeof(line), f) != nullptr) {
+            // Trim CR/LF
+            char* p = line + std::strlen(line);
+            while (p > line && (*(p - 1) == '\r' || *(p - 1) == '\n' || *(p - 1) == ' ')) {
+                *(--p) = 0;
+            }
+            if (strncasecmp(line, "SSID:", 5) == 0) {
+                const char* val = line + 5;
+                while (*val == ' ') val++;
+                copy_field(reinterpret_cast<uint8_t*>(out_ssid), ssid_cap, val);
+            } else if (strncasecmp(line, "PASSWORD:", 9) == 0) {
+                const char* val = line + 9;
+                while (*val == ' ') val++;
+                copy_field(reinterpret_cast<uint8_t*>(out_pw), pw_cap, val);
+            }
+        }
+        std::fclose(f);
+        if (out_ssid[0] != 0) found = true;
+    }
+
+    // 2. Try /sdcard/wifi.json if not found in wifi.txt
+    if (!found) {
+        f = std::fopen("/sdcard/wifi.json", "r");
+        if (f != nullptr) {
+            char buf[512];
+            std::size_t n = std::fread(buf, 1, sizeof(buf) - 1, f);
+            buf[n] = 0;
+            std::fclose(f);
+
+            // Simple search for "ssid":"..." and "password":"..."
+            char* s = std::strstr(buf, "\"ssid\"");
+            if (s != nullptr) {
+                char* colon = std::strchr(s, ':');
+                if (colon != nullptr) {
+                    char* q1 = std::strchr(colon, '\"');
+                    if (q1 != nullptr) {
+                        char* q2 = std::strchr(q1 + 1, '\"');
+                        if (q2 != nullptr) {
+                            *q2 = 0;
+                            copy_field(reinterpret_cast<uint8_t*>(out_ssid), ssid_cap, q1 + 1);
+                        }
+                    }
+                }
+            }
+            char* p = std::strstr(buf, "\"password\"");
+            if (p != nullptr) {
+                char* colon = std::strchr(p, ':');
+                if (colon != nullptr) {
+                    char* q1 = std::strchr(colon, '\"');
+                    if (q1 != nullptr) {
+                        char* q2 = std::strchr(q1 + 1, '\"');
+                        if (q2 != nullptr) {
+                            *q2 = 0;
+                            copy_field(reinterpret_cast<uint8_t*>(out_pw), pw_cap, q1 + 1);
+                        }
+                    }
+                }
+            }
+            if (out_ssid[0] != 0) found = true;
+        }
+    }
+
+    if (card != nullptr) {
+        esp_vfs_fat_sdcard_unmount("/sdcard", card);
+    }
+
+    if (found) {
+        ESP_LOGI(kTag, "Read Wi-Fi credentials from SD: SSID=\"%s\"", out_ssid);
+    }
+    return found;
+}
+
 void wifi_start(const config::DeviceConfig& cfg)
 {
     g_boot_cfg = &cfg;
@@ -210,26 +366,75 @@ void wifi_start(const config::DeviceConfig& cfg)
         ESP_ERROR_CHECK(esp_timer_create(&args, &g_sta_retry_timer));
     }
 
-    if (cfg.wifi_ssid.empty()) {
+    // SDカードからWi-Fi設定の読み取りを試みる
+    char sd_ssid[33] = {0};
+    char sd_pw[65] = {0};
+    bool has_sd_wifi = wifi_read_sd_credentials(sd_ssid, sizeof(sd_ssid), sd_pw, sizeof(sd_pw));
+
+    const char* target_ssid = has_sd_wifi ? sd_ssid : cfg.wifi_ssid.c_str();
+    const char* target_pw   = has_sd_wifi ? sd_pw   : cfg.wifi_password.c_str();
+
+    if (target_ssid[0] == 0) {
         ESP_LOGI(kTag, "no SSID configured — Wi-Fi driver initialised but not started");
         return;
     }
 
+    g_retry_count.store(0, std::memory_order_release);
+    g_wifi_failed.store(false, std::memory_order_release);
+
     wifi_config_t sta_cfg{};
-    std::strncpy(reinterpret_cast<char*>(sta_cfg.sta.ssid),
-                 cfg.wifi_ssid.c_str(), sizeof(sta_cfg.sta.ssid) - 1);
-    std::strncpy(reinterpret_cast<char*>(sta_cfg.sta.password),
-                 cfg.wifi_password.c_str(), sizeof(sta_cfg.sta.password) - 1);
+    copy_field(sta_cfg.sta.ssid, sizeof(sta_cfg.sta.ssid), target_ssid);
+    copy_field(sta_cfg.sta.password, sizeof(sta_cfg.sta.password), target_pw);
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg));
     ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_LOGI(kTag, "connecting to SSID: %s", cfg.wifi_ssid.c_str());
+    ESP_LOGI(kTag, "connecting to SSID: %s (source: %s)",
+             target_ssid, has_sd_wifi ? "SD card" : "NVS config");
 }
 
 bool wifi_is_connected()
 {
     return g_connected.load(std::memory_order_acquire);
+}
+
+bool wifi_is_failed()
+{
+    return g_wifi_failed.load(std::memory_order_acquire);
+}
+
+int wifi_retry_count()
+{
+    return g_retry_count.load(std::memory_order_acquire);
+}
+
+void wifi_retry_connect()
+{
+    ESP_LOGI(kTag, "Wi-Fi reconnect requested from UI / manual trigger");
+    g_retry_count.store(0, std::memory_order_release);
+    g_wifi_failed.store(false, std::memory_order_release);
+
+    char sd_ssid[33] = {0};
+    char sd_pw[65] = {0};
+    bool has_sd = wifi_read_sd_credentials(sd_ssid, sizeof(sd_ssid), sd_pw, sizeof(sd_pw));
+    if (has_sd) {
+        wifi_config_t sta_cfg{};
+        copy_field(sta_cfg.sta.ssid, sizeof(sta_cfg.sta.ssid), sd_ssid);
+        copy_field(sta_cfg.sta.password, sizeof(sta_cfg.sta.password), sd_pw);
+        esp_wifi_set_mode(WIFI_MODE_STA);
+        esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
+        esp_wifi_start();
+        ESP_LOGI(kTag, "Reloaded Wi-Fi credentials from SD: %s", sd_ssid);
+    } else if (g_boot_cfg && !g_boot_cfg->wifi_ssid.empty()) {
+        wifi_config_t sta_cfg{};
+        copy_field(sta_cfg.sta.ssid, sizeof(sta_cfg.sta.ssid), g_boot_cfg->wifi_ssid.c_str());
+        copy_field(sta_cfg.sta.password, sizeof(sta_cfg.sta.password), g_boot_cfg->wifi_password.c_str());
+        esp_wifi_set_mode(WIFI_MODE_STA);
+        esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
+        esp_wifi_start();
+    }
+
+    esp_wifi_connect();
 }
 
 // --- SoftAP provisioning ----------------------------------------------------

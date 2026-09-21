@@ -149,7 +149,7 @@ def main() -> int:
     else:
         if not args.layout:
             ap.error("layout JSON required")
-        with open(args.layout) as f:
+        with open(args.layout, encoding="utf-8") as f:
             layout = json.load(f)
         data, info = build_exttab(layout)
         if args.print or not args.output:

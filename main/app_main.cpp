@@ -69,6 +69,7 @@
 #include "wifi_audio.hpp"
 #endif
 #include "wifi_sta.hpp"
+#include "ws_camera_stream.hpp"
 
 #include <jtts/jtts.hpp>
 #ifdef CONFIG_TELEGRAM_PHASE1_ENABLED
@@ -728,6 +729,11 @@ extern "C" void app_main()
         // cached in static storage and applied once the handlers register).
         stackchan::app::settings_sinks::register_http_sinks(
             static_cast<std::uint8_t>(board.kind()));
+
+        // Register custom_141 compatible WebSocket camera stream handler (/ws)
+        stackchan::wifi_config::set_post_start_hook([](httpd_handle_t server) {
+            stackchan::app::ws_camera::register_ws_handler(server);
+        });
     } else {
         ESP_LOGI(kTag, "ESP-NOW mode: skipping Wi-Fi STA / httpd (fixed-channel ESP-NOW below)");
     }

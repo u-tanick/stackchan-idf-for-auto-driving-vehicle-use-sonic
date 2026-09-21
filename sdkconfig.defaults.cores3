@@ -10,6 +10,7 @@ CONFIG_SPIRAM_SPEED_80M=y
 # 16 MB external SPI flash (W25Q128 footprint on the CoreS3 PCB).
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_HTTPD_WS_SUPPORT=y
 
 # GC0308 DVP camera (CoreS3 mainboard) — Phase 1+2 connpass-QR feature.
 # Pulls espressif/esp32-camera + espressif/quirc into the build and
@@ -29,8 +30,8 @@ CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 # "camera-active" flag, or migrate them off the shared lgfx i2c instance).
 # STACKCHAN_QR_TEST_AT_BOOT stays OFF — do not flip it back on without
 # revisiting the race.
-# 2026-09-15: カメラは実質未使用のため無効化 (内部 RAM が約 20 KB 空く)。戻すときは y に。
-CONFIG_STACKCHAN_CAMERA_ENABLED=n
+# 2026-09-15: カメラ有効化 (custom_141 互換 PC WebSocket 映像配信に使用)
+CONFIG_STACKCHAN_CAMERA_ENABLED=y
 # DMA path selection (ESP32-S3 knob in esp32-camera).
 #   y: EDMA writes each line straight into the PSRAM framebuffer.
 #   n: DMA lands in small internal-RAM bounce buffers; the cam task memcpys
