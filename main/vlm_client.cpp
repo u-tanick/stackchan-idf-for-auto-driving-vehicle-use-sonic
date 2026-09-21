@@ -36,6 +36,30 @@ esp_err_t http_event_handler(esp_http_client_event_t* evt)
     return ESP_OK;
 }
 
+// JSON文字列値向けのエスケープヘルパー
+std::string json_escape(const char* s)
+{
+    std::string out;
+    if (!s) return out;
+    while (*s) {
+        if (*s == '"') {
+            out += "\\\"";
+        } else if (*s == '\\') {
+            out += "\\\\";
+        } else if (*s == '\n') {
+            out += "\\n";
+        } else if (*s == '\r') {
+            out += "\\r";
+        } else if (*s == '\t') {
+            out += "\\t";
+        } else {
+            out += *s;
+        }
+        s++;
+    }
+    return out;
+}
+
 // レスポンス文字列から最初の '{' と 最後の '}' の間を抽出するヘルパー
 std::string extract_json_block(const std::string& text)
 {
@@ -107,12 +131,13 @@ VlmEvaluation VlmClient::evaluate_current_view(const char* direction_label)
 
     // 3. プロンプトと JSON リクエストペイロードの作成
     // PSRAM 上に文字列を構築
-    char prompt[256];
-    std::snprintf(prompt, sizeof(prompt),
+    char prompt_raw[256];
+    std::snprintf(prompt_raw, sizeof(prompt_raw),
                   "自律移動ロボットの回避判断です。画像の前方（向き: %s）の通行可能性を判断し、"
                   "次のJSON形式のみで出力してください: "
                   "{\"passable\": trueまたはfalse, \"score\": 0〜100の安全度, \"reason\": \"理由\"}",
                   direction_label ? direction_label : "front");
+    const std::string prompt_escaped = json_escape(prompt_raw);
 
     std::string payload;
     payload.reserve(written + 512);
@@ -120,7 +145,7 @@ VlmEvaluation VlmClient::evaluate_current_view(const char* direction_label)
     payload += kDefaultModel;
     payload += "\",\"messages\":[{\"role\":\"user\",\"content\":[";
     payload += "{\"type\":\"text\",\"text\":\"";
-    payload += prompt;
+    payload += prompt_escaped;
     payload += "\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/jpeg;base64,";
     payload += b64_buf;
     payload += "\"}}]}],\"max_tokens\":120,\"temperature\":0.1}";

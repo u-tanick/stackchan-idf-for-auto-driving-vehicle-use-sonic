@@ -577,9 +577,14 @@ constexpr const char* kTag = "stackchan";
         }
 
         // 自動運転・手動操縦時のカメラ画角安定のため、ランダム動作は行わず常に基準姿勢 (0, +10) を維持
+        // 自律走行モード時は atomic_motion_client が首振り探索を制御するため、yaw の強制リセットは行わない
+        const bool is_auto_drive = (g_state->driving.mode.load(std::memory_order_relaxed) ==
+                                    SharedState::Driving::Mode::Autonomous);
         if (!external_servo_control && !g_state->servo.dance_active.load(std::memory_order_relaxed)) {
-            if (g_state->servo.target_yaw_deg.load(std::memory_order_relaxed) != kHomeYawDeg) {
-                g_state->servo.target_yaw_deg.store(kHomeYawDeg, std::memory_order_relaxed);
+            if (!is_auto_drive) {
+                if (g_state->servo.target_yaw_deg.load(std::memory_order_relaxed) != kHomeYawDeg) {
+                    g_state->servo.target_yaw_deg.store(kHomeYawDeg, std::memory_order_relaxed);
+                }
             }
             if (g_state->servo.target_pitch_deg.load(std::memory_order_relaxed) != kHomePitchDeg) {
                 g_state->servo.target_pitch_deg.store(kHomePitchDeg, std::memory_order_relaxed);

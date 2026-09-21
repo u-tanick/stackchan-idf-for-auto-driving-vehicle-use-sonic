@@ -44,10 +44,10 @@ struct ScanPoint {
 };
 
 static const ScanPoint kScanPoints[4] = {
-    { -90.0f, "右(0度)", "右(90°)を見てみるね…" },
+    { -90.0f, "右(90度)", "右(90°)を見てみるね…" },
     { -45.0f, "右斜め(45度)", "右斜め(45°)を見てみるね…" },
-    { +90.0f, "左(180度)", "左(90°)を見てみるね…" },
-    { +45.0f, "左斜め(135度)", "左斜め(45°)を見てみるね…" }
+    { +90.0f, "左(90度)", "左(90°)を見てみるね…" },
+    { +45.0f, "左斜め(45度)", "左斜め(45°)を見てみるね…" }
 };
 
 AutoDriveState s_drive_state = AutoDriveState::InitWait;
@@ -217,30 +217,37 @@ void AtomicMotionClient::tick(SharedState& state)
         }
 
         // 障害物検知時の画面演出（フキダシ・セリフ・表情フィードバック）
+        // ※左右確認・探索・旋回モード中は超音波センサーの演出をOFFにし、探索のセリフに専念させる
+        const bool is_scanning_or_turning = (current_mode == SharedState::Driving::Mode::Autonomous &&
+                                             s_drive_state != AutoDriveState::Forward &&
+                                             s_drive_state != AutoDriveState::InitWait);
+
         static bool s_last_obstacle = false;
         static uint32_t s_last_balloon_update_ms = 0;
 
         const bool obstacle = (status.obstacle_flags & 0x01) != 0;
         const uint16_t dist_cm = status.distance_mm / 10;
 
-        if (obstacle) {
-            // 新規検知または検知継続中の定期更新（2秒ごと）
-            if (!s_last_obstacle || (now_ms - s_last_balloon_update_ms >= 2000)) {
-                s_last_balloon_update_ms = now_ms;
-                char msg[64];
-                if ((status.obstacle_flags & 0x04) || (status.distance_mm > 0 && status.distance_mm < 100)) {
-                    snprintf(msg, sizeof(msg), "ぶつかるー！(%u cm)", dist_cm);
-                    state.face.expression.store(static_cast<int>(avatar::Expression::Angry), std::memory_order_relaxed);
-                } else {
-                    snprintf(msg, sizeof(msg), "障害物接近中！(%u cm)", dist_cm);
-                    state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
+        if (!is_scanning_or_turning) {
+            if (obstacle) {
+                // 新規検知または検知継続中の定期更新（2秒ごと）
+                if (!s_last_obstacle || (now_ms - s_last_balloon_update_ms >= 2000)) {
+                    s_last_balloon_update_ms = now_ms;
+                    char msg[64];
+                    if ((status.obstacle_flags & 0x04) || (status.distance_mm > 0 && status.distance_mm < 100)) {
+                        snprintf(msg, sizeof(msg), "ぶつかるー！(%u cm)", dist_cm);
+                        state.face.expression.store(static_cast<int>(avatar::Expression::Angry), std::memory_order_relaxed);
+                    } else {
+                        snprintf(msg, sizeof(msg), "障害物接近中！(%u cm)", dist_cm);
+                        state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
+                    }
+                    state.set_balloon_text(msg, 2000);
                 }
-                state.set_balloon_text(msg, 2000);
+            } else if (s_last_obstacle) {
+                // 障害物がなくなった時
+                state.set_balloon_text("よし、クリア！", 1500);
+                state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
             }
-        } else if (s_last_obstacle) {
-            // 障害物がなくなった時
-            state.set_balloon_text("よし、クリア！", 1500);
-            state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
         }
         s_last_obstacle = obstacle;
     }
@@ -298,8 +305,11 @@ void AtomicMotionClient::tick(SharedState& state)
             // 500ms 静止を待ってから首振り開始
             if (now_ms - s_state_start_ms >= 500) {
                 s_scan_index = 0;
+                ESP_LOGI(kTag, "Start scan sequence. Target 0: %s (yaw=%.1f deg)",
+                         kScanPoints[0].name, kScanPoints[0].yaw_deg);
+                state.servo.speed_override.store(250, std::memory_order_relaxed);
                 state.servo.target_yaw_deg.store(kScanPoints[0].yaw_deg, std::memory_order_relaxed);
-                state.set_balloon_text(kScanPoints[0].msg, 1500);
+                state.set_balloon_text(kScanPoints[0].msg, 2000);
                 s_drive_state = AutoDriveState::ScanWait;
                 s_state_start_ms = now_ms;
             }
@@ -315,6 +325,7 @@ void AtomicMotionClient::tick(SharedState& state)
         case AutoDriveState::ScanEvaluate: {
             // 現在のカメラフレームを VLM で評価
             const auto& pt = kScanPoints[s_scan_index];
+            ESP_LOGI(kTag, "Evaluating view for %s...", pt.name);
             VlmEvaluation eval = VlmClient::evaluate_current_view(pt.name);
             s_scan_evals[s_scan_index] = eval;
 
@@ -325,11 +336,15 @@ void AtomicMotionClient::tick(SharedState& state)
             s_scan_index++;
             if (s_scan_index < 4) {
                 // 次の方向へ首を向ける
+                ESP_LOGI(kTag, "Next scan target %d: %s (yaw=%.1f deg)",
+                         s_scan_index, kScanPoints[s_scan_index].name, kScanPoints[s_scan_index].yaw_deg);
                 state.servo.target_yaw_deg.store(kScanPoints[s_scan_index].yaw_deg, std::memory_order_relaxed);
+                state.set_balloon_text(kScanPoints[s_scan_index].msg, 2000);
                 s_drive_state = AutoDriveState::ScanWait;
                 s_state_start_ms = now_ms;
             } else {
                 // 4方向完了、首を正面に戻して判定へ
+                ESP_LOGI(kTag, "Scan complete for all 4 directions. Returning head to center.");
                 state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
                 state.set_balloon_text("正面に戻して判定中…", 1500);
                 s_drive_state = AutoDriveState::Decision;
@@ -414,6 +429,8 @@ void AtomicMotionClient::tick(SharedState& state)
                     s_state_start_ms = now_ms;
                 } else {
                     // 新進路クリア！前進再開
+                    state.servo.speed_override.store(0, std::memory_order_relaxed);
+                    state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
                     state.set_balloon_text("よし、クリア！進むよ！", 1500);
                     state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
                     send_command(CmdForward);
