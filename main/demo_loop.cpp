@@ -66,8 +66,8 @@ constexpr const char* kTag = "stackchan";
     const float kYawMaxDeg = static_cast<float>(limits.yaw_max_deg);
     const float kPitchMinDeg = static_cast<float>(limits.pitch_min_deg);
     const float kPitchMaxDeg = static_cast<float>(limits.pitch_max_deg);
-    constexpr std::uint32_t kPoseMinMs = 10000;
-    constexpr std::uint32_t kPoseMaxMs = 20000;
+    constexpr float kHomeYawDeg = 0.0f;
+    constexpr float kHomePitchDeg = 10.0f; // ユーザー要望：10度上向きを基準位置に設定
     constexpr std::uint32_t kExpressionPeriodMs = 5000;
     constexpr std::uint32_t kSpeechMinMs = 6000;
     constexpr std::uint32_t kSpeechMaxMs = 12000;
@@ -161,39 +161,38 @@ constexpr const char* kTag = "stackchan";
     constexpr std::uint32_t kShakeCooldownMs = 800;
     std::uint32_t next_shake_ms = 0;
 
-    // 起動時サーボセルフテスト（右 → 左 → 上 → 下 → 正面で待機）
+    // 起動時サーボセルフテスト（右 → 左 → 上 → 下 → 正面待機: 10度上向き）
     if (!external_servo_control) {
-        ESP_LOGI(kTag, "Starting servo self-test (Right -> Left -> Up -> Down -> Center)...");
+        ESP_LOGI(kTag, "Starting servo self-test (Right -> Left -> Up -> Down -> Center[Pitch+10])...");
         g_state->servo.speed_override.store(350, std::memory_order_relaxed);
 
-        const float test_yaw = std::min(20.0f, std::min(std::abs(kYawMinDeg), std::abs(kYawMaxDeg)) * 0.7f);
-        const float test_pitch = std::min(12.0f, std::min(std::abs(kPitchMinDeg), std::abs(kPitchMaxDeg)) * 0.7f);
+        const float test_yaw = 25.0f;
 
-        // 1. 右へ
+        // 1. 右へ (Yaw -25°)
         g_state->servo.target_yaw_deg.store(-test_yaw, std::memory_order_relaxed);
-        g_state->servo.target_pitch_deg.store(0.0f, std::memory_order_relaxed);
-        vTaskDelay(pdMS_TO_TICKS(600));
-
-        // 2. 左へ
-        g_state->servo.target_yaw_deg.store(+test_yaw, std::memory_order_relaxed);
-        vTaskDelay(pdMS_TO_TICKS(800));
-
-        // 3. 正面に戻してから上へ
-        g_state->servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
-        g_state->servo.target_pitch_deg.store(+test_pitch, std::memory_order_relaxed);
-        vTaskDelay(pdMS_TO_TICKS(600));
-
-        // 4. 下へ
-        g_state->servo.target_pitch_deg.store(-test_pitch, std::memory_order_relaxed);
+        g_state->servo.target_pitch_deg.store(kHomePitchDeg, std::memory_order_relaxed);
         vTaskDelay(pdMS_TO_TICKS(700));
 
-        // 5. 正面（Yaw=0, Pitch=0）に戻して完了
-        g_state->servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
-        g_state->servo.target_pitch_deg.store(0.0f, std::memory_order_relaxed);
-        vTaskDelay(pdMS_TO_TICKS(600));
+        // 2. 左へ (Yaw +25°)
+        g_state->servo.target_yaw_deg.store(+test_yaw, std::memory_order_relaxed);
+        vTaskDelay(pdMS_TO_TICKS(900));
+
+        // 3. 正面に戻してから上へ (Pitch +22°)
+        g_state->servo.target_yaw_deg.store(kHomeYawDeg, std::memory_order_relaxed);
+        g_state->servo.target_pitch_deg.store(22.0f, std::memory_order_relaxed);
+        vTaskDelay(pdMS_TO_TICKS(700));
+
+        // 4. 下へ (Pitch -5°)
+        g_state->servo.target_pitch_deg.store(-5.0f, std::memory_order_relaxed);
+        vTaskDelay(pdMS_TO_TICKS(800));
+
+        // 5. 正面・10度上向き（Yaw=0, Pitch=10）に戻して完了
+        g_state->servo.target_yaw_deg.store(kHomeYawDeg, std::memory_order_relaxed);
+        g_state->servo.target_pitch_deg.store(kHomePitchDeg, std::memory_order_relaxed);
+        vTaskDelay(pdMS_TO_TICKS(700));
 
         g_state->servo.speed_override.store(0, std::memory_order_relaxed);
-        ESP_LOGI(kTag, "Servo self-test finished. Head centered at (0, 0).");
+        ESP_LOGI(kTag, "Servo self-test finished. Head centered at (0, +10).");
     }
 
     for (;;) {
@@ -568,13 +567,13 @@ constexpr const char* kTag = "stackchan";
             }
         }
 
-        // 自動運転・手動操縦時のカメラ画角安定のため、ランダム動作は行わず常に正面 (0, 0) を維持
+        // 自動運転・手動操縦時のカメラ画角安定のため、ランダム動作は行わず常に基準姿勢 (0, +10) を維持
         if (!external_servo_control && !g_state->servo.dance_active.load(std::memory_order_relaxed)) {
-            if (g_state->servo.target_yaw_deg.load(std::memory_order_relaxed) != 0.0f) {
-                g_state->servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
+            if (g_state->servo.target_yaw_deg.load(std::memory_order_relaxed) != kHomeYawDeg) {
+                g_state->servo.target_yaw_deg.store(kHomeYawDeg, std::memory_order_relaxed);
             }
-            if (g_state->servo.target_pitch_deg.load(std::memory_order_relaxed) != 0.0f) {
-                g_state->servo.target_pitch_deg.store(0.0f, std::memory_order_relaxed);
+            if (g_state->servo.target_pitch_deg.load(std::memory_order_relaxed) != kHomePitchDeg) {
+                g_state->servo.target_pitch_deg.store(kHomePitchDeg, std::memory_order_relaxed);
             }
         }
 

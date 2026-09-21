@@ -214,12 +214,10 @@ void servo_task_entry(void* arg)
                 last_pitch_target = pitch_target;
             }
             release_at = now_ms() + mv + kSettleMarginMs;
-        } else if (torque_on && now_ms() >= release_at) {
-            // Move complete and holding still → release torque.
-            (void)yaw.enable_torque(false);
-            (void)pitch.enable_torque(false);
-            torque_on = false;
         }
+        // NOTE: For autonomous driving and camera angle stability, keep torque engaged
+        // to prevent the head from dropping forward under gravity. Torque can be released
+        // via the on-device UI "サーボ（脱力/復帰）" toggle or range-setting page.
 
         vTaskDelayUntil(&last_wake, kPeriodTicks);
     }
