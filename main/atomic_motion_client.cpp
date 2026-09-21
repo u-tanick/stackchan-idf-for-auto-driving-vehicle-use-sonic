@@ -4,7 +4,9 @@
 #include "atomic_motion_client.hpp"
 
 #include <cstdio>
+#include <cmath>
 #include "avatar/expression.hpp"
+#include "vlm_client.hpp"
 #include <M5Unified.h>
 #include <esp_log.h>
 #include <esp_timer.h>
@@ -22,8 +24,42 @@ bool s_initialized = false;
 SharedState::Driving::Mode s_last_synced_mode = SharedState::Driving::Mode::Autonomous;
 bool s_mode_force_sync = true;
 uint32_t s_last_tick_ms = 0;
-uint32_t s_auto_drive_state_ms = 0;
-int s_auto_step = 0; // 0: Idle/Forward, 1: Obstacle avoiding (turn)
+
+enum class AutoDriveState {
+    InitWait,       // 起動後の待機（サーボ初期診断完了待ち）
+    Forward,        // 前進走行中
+    BackingUp,      // 10cm未満時の微速後退
+    StartScan,      // 探索シーケンス開始（首振り開始）
+    ScanWait,       // 首振り静止待ち（1秒）
+    ScanEvaluate,   // 撮影 & VLM評価
+    Decision,       // 全4方向の評価結果集計 & 最善方向決定
+    Turning,        // IMUジャイロ積分による旋回中
+    VerifyPath,     // 旋回完了後の進路確認
+};
+
+struct ScanPoint {
+    float yaw_deg;
+    const char* name;
+    const char* msg;
+};
+
+static const ScanPoint kScanPoints[4] = {
+    { -60.0f, "右端", "右端を見てみるね…" },
+    { -35.0f, "右斜め", "右斜めを見てみるね…" },
+    { +60.0f, "左端", "左端を見てみるね…" },
+    { +35.0f, "左斜め", "左斜めを見てみるね…" }
+};
+
+AutoDriveState s_drive_state = AutoDriveState::InitWait;
+uint32_t s_state_start_ms = 0;
+int s_scan_index = 0;
+VlmEvaluation s_scan_evals[4];
+
+// IMU旋回用
+float s_target_turn_deg = 0.0f;
+bool s_turn_spin_right = true;
+float s_turn_integrated_deg = 0.0f;
+int64_t s_turn_last_us = 0;
 } // namespace
 
 esp_err_t AtomicMotionClient::init(int sda_pin, int scl_pin)
@@ -209,34 +245,183 @@ void AtomicMotionClient::tick(SharedState& state)
         s_last_obstacle = obstacle;
     }
 
-    // If Autonomous, run high-level obstacle avoidance controller
+    // If Autonomous, run VLM & IMU based obstacle avoidance state machine
     if (current_mode == SharedState::Driving::Mode::Autonomous) {
         const uint16_t dist_mm = state.driving.distance_mm.load(std::memory_order_relaxed);
-        const bool obstacle_detected = (dist_mm > 0 && dist_mm < 250); // < 25 cm (0 means no reading yet)
 
-        if (s_auto_step == 0) {
-            // Normal forward motion
-            if (obstacle_detected) {
-                // Obstacle! Switch to turn/avoidance
-                send_command(CmdStop);
-                s_auto_step = 1;
-                s_auto_drive_state_ms = now_ms;
-            } else {
+        switch (s_drive_state) {
+        case AutoDriveState::InitWait:
+            // 起動後 15 秒（サーボセルフテスト完了）待機してから前進開始
+            if (now_ms >= 15000 && dist_mm > 0) {
+                state.set_balloon_text("前進スタート！", 1500);
+                state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
                 send_command(CmdForward);
+                s_drive_state = AutoDriveState::Forward;
+                s_state_start_ms = now_ms;
             }
-        } else if (s_auto_step == 1) {
-            // Spin right to find an open path
-            if (now_ms - s_auto_drive_state_ms < 800) {
-                send_command(CmdSpinRight);
-            } else {
-                // Done spinning, re-evaluate
+            break;
+
+        case AutoDriveState::Forward:
+            send_command(CmdForward);
+            // 10cm 以内に壁があれば停止
+            if (dist_mm > 0 && dist_mm <= 100) {
                 send_command(CmdStop);
-                if (!obstacle_detected) {
-                    s_auto_step = 0;
+                char buf[64];
+                std::snprintf(buf, sizeof(buf), "おっと！壁だよ！（%u cm）", dist_mm / 10);
+                state.set_balloon_text(buf, 2000);
+                state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
+
+                if (dist_mm < 90) {
+                    // 10cm未満まで近接してしまったら後退へ
+                    s_drive_state = AutoDriveState::BackingUp;
+                    s_state_start_ms = now_ms;
                 } else {
-                    s_auto_drive_state_ms = now_ms; // Continue turning if still blocked
+                    // 10cm付近で停止、首振り探索へ
+                    s_drive_state = AutoDriveState::StartScan;
+                    s_state_start_ms = now_ms;
                 }
             }
+            break;
+
+        case AutoDriveState::BackingUp:
+            // 10cm に達するまで微速後退
+            send_command(CmdBackward);
+            if (dist_mm >= 100 || (now_ms - s_state_start_ms >= 1500)) {
+                send_command(CmdStop);
+                state.set_balloon_text("10cmまで下がったよ", 1500);
+                s_drive_state = AutoDriveState::StartScan;
+                s_state_start_ms = now_ms;
+            }
+            break;
+
+        case AutoDriveState::StartScan:
+            // 500ms 静止を待ってから首振り開始
+            if (now_ms - s_state_start_ms >= 500) {
+                s_scan_index = 0;
+                state.servo.target_yaw_deg.store(kScanPoints[0].yaw_deg, std::memory_order_relaxed);
+                state.set_balloon_text(kScanPoints[0].msg, 1500);
+                s_drive_state = AutoDriveState::ScanWait;
+                s_state_start_ms = now_ms;
+            }
+            break;
+
+        case AutoDriveState::ScanWait:
+            // 首振り後、手ブレ防止のため 1 秒静止
+            if (now_ms - s_state_start_ms >= 1000) {
+                s_drive_state = AutoDriveState::ScanEvaluate;
+            }
+            break;
+
+        case AutoDriveState::ScanEvaluate: {
+            // 現在のカメラフレームを VLM で評価
+            const auto& pt = kScanPoints[s_scan_index];
+            VlmEvaluation eval = VlmClient::evaluate_current_view(pt.name);
+            s_scan_evals[s_scan_index] = eval;
+
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "%s: %d点 (%s)", pt.name, eval.score, eval.passable ? "OK" : "NG");
+            state.set_balloon_text(buf, 2000);
+
+            s_scan_index++;
+            if (s_scan_index < 4) {
+                // 次の方向へ首を向ける
+                state.servo.target_yaw_deg.store(kScanPoints[s_scan_index].yaw_deg, std::memory_order_relaxed);
+                s_drive_state = AutoDriveState::ScanWait;
+                s_state_start_ms = now_ms;
+            } else {
+                // 4方向完了、首を正面に戻して判定へ
+                state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
+                state.set_balloon_text("正面に戻して判定中…", 1500);
+                s_drive_state = AutoDriveState::Decision;
+                s_state_start_ms = now_ms;
+            }
+            break;
+        }
+
+        case AutoDriveState::Decision:
+            // 首が正面に戻るのを待つ (800ms)
+            if (now_ms - s_state_start_ms >= 800) {
+                // 4方向の評価を集計
+                int best_idx = -1;
+                int best_score = -1;
+                for (int i = 0; i < 4; ++i) {
+                    if (s_scan_evals[i].success && s_scan_evals[i].passable && s_scan_evals[i].score > best_score) {
+                        best_score = s_scan_evals[i].score;
+                        best_idx = i;
+                    }
+                }
+
+                if (best_idx < 0 || best_score < 40) {
+                    // 全方向障害物（袋小路）：180度Uターン
+                    ESP_LOGW(kTag, "All directions blocked (best score=%d). Executing 180 deg U-turn.", best_score);
+                    state.set_balloon_text("行き止まりだ！Uターンするね！", 2500);
+                    state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
+                    s_target_turn_deg = 180.0f;
+                    s_turn_spin_right = true;
+                } else {
+                    // 最善方向へ旋回
+                    const auto& best_pt = kScanPoints[best_idx];
+                    ESP_LOGI(kTag, "Best direction: %s (score=%d)", best_pt.name, best_score);
+                    char buf[64];
+                    std::snprintf(buf, sizeof(buf), "%sへ進路変更！（%d点）", best_pt.name, best_score);
+                    state.set_balloon_text(buf, 2000);
+                    state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
+
+                    s_target_turn_deg = std::abs(best_pt.yaw_deg);
+                    s_turn_spin_right = (best_pt.yaw_deg < 0); // 負が右、正が左
+                }
+
+                // IMU 旋回開始（クリーンな状態から角度積分を開始）
+                s_turn_integrated_deg = 0.0f;
+                s_turn_last_us = esp_timer_get_time();
+                send_command(s_turn_spin_right ? CmdSpinRight : CmdSpinLeft);
+                s_drive_state = AutoDriveState::Turning;
+                s_state_start_ms = now_ms;
+            }
+            break;
+
+        case AutoDriveState::Turning: {
+            // IMU ジャイロ Z 角速度を積分
+            const int64_t now_us = esp_timer_get_time();
+            const float dt = (now_us - s_turn_last_us) / 1000000.0f;
+            s_turn_last_us = now_us;
+
+            float gx = 0, gy = 0, gz = 0;
+            if (M5.Imu.getGyro(&gx, &gy, &gz)) {
+                s_turn_integrated_deg += std::abs(gz) * dt;
+            }
+
+            // 目標角度到達判定 (または安全タイムアウト: 4秒)
+            if (s_turn_integrated_deg >= s_target_turn_deg || (now_ms - s_state_start_ms >= 4000)) {
+                send_command(CmdStop);
+                ESP_LOGI(kTag, "Turn complete: integrated=%.1f deg (target=%.1f deg)",
+                         s_turn_integrated_deg, s_target_turn_deg);
+                state.set_balloon_text("向きを変えたよ！", 1500);
+                s_drive_state = AutoDriveState::VerifyPath;
+                s_state_start_ms = now_ms;
+            }
+            break;
+        }
+
+        case AutoDriveState::VerifyPath:
+            // 旋回完了後、500ms 静止して正面の超音波距離を確認
+            if (now_ms - s_state_start_ms >= 500) {
+                if (dist_mm > 0 && dist_mm <= 120) {
+                    // まだ前方に障害物がある場合は再探索
+                    state.set_balloon_text("あれ？前が近いな…再確認！", 2000);
+                    state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
+                    s_drive_state = AutoDriveState::StartScan;
+                    s_state_start_ms = now_ms;
+                } else {
+                    // 新進路クリア！前進再開
+                    state.set_balloon_text("よし、クリア！進むよ！", 1500);
+                    state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
+                    send_command(CmdForward);
+                    s_drive_state = AutoDriveState::Forward;
+                    s_state_start_ms = now_ms;
+                }
+            }
+            break;
         }
     }
 }

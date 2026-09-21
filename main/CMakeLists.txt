@@ -27,6 +27,8 @@ set(_main_priv_reqs
     flash_layout
     fatfs
     esp_http_server
+    esp_http_client
+    mbedtls
 )
 
 # Slim-build per-source gates. The PRIV_REQUIRES list above can't be made
@@ -69,6 +71,7 @@ set(_main_srcs
     "wifi_sta.cpp"
     "ws_camera_stream.cpp"
     "atomic_motion_client.cpp"
+    "vlm_client.cpp"
 )
 if(CONFIG_STACKCHAN_CONVERSATION_ENABLED)
     list(APPEND _main_srcs "conversation_task.cpp")
