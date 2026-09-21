@@ -67,7 +67,7 @@ constexpr const char* kTag = "stackchan";
     const float kPitchMinDeg = static_cast<float>(limits.pitch_min_deg);
     const float kPitchMaxDeg = static_cast<float>(limits.pitch_max_deg);
     constexpr float kHomeYawDeg = 0.0f;
-    constexpr float kHomePitchDeg = 0.0f; // 検証期間中は初期位置 0° を基準に保持
+    constexpr float kHomePitchDeg = 15.0f; // ユーザー要望：15度上向きを基準位置に設定
     constexpr std::uint32_t kExpressionPeriodMs = 5000;
     constexpr std::uint32_t kSpeechMinMs = 6000;
     constexpr std::uint32_t kSpeechMaxMs = 12000;
@@ -162,9 +162,9 @@ constexpr const char* kTag = "stackchan";
     std::uint32_t next_shake_ms = 0;
 
     // 起動時サーボセルフテスト:
-    // 正面(90°: 0°) → 右(30°: -60°) → 左(150°: +60°) → 正面(90°: 0°) → 上(45°: +45°) → 下(初期位置: 0°) → 最終位置(10°上向き: +10°)
+    // 正面(90°: 0°) → 右(30°: -60°) → 左(150°: +60°) → 正面(90°: 0°) → 上(45°: +45°) → 下(初期位置: 0°) → 最終位置(15°上向き: +15°)
     if (!external_servo_control) {
-        ESP_LOGI(kTag, "Starting servo self-test (Center -> Right -> Left -> Center -> Up -> Down -> Final +10)...");
+        ESP_LOGI(kTag, "Starting servo self-test (Center -> Right -> Left -> Center -> Up -> Down -> Final +15)...");
         g_state->servo.speed_override.store(350, std::memory_order_relaxed);
 
         // 0. 正面（90度: Yaw=0°, Pitch=0°）
@@ -194,23 +194,14 @@ constexpr const char* kTag = "stackchan";
 
         // 5. 下（初期位置: Pitch 0°）
         g_state->servo.target_pitch_deg.store(0.0f, std::memory_order_relaxed);
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(900));
 
-        // 6. 向き調整検証: 10度ずつ3秒静止しながら60度まで動かす
-        ESP_LOGI(kTag, "Starting pitch angle test (10 to 60 deg, hold 3s each)...");
-        for (int p_deg = 10; p_deg <= 60; p_deg += 10) {
-            ESP_LOGI(kTag, ">>> Pitch calibration test: %d deg (holding 3s) <<<", p_deg);
-            g_state->servo.target_pitch_deg.store(static_cast<float>(p_deg), std::memory_order_relaxed);
-            vTaskDelay(pdMS_TO_TICKS(3000));
-        }
-
-        // 検証終了後、初期位置 (0°) に戻して待機
-        ESP_LOGI(kTag, "Pitch calibration test finished. Returning to 0 deg.");
-        g_state->servo.target_pitch_deg.store(0.0f, std::memory_order_relaxed);
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        // 6. 最終位置（15度上を向く: Pitch +15°）
+        g_state->servo.target_pitch_deg.store(kHomePitchDeg, std::memory_order_relaxed);
+        vTaskDelay(pdMS_TO_TICKS(800));
 
         g_state->servo.speed_override.store(0, std::memory_order_relaxed);
-        ESP_LOGI(kTag, "Servo self-test complete. Head centered at (0, 0).");
+        ESP_LOGI(kTag, "Servo self-test complete. Head centered at (0, +15).");
     }
 
     for (;;) {

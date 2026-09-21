@@ -92,7 +92,7 @@ public:
     // --- Servo (servo_task reads; demo_loop / conversation / UI write) -----
     struct Servo {
         std::atomic<float> target_yaw_deg{0.0f};
-        std::atomic<float> target_pitch_deg{10.0f}; // 10 deg upward default
+        std::atomic<float> target_pitch_deg{15.0f}; // 15 deg upward default
         // Non-zero overrides the servo task's default Goal Speed for the next
         // write_goal_position. Used for snappy gestures (head shake).
         std::atomic<std::uint16_t> speed_override{0};
