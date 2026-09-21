@@ -3,7 +3,9 @@
 
 #include "atomic_motion_client.hpp"
 
-#include <driver/i2c_master.h>
+#include <cstdio>
+#include "avatar/expression.hpp"
+#include <M5Unified.h>
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
@@ -13,11 +15,9 @@ namespace stackchan::app {
 
 namespace {
 constexpr const char* kTag = "atomic_client";
-constexpr int kI2cTimeoutMs = 50;
+constexpr uint32_t kI2cFreq = 100000;
 
 bool s_initialized = false;
-i2c_master_bus_handle_t s_bus_handle = nullptr;
-i2c_master_dev_handle_t s_dev_handle = nullptr;
 
 SharedState::Driving::Mode s_last_synced_mode = SharedState::Driving::Mode::Autonomous;
 bool s_mode_force_sync = true;
@@ -32,102 +32,106 @@ esp_err_t AtomicMotionClient::init(int sda_pin, int scl_pin)
         return ESP_OK;
     }
 
-    i2c_master_bus_config_t bus_cfg = {};
-    bus_cfg.i2c_port = I2C_NUM_0;
-    bus_cfg.sda_io_num = static_cast<gpio_num_t>(sda_pin);
-    bus_cfg.scl_io_num = static_cast<gpio_num_t>(scl_pin);
-    bus_cfg.clk_source = I2C_CLK_SRC_DEFAULT;
-    bus_cfg.glitch_ignore_cnt = 7;
-    bus_cfg.flags.enable_internal_pullup = 1;
+    // Always call begin() to configure GPIOs and start I2C peripheral
+    M5.Ex_I2C.begin(I2C_NUM_0, sda_pin, scl_pin);
 
-    esp_err_t err = i2c_new_master_bus(&bus_cfg, &s_bus_handle);
-    if (err != ESP_OK) {
-        ESP_LOGW(kTag, "i2c_new_master_bus (port 0) failed: %s", esp_err_to_name(err));
-        return err;
+    // Scan all 7-bit addresses to see what responds on Port A
+    bool found_any = false;
+    for (uint8_t addr = 0x08; addr <= 0x77; ++addr) {
+        if (M5.Ex_I2C.scanID(addr, kI2cFreq)) {
+            ESP_LOGI(kTag, "I2C device found on Port A at 0x%02X", addr);
+            found_any = true;
+        }
     }
-
-    i2c_device_config_t dev_cfg = {};
-    dev_cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
-    dev_cfg.device_address = kDefaultSlaveAddr;
-    dev_cfg.scl_speed_hz = 100000;
-
-    err = i2c_master_bus_add_device(s_bus_handle, &dev_cfg, &s_dev_handle);
-    if (err != ESP_OK) {
-        ESP_LOGE(kTag, "i2c_master_bus_add_device failed: %s", esp_err_to_name(err));
-        return err;
+    if (!found_any) {
+        ESP_LOGW(kTag, "I2C scan finished: NO devices responded on Port A (SDA:%d, SCL:%d)", sda_pin, scl_pin);
     }
 
     s_initialized = true;
     s_mode_force_sync = true;
-    ESP_LOGI(kTag, "AtomicMotion I2C master (driver_ng) initialized on Port A (SDA:%d, SCL:%d)", sda_pin, scl_pin);
     return ESP_OK;
 }
 
 esp_err_t AtomicMotionClient::set_mode(SharedState::Driving::Mode mode)
 {
-    if (!s_initialized || !s_dev_handle) return ESP_ERR_INVALID_STATE;
+    if (!s_initialized) return ESP_ERR_INVALID_STATE;
 
     const uint8_t val = (mode == SharedState::Driving::Mode::Manual) ? 0x01 : 0x00;
-    const uint8_t buf[2] = {0x04, val}; // Register 0x04: ROBOT_MODE
-    esp_err_t err = i2c_master_transmit(s_dev_handle, buf, sizeof(buf), kI2cTimeoutMs);
-    if (err == ESP_OK) {
+    if (M5.Ex_I2C.writeRegister8(kDefaultSlaveAddr, 0x04, val, kI2cFreq)) {
         ESP_LOGI(kTag, "Robot mode synchronized to %s", (mode == SharedState::Driving::Mode::Manual) ? "Manual" : "Autonomous");
+        return ESP_OK;
     } else {
         static int64_t last_err_us = 0;
         const int64_t now_us = esp_timer_get_time();
         if (now_us - last_err_us > 3000000) {
             last_err_us = now_us;
-            ESP_LOGW(kTag, "Failed to send set_mode: %s (AtomS3 connected on Port A?)", esp_err_to_name(err));
+            ESP_LOGW(kTag, "Failed to send set_mode (AtomS3 connected on Port A?)");
         }
+        return ESP_FAIL;
     }
-    return err;
 }
 
 esp_err_t AtomicMotionClient::send_command(Command cmd)
 {
-    if (!s_initialized || !s_dev_handle) return ESP_ERR_INVALID_STATE;
-
-    const uint8_t buf[2] = {0x00, static_cast<uint8_t>(cmd)}; // Register 0x00: CMD_MODE
-    return i2c_master_transmit(s_dev_handle, buf, sizeof(buf), kI2cTimeoutMs);
+    if (!s_initialized) return ESP_ERR_INVALID_STATE;
+    return M5.Ex_I2C.writeRegister8(kDefaultSlaveAddr, 0x00, static_cast<uint8_t>(cmd), kI2cFreq) ? ESP_OK : ESP_FAIL;
 }
 
 esp_err_t AtomicMotionClient::set_motor_speeds(int8_t left, int8_t right)
 {
-    if (!s_initialized || !s_dev_handle) return ESP_ERR_INVALID_STATE;
+    if (!s_initialized) return ESP_ERR_INVALID_STATE;
 
-    const uint8_t buf[3] = {0x01, static_cast<uint8_t>(left), static_cast<uint8_t>(right)};
-    return i2c_master_transmit(s_dev_handle, buf, sizeof(buf), kI2cTimeoutMs);
+    const uint8_t buf[2] = {static_cast<uint8_t>(left), static_cast<uint8_t>(right)};
+    return M5.Ex_I2C.writeRegister(kDefaultSlaveAddr, 0x01, buf, sizeof(buf), kI2cFreq) ? ESP_OK : ESP_FAIL;
 }
 
 esp_err_t AtomicMotionClient::set_led_color(uint8_t r, uint8_t g, uint8_t b)
 {
-    if (!s_initialized || !s_dev_handle) return ESP_ERR_INVALID_STATE;
+    if (!s_initialized) return ESP_ERR_INVALID_STATE;
 
-    const uint8_t buf[4] = {0x20, r, g, b};
-    return i2c_master_transmit(s_dev_handle, buf, sizeof(buf), kI2cTimeoutMs);
+    const uint8_t buf[3] = {r, g, b};
+    return M5.Ex_I2C.writeRegister(kDefaultSlaveAddr, 0x20, buf, sizeof(buf), kI2cFreq) ? ESP_OK : ESP_FAIL;
 }
 
 esp_err_t AtomicMotionClient::read_status(Status& out_status)
 {
-    if (!s_initialized || !s_dev_handle) return ESP_ERR_INVALID_STATE;
+    if (!s_initialized) return ESP_ERR_INVALID_STATE;
 
     // Read distance (0x10, 2 bytes), flags (0x12, 1 byte)
-    uint8_t reg = 0x10;
+    // Send register address with explicit STOP so Slave's onReceive fires before onRequest
     uint8_t data[3] = {0};
-    esp_err_t err = i2c_master_transmit_receive(s_dev_handle, &reg, 1, data, 3, kI2cTimeoutMs);
-    if (err == ESP_OK) {
+    if (M5.Ex_I2C.start(kDefaultSlaveAddr, false, kI2cFreq) &&
+        M5.Ex_I2C.write(0x10) &&
+        M5.Ex_I2C.stop() &&
+        M5.Ex_I2C.start(kDefaultSlaveAddr, true, kI2cFreq) &&
+        M5.Ex_I2C.read(data, 3) &&
+        M5.Ex_I2C.stop()) {
         out_status.distance_mm = (static_cast<uint16_t>(data[0]) << 8) | data[1];
         out_status.obstacle_flags = data[2];
     } else {
-        return err;
+        M5.Ex_I2C.stop();
+        return ESP_FAIL;
+    }
+
+    static uint32_t s_last_raw_log_ms = 0;
+    const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+    if (now_ms - s_last_raw_log_ms >= 1000) {
+        s_last_raw_log_ms = now_ms;
+        ESP_LOGI(kTag, "raw 0x10 read: [0x%02X, 0x%02X, 0x%02X] -> dist=%u mm",
+                 data[0], data[1], data[2], out_status.distance_mm);
     }
 
     // Read JoyC active flag (0x05)
-    reg = 0x05;
     uint8_t joy_byte = 0;
-    err = i2c_master_transmit_receive(s_dev_handle, &reg, 1, &joy_byte, 1, kI2cTimeoutMs);
-    if (err == ESP_OK) {
+    if (M5.Ex_I2C.start(kDefaultSlaveAddr, false, kI2cFreq) &&
+        M5.Ex_I2C.write(0x05) &&
+        M5.Ex_I2C.stop() &&
+        M5.Ex_I2C.start(kDefaultSlaveAddr, true, kI2cFreq) &&
+        M5.Ex_I2C.read(&joy_byte, 1) &&
+        M5.Ex_I2C.stop()) {
         out_status.joy_active = (joy_byte != 0);
+    } else {
+        M5.Ex_I2C.stop();
     }
 
     return ESP_OK;
@@ -168,12 +172,47 @@ void AtomicMotionClient::tick(SharedState& state)
         state.driving.distance_mm.store(status.distance_mm, std::memory_order_relaxed);
         state.driving.obstacle_flags.store(status.obstacle_flags, std::memory_order_relaxed);
         state.driving.joy_active.store(status.joy_active, std::memory_order_relaxed);
+
+        static uint32_t s_last_telemetry_log_ms = 0;
+        if (now_ms - s_last_telemetry_log_ms >= 1000) {
+            s_last_telemetry_log_ms = now_ms;
+            ESP_LOGI(kTag, "Telemetry: dist=%u mm, obs=0x%02X, joy=%d",
+                     status.distance_mm, status.obstacle_flags, status.joy_active);
+        }
+
+        // 障害物検知時の画面演出（フキダシ・セリフ・表情フィードバック）
+        static bool s_last_obstacle = false;
+        static uint32_t s_last_balloon_update_ms = 0;
+
+        const bool obstacle = (status.obstacle_flags & 0x01) != 0;
+        const uint16_t dist_cm = status.distance_mm / 10;
+
+        if (obstacle) {
+            // 新規検知または検知継続中の定期更新（2秒ごと）
+            if (!s_last_obstacle || (now_ms - s_last_balloon_update_ms >= 2000)) {
+                s_last_balloon_update_ms = now_ms;
+                char msg[64];
+                if ((status.obstacle_flags & 0x04) || (status.distance_mm > 0 && status.distance_mm < 100)) {
+                    snprintf(msg, sizeof(msg), "ぶつかるー！(%u cm)", dist_cm);
+                    state.face.expression.store(static_cast<int>(avatar::Expression::Angry), std::memory_order_relaxed);
+                } else {
+                    snprintf(msg, sizeof(msg), "障害物接近中！(%u cm)", dist_cm);
+                    state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
+                }
+                state.set_balloon_text(msg, 2000);
+            }
+        } else if (s_last_obstacle) {
+            // 障害物がなくなった時
+            state.set_balloon_text("よし、クリア！", 1500);
+            state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
+        }
+        s_last_obstacle = obstacle;
     }
 
     // If Autonomous, run high-level obstacle avoidance controller
     if (current_mode == SharedState::Driving::Mode::Autonomous) {
         const uint16_t dist_mm = state.driving.distance_mm.load(std::memory_order_relaxed);
-        const bool obstacle_detected = (dist_mm < 250); // < 25 cm
+        const bool obstacle_detected = (dist_mm > 0 && dist_mm < 250); // < 25 cm (0 means no reading yet)
 
         if (s_auto_step == 0) {
             // Normal forward motion

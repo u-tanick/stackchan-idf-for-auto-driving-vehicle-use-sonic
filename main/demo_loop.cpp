@@ -589,8 +589,11 @@ constexpr const char* kTag = "stackchan";
         // Cycle expression every 5 s — full demo only; during a conversation
         // the model drives the expression via the set_expression tool.
         if (allow_full_demo && now_ms >= next_expression_ms) {
-            g_state->face.expression.store(static_cast<int>(kCycle[expression_index]), std::memory_order_relaxed);
-            expression_index = (expression_index + 1) % (sizeof(kCycle) / sizeof(kCycle[0]));
+            // 障害物検知中でない場合のみ通常サイクルで上書き
+            if (!(g_state->driving.obstacle_flags.load(std::memory_order_relaxed) & 0x01)) {
+                g_state->face.expression.store(static_cast<int>(kCycle[expression_index]), std::memory_order_relaxed);
+                expression_index = (expression_index + 1) % (sizeof(kCycle) / sizeof(kCycle[0]));
+            }
             next_expression_ms = now_ms + kExpressionPeriodMs;
         }
 
