@@ -86,6 +86,7 @@ public:
         // 0 = no commanded gaze, animator runs alone.
         std::atomic<float> gaze_target_h{0.0f};
         std::atomic<float> gaze_target_v{0.0f};
+        std::atomic<std::uint16_t> bg_color{0x0000u}; // RGB565 canvas background (0=black, 0x001F=blue, 0xF800=red)
     };
     Face face;
 
@@ -162,6 +163,8 @@ public:
         std::atomic<std::uint16_t> distance_mm{9999};
         std::atomic<std::uint8_t> obstacle_flags{0};
         std::atomic<bool> joy_active{false};
+        std::atomic<std::uint16_t> scan_distance_cm{10};  // 接近検知・探索開始距離 (cm)
+        std::atomic<std::uint16_t> alert_distance_cm{5};  // 最接近アラート（赤色）距離 (cm)
     };
     Driving driving;
 

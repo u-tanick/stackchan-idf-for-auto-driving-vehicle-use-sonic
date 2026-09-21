@@ -16,6 +16,7 @@
 #include "avatar/avatar.hpp"
 #include "avatar/canvas.hpp"
 #include "avatar/canvas_m5gfx.hpp"
+#include "avatar/palette.hpp"
 #include "face_config.hpp"
 #include "screens.hpp"
 
@@ -144,6 +145,7 @@ void render_task_entry(void* arg)
     bool balloon_pending = false;
     bool ui_was_active = false;
     bool last_muted = false;
+    std::uint16_t last_bg_color = 0x0000u;
 
     for (;;) {
         const std::uint32_t now_ms = static_cast<std::uint32_t>(esp_timer_get_time() / 1000);
@@ -216,6 +218,14 @@ void render_task_entry(void* arg)
         if (expr != last_expression) {
             avatar.set_expression(static_cast<avatar::Expression>(expr));
             last_expression = expr;
+        }
+
+        const std::uint16_t current_bg = args.state->face.bg_color.load(std::memory_order_relaxed);
+        if (current_bg != last_bg_color) {
+            avatar::Palette pal = avatar::kDefaultPalette;
+            pal.background = current_bg;
+            avatar.set_palette(pal);
+            last_bg_color = current_bg;
         }
         avatar.set_mouth_open(args.state->face.mouth_open.load(std::memory_order_relaxed));
         avatar.set_gaze(args.state->face.gaze_target_h.load(std::memory_order_relaxed),

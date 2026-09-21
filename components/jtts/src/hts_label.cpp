@@ -51,6 +51,9 @@ void mora_phonemes(const Mora& m, Vowel prev_vowel, std::vector<std::string>& ou
             out.push_back((m.devoiced ? kUpper : kLower)[static_cast<int>(v)]);
             return;
         }
+        case MoraKind::Pause:
+            out.push_back("pau");
+            return;
         case MoraKind::CV:
             break;
     }

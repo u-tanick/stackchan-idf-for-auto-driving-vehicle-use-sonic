@@ -96,7 +96,13 @@ bool parse_kana(std::u32string_view kana, std::vector<Mora>& out) {
     out.clear();
     for (std::size_t i = 0; i < kana.size(); ++i) {
         char32_t ch = kana[i];
-        if (ch == U' ' || ch == U'　' || ch == U'\n' || ch == U'\r' || ch == U'\t') {
+        if (ch == U'、' || ch == U'，' || ch == U',' || ch == U'。' || ch == U'.' || ch == U' ' || ch == U'　') {
+            if (!out.empty() && out.back().kind != MoraKind::Pause) {
+                out.push_back(Mora{MoraKind::Pause});
+            }
+            continue;
+        }
+        if (ch == U'\n' || ch == U'\r' || ch == U'\t') {
             continue;
         }
         if (ch == U'っ' || ch == U'ッ') {

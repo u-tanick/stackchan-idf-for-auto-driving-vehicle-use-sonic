@@ -175,6 +175,9 @@ bool render_units(std::span<const Mora> moras, const jvox::Db& db,
                     cursor += ext;
                 }
                 break;
+            case MoraKind::Pause:
+                cursor += ms_to_samples(150.0f);
+                break;
         }
     }
     if (plan.empty()) return false;

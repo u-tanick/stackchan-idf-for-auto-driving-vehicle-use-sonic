@@ -421,6 +421,18 @@ void register_http_sinks(std::uint8_t board_kind)
     // registration before the HTTP server is up (values are cached in static
     // storage and applied once the handlers register).
     stackchan::wifi_config::set_settings_hooks(make_hooks(board_kind));
+    stackchan::wifi_config::set_obstacle_distance_sink([](std::uint16_t dist_cm) {
+        if (g_state != nullptr) {
+            ESP_LOGI(kTag, "Obstacle distance updated live to %u cm", dist_cm);
+            g_state->driving.scan_distance_cm.store(dist_cm, std::memory_order_relaxed);
+        }
+    });
+    stackchan::wifi_config::set_obstacle_alert_distance_sink([](std::uint16_t dist_cm) {
+        if (g_state != nullptr) {
+            ESP_LOGI(kTag, "Obstacle alert distance updated live to %u cm", dist_cm);
+            g_state->driving.alert_distance_cm.store(dist_cm, std::memory_order_relaxed);
+        }
+    });
 }
 
 void register_avatar_bytecode_sinks()

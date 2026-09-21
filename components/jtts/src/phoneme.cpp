@@ -200,6 +200,11 @@ void build_segments(std::span<const Mora> moras, std::vector<Segment>& out, cons
                 }
                 break;
             }
+            case MoraKind::Pause: {
+                FormantFrame s = silent_frame(f0);
+                out.push_back({s, s, 150.0f});
+                break;
+            }
         }
     }
 }
@@ -230,6 +235,7 @@ void apply_devoicing(std::vector<Mora>& moras) {
                     break;
                 case MoraKind::Chouon:
                 case MoraKind::MoraicN:
+                case MoraKind::Pause:
                     next_voiceless = false;
                     break;
             }

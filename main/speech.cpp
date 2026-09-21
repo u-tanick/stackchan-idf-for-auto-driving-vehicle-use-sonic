@@ -55,7 +55,7 @@ jtts::Options default_options(std::uint32_t sample_rate)
     opt.voice = jtts::Voice::Female;
     opt.f0_hz = 280.0f;       // child preset
     opt.formant_scale = 1.30f;
-    opt.mora_ms = 120.0f;
+    opt.mora_ms = 150.0f;     // 120.0f -> 150.0f: ゆっくりはっきり発話
     opt.sample_rate_hz = sample_rate;
     return opt;
 }

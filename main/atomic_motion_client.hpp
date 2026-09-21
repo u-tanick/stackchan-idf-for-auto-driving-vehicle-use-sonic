@@ -9,6 +9,8 @@
 
 namespace stackchan::app {
 
+class Speech;
+
 class AtomicMotionClient {
 public:
     static constexpr uint8_t kDefaultSlaveAddr = 0x42;
@@ -39,7 +41,7 @@ public:
 
     // Periodic sync helper: synchronizes mode if changed, reads status and updates SharedState.
     // If in autonomous mode, can perform obstacle avoidance driving logic.
-    static void tick(SharedState& state);
+    static void tick(SharedState& state, Speech& speech);
 };
 
 } // namespace stackchan::app

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSL-1.0
 
 #include "atomic_motion_client.hpp"
+#include "speech.hpp"
 
 #include <cstdio>
 #include <cmath>
@@ -18,6 +19,11 @@ namespace stackchan::app {
 namespace {
 constexpr const char* kTag = "atomic_client";
 constexpr uint32_t kI2cFreq = 100000;
+
+void say_step(Speech& speech, SharedState& state, std::string_view display, std::u32string_view reading, uint32_t duration_ms = 2500) {
+    state.set_balloon_text(display, duration_ms);
+    speech.say(reading);
+}
 
 bool s_initialized = false;
 
@@ -36,6 +42,7 @@ enum class AutoDriveState {
     Turning,        // IMUジャイロ積分による旋回中（「次の進路に向きを変えるよ」）
     VerifyCamera,   // 旋回完了後、カメラで新進路を視認（「進路に障害がないかカメラで調べるよ」）
     VerifySonic,    // カメラ確認後、超音波ONに戻して距離確認（「センサーでも調べるよ」）
+    ErrorHold,      // 画像認識エラー等による停止・待機（「画像認識失敗」）
 };
 
 struct ScanPoint {
@@ -54,6 +61,8 @@ static const ScanPoint kScanPoints[4] = {
 AutoDriveState s_drive_state = AutoDriveState::InitWait;
 uint32_t s_state_start_ms = 0;
 int s_scan_index = 0;
+int s_eval_retry_count = 0;
+int s_verify_retry_count = 0;
 VlmEvaluation s_scan_evals[4];
 
 // IMU旋回用
@@ -174,7 +183,7 @@ esp_err_t AtomicMotionClient::read_status(Status& out_status)
     return ESP_OK;
 }
 
-void AtomicMotionClient::tick(SharedState& state)
+void AtomicMotionClient::tick(SharedState& state, Speech& speech)
 {
     const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
 
@@ -230,25 +239,47 @@ void AtomicMotionClient::tick(SharedState& state)
         const bool obstacle = (status.obstacle_flags & 0x01) != 0;
         const uint16_t dist_cm = status.distance_mm / 10;
 
-        if (is_ultrasonic_enabled) {
+        const uint16_t scan_dist_cm = state.driving.scan_distance_cm.load(std::memory_order_relaxed);
+        const uint16_t scan_threshold_cm = (scan_dist_cm > 0 ? scan_dist_cm : 10);
+        const uint16_t scan_threshold_mm = scan_threshold_cm * 10;
+
+        const uint16_t alert_dist_cm = state.driving.alert_distance_cm.load(std::memory_order_relaxed);
+        const uint16_t alert_threshold_cm = (alert_dist_cm > 0 ? alert_dist_cm : 5);
+        const uint16_t alert_threshold_mm = alert_threshold_cm * 10;
+
+        if (is_ultrasonic_enabled && s_drive_state != AutoDriveState::ErrorHold) {
+            const uint16_t dist_mm = status.distance_mm;
+            if (dist_mm > 0 && dist_mm <= alert_threshold_mm) {
+                // 最接近アラート距離まで迫った場合：赤色、ネガティブ表情（Angry）
+                state.face.bg_color.store(0xF800u, std::memory_order_relaxed);
+                state.face.expression.store(static_cast<int>(avatar::Expression::Angry), std::memory_order_relaxed);
+            } else if (dist_mm > alert_threshold_mm && dist_mm <= scan_threshold_mm) {
+                // 接近検知距離まで迫った場合：青色、ネガティブ表情（Doubt）
+                state.face.bg_color.store(0x001Fu, std::memory_order_relaxed);
+                state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
+            } else if (dist_mm > scan_threshold_mm) {
+                // 通常状態：標準の黒色、ポジティブ表情（Happy）
+                state.face.bg_color.store(0x0000u, std::memory_order_relaxed);
+                if (s_drive_state == AutoDriveState::Forward || s_drive_state == AutoDriveState::InitWait) {
+                    state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
+                }
+            }
+
             if (obstacle) {
                 // 新規検知または検知継続中の定期更新（2秒ごと）
                 if (!s_last_obstacle || (now_ms - s_last_balloon_update_ms >= 2000)) {
                     s_last_balloon_update_ms = now_ms;
                     char msg[64];
-                    if ((status.obstacle_flags & 0x04) || (status.distance_mm > 0 && status.distance_mm < 100)) {
+                    if (dist_mm > 0 && dist_mm <= alert_threshold_mm) {
                         snprintf(msg, sizeof(msg), "ぶつかるー！(%u cm)", dist_cm);
-                        state.face.expression.store(static_cast<int>(avatar::Expression::Angry), std::memory_order_relaxed);
                     } else {
-                        snprintf(msg, sizeof(msg), "障害物接近中！(%u cm)", dist_cm);
-                        state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
+                        snprintf(msg, sizeof(msg), "かべ接近中！(%u cm)", dist_cm);
                     }
                     state.set_balloon_text(msg, 2000);
                 }
             } else if (s_last_obstacle) {
                 // 障害物がなくなった時
                 state.set_balloon_text("よし、クリア！", 1500);
-                state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
             }
         }
         s_last_obstacle = obstacle;
@@ -257,13 +288,16 @@ void AtomicMotionClient::tick(SharedState& state)
     // If Autonomous, run VLM & IMU based obstacle avoidance state machine
     if (current_mode == SharedState::Driving::Mode::Autonomous) {
         const uint16_t dist_mm = state.driving.distance_mm.load(std::memory_order_relaxed);
+        const uint16_t scan_dist_cm = state.driving.scan_distance_cm.load(std::memory_order_relaxed);
+        const uint16_t scan_threshold_cm = (scan_dist_cm > 0 ? scan_dist_cm : 10);
+        const uint16_t scan_threshold_mm = scan_threshold_cm * 10;
 
         switch (s_drive_state) {
         case AutoDriveState::InitWait:
             // 起動後 15 秒（サーボセルフテスト完了）待機してから前進開始
             if (now_ms >= 15000 && dist_mm > 0) {
-                state.set_balloon_text("前進スタート！", 1500);
                 state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
+                say_step(speech, state, "前進スタート！", U"ぜんしん、すたーと", 1500);
                 send_command(CmdForward);
                 s_drive_state = AutoDriveState::Forward;
                 s_state_start_ms = now_ms;
@@ -272,20 +306,21 @@ void AtomicMotionClient::tick(SharedState& state)
 
         case AutoDriveState::Forward:
             send_command(CmdForward);
-            // 10cm 以内に壁があれば停止
-            if (dist_mm > 0 && dist_mm <= 100) {
+            // 接近検知距離以内で壁を検知したら停止
+            if (dist_mm > 0 && dist_mm <= scan_threshold_mm) {
                 send_command(CmdStop);
-                char buf[64];
-                std::snprintf(buf, sizeof(buf), "おっと！壁だよ！（%u cm）", dist_mm / 10);
-                state.set_balloon_text(buf, 2000);
+                char buf[32];
+                std::snprintf(buf, sizeof(buf), "かべ検知！（%u cm）", dist_mm / 10);
                 state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
+                say_step(speech, state, buf, U"おっと、かべだよ", 2000);
 
-                if (dist_mm < 90) {
-                    // 10cm未満まで近接してしまったら後退へ
+                const uint16_t back_margin_mm = (scan_threshold_mm > 20) ? (scan_threshold_mm - 10) : scan_threshold_mm;
+                if (dist_mm < back_margin_mm) {
+                    // 目標距離未満まで近接してしまったら後退へ
                     s_drive_state = AutoDriveState::BackingUp;
                     s_state_start_ms = now_ms;
                 } else {
-                    // 10cm付近で停止、首振り探索へ
+                    // 目標距離付近で停止、首振り探索へ
                     s_drive_state = AutoDriveState::StartScan;
                     s_state_start_ms = now_ms;
                 }
@@ -293,11 +328,13 @@ void AtomicMotionClient::tick(SharedState& state)
             break;
 
         case AutoDriveState::BackingUp:
-            // 10cm に達するまで微速後退
+            // 目標距離に達するまで微速後退
             send_command(CmdBackward);
-            if (dist_mm >= 100 || (now_ms - s_state_start_ms >= 1500)) {
+            if (dist_mm >= scan_threshold_mm || (now_ms - s_state_start_ms >= 1500)) {
                 send_command(CmdStop);
-                state.set_balloon_text("10cmまで下がったよ", 1500);
+                char buf[32];
+                std::snprintf(buf, sizeof(buf), "%u cmまで下がったよ", scan_threshold_cm);
+                state.set_balloon_text(buf, 1500);
                 s_drive_state = AutoDriveState::StartScan;
                 s_state_start_ms = now_ms;
             }
@@ -327,8 +364,36 @@ void AtomicMotionClient::tick(SharedState& state)
         case AutoDriveState::ScanEvaluate: {
             // 現在のカメラフレームを VLM で評価
             const auto& pt = kScanPoints[s_scan_index];
-            ESP_LOGI(kTag, "Evaluating view for %s...", pt.name);
+            ESP_LOGI(kTag, "Evaluating view for %s (try %d/3)...", pt.name, s_eval_retry_count + 1);
             VlmEvaluation eval = VlmClient::evaluate_current_view(pt.name);
+
+            if (!eval.success) {
+                s_eval_retry_count++;
+                ESP_LOGW(kTag, "VLM eval error at %s (retry %d/3)", pt.name, s_eval_retry_count);
+                if (s_eval_retry_count < 3) {
+                    char retry_msg[32];
+                    std::snprintf(retry_msg, sizeof(retry_msg), "再試行中(%d/3)", s_eval_retry_count);
+                    state.set_balloon_text(retry_msg, 1500);
+                    // 1秒待って同じ角度で再評価
+                    s_drive_state = AutoDriveState::ScanWait;
+                    s_state_start_ms = now_ms;
+                    break;
+                } else {
+                    // 3回すべて失敗
+                    ESP_LOGE(kTag, "VLM eval failed 3 times at %s. Triggering help notification.", pt.name);
+                    s_eval_retry_count = 0;
+                    state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
+                    state.face.bg_color.store(0xF800u, std::memory_order_relaxed); // 接続失敗：赤色
+                    state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
+                    say_step(speech, state, "画像認識失敗", U"たすけてー、にんしき、しっぱい", 6000);
+                    send_command(CmdStop);
+                    s_drive_state = AutoDriveState::ErrorHold;
+                    s_state_start_ms = now_ms;
+                    break;
+                }
+            }
+
+            s_eval_retry_count = 0; // 成功したためリセット
             s_scan_evals[s_scan_index] = eval;
 
             char buf[64];
@@ -348,7 +413,7 @@ void AtomicMotionClient::tick(SharedState& state)
                 // 4方向完了、首を正面に戻して判定へ
                 ESP_LOGI(kTag, "Scan complete for all 4 directions. Returning head to center.");
                 state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
-                state.set_balloon_text("正面に戻して判定中…", 1500);
+                state.set_balloon_text("判定中…", 1500);
                 s_drive_state = AutoDriveState::Decision;
                 s_state_start_ms = now_ms;
             }
@@ -371,16 +436,16 @@ void AtomicMotionClient::tick(SharedState& state)
                 if (best_idx < 0 || best_score < 40) {
                     // 全方向障害物（袋小路）：180度Uターン
                     ESP_LOGW(kTag, "All directions blocked (best score=%d). Executing 180 deg U-turn.", best_score);
-                    state.set_balloon_text("行き止まりだ！Uターンするね！", 2500);
                     state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
+                    say_step(speech, state, "行き止まり！", U"ゆきどまり、ゆーたーん", 2500);
                     s_target_turn_deg = 180.0f;
                     s_turn_spin_right = true;
                 } else {
                     // 最善方向へ旋回
                     const auto& best_pt = kScanPoints[best_idx];
                     ESP_LOGI(kTag, "Best direction: %s (score=%d)", best_pt.name, best_score);
-                    char buf[64];
-                    std::snprintf(buf, sizeof(buf), "%sへ進路変更！（%d点）", best_pt.name, best_score);
+                    char buf[32];
+                    std::snprintf(buf, sizeof(buf), "%sへ進路変更！", best_pt.name);
                     state.set_balloon_text(buf, 2000);
                     state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
 
@@ -394,8 +459,8 @@ void AtomicMotionClient::tick(SharedState& state)
                 // 旋回開始（机上テスト時は1.2秒の旋回演出後にカメラ視認へ進行）
                 s_turn_integrated_deg = 0.0f;
                 s_turn_last_us = esp_timer_get_time();
-                state.set_balloon_text("次の進路に向きを変えるよ", 2000);
                 state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
+                say_step(speech, state, "方向転換するよ", U"つぎの、むきをかえるよ", 2000);
                 send_command(s_turn_spin_right ? CmdSpinRight : CmdSpinLeft);
                 s_drive_state = AutoDriveState::Turning;
                 s_state_start_ms = now_ms;
@@ -419,7 +484,7 @@ void AtomicMotionClient::tick(SharedState& state)
                 send_command(CmdStop);
                 ESP_LOGI(kTag, "Turn complete: integrated=%.1f deg (target=%.1f deg). Proceeding to camera visual check.",
                          s_turn_integrated_deg, s_target_turn_deg);
-                state.set_balloon_text("進路に障害がないかカメラで調べるよ", 2500);
+                say_step(speech, state, "カメラで確認中", U"かめらで、しらべるよ", 2500);
                 s_drive_state = AutoDriveState::VerifyCamera;
                 s_state_start_ms = now_ms;
             }
@@ -429,20 +494,41 @@ void AtomicMotionClient::tick(SharedState& state)
         case AutoDriveState::VerifyCamera:
             // 旋回直後の手ブレ静止待ち (800ms)
             if (now_ms - s_state_start_ms >= 800) {
-                ESP_LOGI(kTag, "Verifying new path with camera view (front_check)...");
+                ESP_LOGI(kTag, "Verifying new path with camera view (front_check, try %d/3)...", s_verify_retry_count + 1);
                 VlmEvaluation eval = VlmClient::evaluate_current_view("front_check");
-                if (eval.success && (!eval.passable || eval.score < 40)) {
+                if (!eval.success) {
+                    s_verify_retry_count++;
+                    ESP_LOGW(kTag, "Front check VLM failed (retry %d/3)", s_verify_retry_count);
+                    if (s_verify_retry_count < 3) {
+                        state.set_balloon_text("正面確認 再試行中…", 1500);
+                        s_state_start_ms = now_ms;
+                        break;
+                    } else {
+                        s_verify_retry_count = 0;
+                        state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
+                        state.face.bg_color.store(0xF800u, std::memory_order_relaxed); // 接続失敗：赤色
+                        state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
+                        say_step(speech, state, "画像認識失敗", U"たすけてー、にんしき、しっぱい", 6000);
+                        send_command(CmdStop);
+                        s_drive_state = AutoDriveState::ErrorHold;
+                        s_state_start_ms = now_ms;
+                        break;
+                    }
+                }
+                s_verify_retry_count = 0;
+
+                if (!eval.passable || eval.score < 40) {
                     ESP_LOGW(kTag, "Camera detected obstacle in new path (score=%d). Rescanning...", eval.score);
-                    state.set_balloon_text("カメラで見たら障害物があったよ！再探索！", 2500);
                     state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
+                    say_step(speech, state, "障害物あり！", U"しょうがいぶつ、あったよ", 2500);
                     s_drive_state = AutoDriveState::StartScan;
                     s_state_start_ms = now_ms;
                 } else {
                     ESP_LOGI(kTag, "Camera path clear (score=%d). Now verifying with ultrasonic sensor...", eval.score);
                     // カメラ確認OK → 首を正面に戻して超音波センサーをONにし距離確認
                     state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
-                    state.set_balloon_text("センサーでも調べるよ", 2000);
                     state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
+                    say_step(speech, state, "センサー確認中", U"せんさーでも、しらべるよ", 2000);
                     s_drive_state = AutoDriveState::VerifySonic;
                     s_state_start_ms = now_ms;
                 }
@@ -453,12 +539,11 @@ void AtomicMotionClient::tick(SharedState& state)
             // 超音波センサーの測定値反映待ち (600ms)
             if (now_ms - s_state_start_ms >= 600) {
                 const uint16_t current_dist = state.driving.distance_mm.load(std::memory_order_relaxed);
-                if (current_dist > 0 && current_dist <= 120) {
+                const uint16_t verify_limit_mm = scan_threshold_mm + 20;
+                if (current_dist > 0 && current_dist <= verify_limit_mm) {
                     ESP_LOGW(kTag, "Ultrasonic sensor detected obstacle (%u mm). Rescanning...", current_dist);
-                    char buf[64];
-                    snprintf(buf, sizeof(buf), "センサーで壁を検知！(%u cm) 再探索！", current_dist / 10);
-                    state.set_balloon_text(buf, 2500);
                     state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
+                    say_step(speech, state, "壁検知！再探索", U"かべをけんち、さいたんさく", 2500);
                     s_drive_state = AutoDriveState::StartScan;
                     s_state_start_ms = now_ms;
                 } else {
@@ -466,12 +551,28 @@ void AtomicMotionClient::tick(SharedState& state)
                     ESP_LOGI(kTag, "Both camera and ultrasonic clear! Resuming forward drive.");
                     state.servo.speed_override.store(0, std::memory_order_relaxed);
                     state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
-                    state.set_balloon_text("よし、クリア！進むよ！", 1500);
+                    state.face.bg_color.store(0x0000u, std::memory_order_relaxed); // 標準黒
                     state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
+                    say_step(speech, state, "よし！クリア", U"よし、くりあ、すすむよ", 1500);
                     send_command(CmdForward);
                     s_drive_state = AutoDriveState::Forward;
                     s_state_start_ms = now_ms;
                 }
+            }
+            break;
+
+        case AutoDriveState::ErrorHold:
+            send_command(CmdStop);
+            state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
+            state.face.bg_color.store(0xF800u, std::memory_order_relaxed); // エラー停止中は赤色を維持
+            // 画面タップがあれば再探索シーケンスへ復帰
+            if (M5.Touch.getCount() > 0) {
+                ESP_LOGI(kTag, "Screen tapped in ErrorHold. Resuming scan sequence...");
+                state.face.bg_color.store(0x0000u, std::memory_order_relaxed); // 標準黒
+                state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
+                say_step(speech, state, "再探索するよ", U"もういちど、さがすよ", 1500);
+                s_drive_state = AutoDriveState::StartScan;
+                s_state_start_ms = now_ms;
             }
             break;
         }

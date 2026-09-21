@@ -59,6 +59,7 @@ enum class MoraKind : std::uint8_t {
     MoraicN,
     Sokuon,
     Chouon,
+    Pause,
 };
 
 struct Mora {

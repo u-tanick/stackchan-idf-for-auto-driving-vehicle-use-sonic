@@ -318,7 +318,7 @@ constexpr const char* kTag = "stackchan";
         }
 
         // Synchronize driving mode and sensor telemetry with AtomS3 Lite over Port A I2C
-        app::AtomicMotionClient::tick(*g_state);
+        app::AtomicMotionClient::tick(*g_state, speech);
 
         // On-device overlay input. Button-driven screens (atom_status's
         // BtnA gesture vocab) poll every tick; the LCD-touch block below is
