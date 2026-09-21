@@ -19,7 +19,7 @@ struct ServoLimits {
     int yaw_max_deg = 65;
     std::uint16_t pitch_zero = 620;
     int pitch_min_deg = -15;
-    int pitch_max_deg = 50;
+    int pitch_max_deg = 70;
 };
 
 // Parse the compact JSON the BLE / Wi-Fi settings UI sends into a ServoLimits.

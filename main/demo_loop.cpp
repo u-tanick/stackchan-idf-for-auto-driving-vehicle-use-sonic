@@ -67,7 +67,7 @@ constexpr const char* kTag = "stackchan";
     const float kPitchMinDeg = static_cast<float>(limits.pitch_min_deg);
     const float kPitchMaxDeg = static_cast<float>(limits.pitch_max_deg);
     constexpr float kHomeYawDeg = 0.0f;
-    constexpr float kHomePitchDeg = 10.0f; // ユーザー要望：10度上向きを基準位置に設定
+    constexpr float kHomePitchDeg = 0.0f; // 検証期間中は初期位置 0° を基準に保持
     constexpr std::uint32_t kExpressionPeriodMs = 5000;
     constexpr std::uint32_t kSpeechMinMs = 6000;
     constexpr std::uint32_t kSpeechMaxMs = 12000;
@@ -194,14 +194,23 @@ constexpr const char* kTag = "stackchan";
 
         // 5. 下（初期位置: Pitch 0°）
         g_state->servo.target_pitch_deg.store(0.0f, std::memory_order_relaxed);
-        vTaskDelay(pdMS_TO_TICKS(900));
+        vTaskDelay(pdMS_TO_TICKS(1000));
 
-        // 6. 最終位置（10度上を向く: Pitch +10°）
-        g_state->servo.target_pitch_deg.store(kHomePitchDeg, std::memory_order_relaxed);
-        vTaskDelay(pdMS_TO_TICKS(700));
+        // 6. 向き調整検証: 10度ずつ3秒静止しながら60度まで動かす
+        ESP_LOGI(kTag, "Starting pitch angle test (10 to 60 deg, hold 3s each)...");
+        for (int p_deg = 10; p_deg <= 60; p_deg += 10) {
+            ESP_LOGI(kTag, ">>> Pitch calibration test: %d deg (holding 3s) <<<", p_deg);
+            g_state->servo.target_pitch_deg.store(static_cast<float>(p_deg), std::memory_order_relaxed);
+            vTaskDelay(pdMS_TO_TICKS(3000));
+        }
+
+        // 検証終了後、初期位置 (0°) に戻して待機
+        ESP_LOGI(kTag, "Pitch calibration test finished. Returning to 0 deg.");
+        g_state->servo.target_pitch_deg.store(0.0f, std::memory_order_relaxed);
+        vTaskDelay(pdMS_TO_TICKS(1000));
 
         g_state->servo.speed_override.store(0, std::memory_order_relaxed);
-        ESP_LOGI(kTag, "Servo self-test complete. Head centered at (0, +10).");
+        ESP_LOGI(kTag, "Servo self-test complete. Head centered at (0, 0).");
     }
 
     for (;;) {
