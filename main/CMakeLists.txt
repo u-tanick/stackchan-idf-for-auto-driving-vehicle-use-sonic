@@ -57,6 +57,7 @@ set(_main_srcs
     "led_task.cpp"
     "lt_timer.cpp"
     "mic_lip_sync_task.cpp"
+    "mode_select_screen.cpp"
     "qr_task.cpp"
     "render_task.cpp"
     "screens.cpp"

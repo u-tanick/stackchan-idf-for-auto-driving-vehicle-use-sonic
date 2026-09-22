@@ -43,6 +43,16 @@ public:
     // If in autonomous mode, can perform obstacle avoidance driving logic.
     static void tick(SharedState& state, Speech& speech);
 
+    enum class DriveType {
+        SonicOnly,    // 自律運転（距離センサーのみ、壁検知で左90度旋回）
+        SonicCamera,  // 自律運転（距離＋カメラ、VLM推論）
+        JoyCManual,   // JoyC操作（ESPNow）
+    };
+
+    static void set_drive_type(DriveType type, SharedState& state);
+    static DriveType get_drive_type();
+    static bool is_mode_selected();
+
     // Toggle start / force stop via center screen tap
     static void toggle_start_stop(SharedState& state, Speech& speech);
 };

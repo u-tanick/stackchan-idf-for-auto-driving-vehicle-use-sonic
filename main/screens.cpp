@@ -9,6 +9,7 @@
 #include "ap_screen.hpp"
 #include "atom_status.hpp"
 #include "device_ui.hpp"
+#include "mode_select_screen.hpp"
 
 namespace stackchan::app::screens {
 
@@ -45,8 +46,16 @@ public:
     void handle_flick(int dx, int dy) override { ui::handle_flick(dx, dy); }
 };
 
+class ModeSelectScreenAdapter final : public Screen {
+public:
+    bool active() const override { return app::mode_select::active(); }
+    bool draw(avatar::RichCanvas& canvas) override { return app::mode_select::draw(canvas); }
+    bool handle_tap(int x, int y) override { return app::mode_select::handle_tap(x, y); }
+};
+
 // Button-toggled status overlay (AtomS3R / AtomS3, no LCD touch). All input
 // arrives through the BtnA gesture vocabulary polled each tick.
+
 class AtomStatusScreen final : public Screen {
 public:
     bool active() const override { return atom_status::active(); }
@@ -59,10 +68,11 @@ public:
 // Storage for the adapters (no heap; exactly one settings-UI flavour is
 // constructed). Priority = index order in g_stack.
 alignas(ApScreen) unsigned char g_ap_storage[sizeof(ApScreen)];
+ModeSelectScreenAdapter g_mode_select;
 DeviceUiScreen g_device_ui;
 AtomStatusScreen g_atom_status;
 
-std::array<Screen*, 2> g_stack{};
+std::array<Screen*, 3> g_stack{};
 std::size_t g_count = 0;
 
 } // namespace
@@ -71,6 +81,10 @@ void init(M5GFX& display, SharedState& state, const stackchan::board::BoardProfi
 {
     g_count = 0;
     g_stack[g_count++] = new (g_ap_storage) ApScreen{display};
+
+    app::mode_select::init(state);
+    g_stack[g_count++] = &g_mode_select;
+
     if (profile.button_overlay_ui) {
         atom_status::init(state);
         g_stack[g_count++] = &g_atom_status;

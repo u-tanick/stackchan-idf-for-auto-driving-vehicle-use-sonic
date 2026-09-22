@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSL-1.0
 
 #include "atomic_motion_client.hpp"
+#include "mode_select_screen.hpp"
 #include "speech.hpp"
 
 #include <cstdio>
@@ -118,6 +119,9 @@ int s_eval_retry_count = 0;
 int s_verify_retry_count = 0;
 VlmEvaluation s_scan_evals[4];
 bool s_obstacle_speech_active = false;
+AtomicMotionClient::DriveType s_drive_type = AtomicMotionClient::DriveType::SonicOnly;
+bool s_mode_selected = false;
+bool s_drive_type_speech_pending = false;
 
 // IMU旋回用
 float s_target_turn_deg = 0.0f;
@@ -361,6 +365,18 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
         s_last_obstacle = obstacle;
     }
 
+    // モード選択時の案内発話保留があれば再生
+    if (s_drive_type_speech_pending && !speech.is_speaking()) {
+        s_drive_type_speech_pending = false;
+        if (s_drive_type == DriveType::JoyCManual) {
+            say_step(speech, state, "JoyC操作モード", U"じょいしー、そうさもーど", 2000);
+        } else if (s_drive_type == DriveType::SonicOnly) {
+            say_step(speech, state, "距離センサーモード", U"きょりせんさー、もーど", 2000);
+        } else if (s_drive_type == DriveType::SonicCamera) {
+            say_step(speech, state, "カメラ認識モード", U"かめらにんしき、もーど", 2000);
+        }
+    }
+
     // If Autonomous, run VLM & IMU based obstacle avoidance state machine
     if (current_mode == SharedState::Driving::Mode::Autonomous) {
         const uint16_t dist_mm = state.driving.distance_mm.load(std::memory_order_relaxed);
@@ -370,14 +386,14 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
 
         switch (s_drive_state) {
         case AutoDriveState::InitWait:
-            // 起動後 15 秒（サーボセルフテスト完了）待機してから停止待機（Standby）へ移行
+            // 起動後 15 秒（サーボセルフテスト完了）待機してからモード選択画面を表示
             if (now_ms >= 15000) {
                 send_command(CmdStop);
                 state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
                 state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
                 state.face.bg_color.store(0x0000u, std::memory_order_relaxed);
-                state.set_balloon_text("タップでスタート！", 5000);
-                ESP_LOGI(kTag, "Servo self-test complete. Ready in Standby (Tap center to start).");
+                ESP_LOGI(kTag, "Servo self-test complete. Showing mode select screen.");
+                mode_select::show();
                 s_drive_state = AutoDriveState::Standby;
                 s_state_start_ms = now_ms;
             }
@@ -449,9 +465,23 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             send_command(CmdStop);
             // 発話終了後、ユーザー希望のディレイ（1.0秒間静止待機）
             if (now_ms - s_state_start_ms >= 1000) {
-                ESP_LOGI(kTag, "Obstacle delay complete. Transitioning to StartScan (head moving).");
-                s_drive_state = AutoDriveState::StartScan;
-                s_state_start_ms = now_ms;
+                if (s_drive_type == DriveType::SonicOnly) {
+                    // 自律運転（距離センサー）: カメラは使わず自動で左に90度回転
+                    ESP_LOGI(kTag, "Obstacle delay complete (SonicOnly). Turning left 90 deg.");
+                    s_target_turn_deg = 90.0f;
+                    s_turn_spin_right = false; // 左回転
+                    s_turn_integrated_deg = 0.0f;
+                    s_turn_last_us = esp_timer_get_time();
+                    send_command(CmdSpinLeft);
+                    state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
+                    state.set_balloon_text("左へ方向転換！", 1500);
+                    s_drive_state = AutoDriveState::Turning;
+                    s_state_start_ms = now_ms;
+                } else {
+                    ESP_LOGI(kTag, "Obstacle delay complete. Transitioning to StartScan (head moving).");
+                    s_drive_state = AutoDriveState::StartScan;
+                    s_state_start_ms = now_ms;
+                }
             }
             break;
         }
@@ -638,12 +668,25 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             // 目標角度到達（手動旋回含む）または机上旋回シミュレーション時間（1200ms）経過
             if (s_turn_integrated_deg >= s_target_turn_deg || (now_ms - s_state_start_ms >= 1200)) {
                 send_command(CmdStop);
-                ESP_LOGI(kTag, "Turn complete: integrated=%.1f deg (target=%.1f deg). Proceeding to camera visual check.",
+                ESP_LOGI(kTag, "Turn complete: integrated=%.1f deg (target=%.1f deg).",
                          s_turn_integrated_deg, s_target_turn_deg);
-                state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
-                say_step(speech, state, "カメラで確認中", U"じゃまなものわ、ないかな", 2500);
-                s_drive_state = AutoDriveState::VerifyCamera;
-                s_state_start_ms = now_ms;
+
+                if (s_drive_type == DriveType::SonicOnly) {
+                    // 自律運転（距離センサー）: カメラ視認はスキップして直進を再開！
+                    ESP_LOGI(kTag, "SonicOnly: Resuming forward drive directly.");
+                    state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
+                    state.face.bg_color.store(0x0000u, std::memory_order_relaxed);
+                    say_step(speech, state, "よし！クリア", U"もんだいなし、れっつごー", 1500);
+                    send_command(CmdForward);
+                    s_drive_state = AutoDriveState::Forward;
+                    s_state_start_ms = now_ms;
+                    s_next_drive_speech_ms = now_ms + 4000 + (esp_random() % 4001);
+                } else {
+                    state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
+                    say_step(speech, state, "カメラで確認中", U"じゃまなものわ、ないかな", 2500);
+                    s_drive_state = AutoDriveState::VerifyCamera;
+                    s_state_start_ms = now_ms;
+                }
             }
             break;
         }
@@ -772,6 +815,38 @@ void AtomicMotionClient::toggle_start_stop(SharedState& state, Speech& speech)
         s_drive_state = AutoDriveState::Standby;
         s_state_start_ms = now_ms;
     }
+}
+
+void AtomicMotionClient::set_drive_type(DriveType type, SharedState& state)
+{
+    s_drive_type = type;
+    s_mode_selected = true;
+    s_drive_type_speech_pending = true;
+
+    if (type == DriveType::JoyCManual) {
+        state.driving.mode.store(SharedState::Driving::Mode::Manual, std::memory_order_relaxed);
+        set_mode(SharedState::Driving::Mode::Manual);
+        state.set_balloon_text("JoyC操作モード", 4000);
+        state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
+        send_command(CmdStop);
+    } else {
+        state.driving.mode.store(SharedState::Driving::Mode::Autonomous, std::memory_order_relaxed);
+        set_mode(SharedState::Driving::Mode::Autonomous);
+        state.set_balloon_text("タップでスタート！", 5000);
+        state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
+        s_drive_state = AutoDriveState::Standby;
+        send_command(CmdStop);
+    }
+}
+
+AtomicMotionClient::DriveType AtomicMotionClient::get_drive_type()
+{
+    return s_drive_type;
+}
+
+bool AtomicMotionClient::is_mode_selected()
+{
+    return s_mode_selected;
 }
 
 } // namespace stackchan::app

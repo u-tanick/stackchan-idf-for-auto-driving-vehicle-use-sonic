@@ -328,34 +328,37 @@ constexpr const char* kTag = "stackchan";
         {
             const auto td = M5.Touch.getDetail();
 
-            // 画面中央長押し（2秒）による本体再起動（キャタピラ装着時のリセットボタン代用）
+            // 画面中央長押し（2秒）による本体再起動（どの画面でも有効）
             static uint32_t s_center_touch_start_ms = 0;
             static bool s_reboot_triggered = false;
+            static bool s_touch_consumed_by_screen = false;
             if (!s_reboot_triggered && td.isPressed()) {
                 // 画面中央エリア (320x240 の中央領域: X 80..240, Y 60..180)
                 const bool in_center = (td.x >= 80 && td.x <= 240 && td.y >= 60 && td.y <= 180);
-                if (in_center && !app::screens::overlay_active()) {
-                    if (s_center_touch_start_ms == 0) {
+                if (in_center) {
+                    if (s_center_touch_start_ms == 0 && !s_touch_consumed_by_screen) {
                         s_center_touch_start_ms = now_ms;
                     }
-                    const uint32_t hold_ms = now_ms - s_center_touch_start_ms;
-                    if (hold_ms >= 500 && hold_ms < 2000) {
-                        char msg[64];
-                        const int remain_sec = (2000 - hold_ms + 999) / 1000;
-                        std::snprintf(msg, sizeof(msg), "長押しで再起動… (%d)", remain_sec);
-                        g_state->set_balloon_text(msg, 350);
-                    } else if (hold_ms >= 2000) {
-                        s_reboot_triggered = true;
-                        g_state->set_balloon_text("再起動します…", 1500);
-                        app::AtomicMotionClient::send_command(app::AtomicMotionClient::CmdStop);
-                        vTaskDelay(pdMS_TO_TICKS(150));
-                        esp_restart();
+                    if (s_center_touch_start_ms > 0) {
+                        const uint32_t hold_ms = now_ms - s_center_touch_start_ms;
+                        if (hold_ms >= 500 && hold_ms < 2000) {
+                            char msg[64];
+                            const int remain_sec = (2000 - hold_ms + 999) / 1000;
+                            std::snprintf(msg, sizeof(msg), "長押しで再起動… (%d)", remain_sec);
+                            g_state->set_balloon_text(msg, 350);
+                        } else if (hold_ms >= 2000) {
+                            s_reboot_triggered = true;
+                            g_state->set_balloon_text("再起動します…", 1500);
+                            app::AtomicMotionClient::send_command(app::AtomicMotionClient::CmdStop);
+                            vTaskDelay(pdMS_TO_TICKS(150));
+                            esp_restart();
+                        }
                     }
                 } else {
                     s_center_touch_start_ms = 0;
                 }
             } else if (!td.isPressed()) {
-                if (s_center_touch_start_ms > 0 && !s_reboot_triggered) {
+                if (s_center_touch_start_ms > 0 && !s_reboot_triggered && !s_touch_consumed_by_screen) {
                     const uint32_t hold_ms = now_ms - s_center_touch_start_ms;
                     // 短タップ（500ms未満）の場合は前進スタート / 強制停止をトグル
                     if (hold_ms < 500 && !app::screens::overlay_active()) {
@@ -363,6 +366,7 @@ constexpr const char* kTag = "stackchan";
                     }
                 }
                 s_center_touch_start_ms = 0;
+                s_touch_consumed_by_screen = false;
             }
 
             // Horizontal flick → next/prev tab. M5Unified emits this on the
@@ -377,6 +381,10 @@ constexpr const char* kTag = "stackchan";
                 // swallows everything while up; device_ui owns its hot
                 // corners even when closed).
                 const bool consumed = app::screens::handle_tap(td.x, td.y);
+                if (consumed) {
+                    s_touch_consumed_by_screen = true;
+                    s_center_touch_start_ms = 0;
+                }
                 // A tap no screen consumed, while the assistant is
                 // mid-reply, is a barge-in request: voice input is paused
                 // for the whole turn, so the screen tap is how the user
