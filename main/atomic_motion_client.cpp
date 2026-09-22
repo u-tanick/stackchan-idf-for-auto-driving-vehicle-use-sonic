@@ -30,11 +30,16 @@ static uint32_t s_next_drive_speech_ms = 0;      // 次回通常走行発話予�
 static std::u32string s_pending_speech_reading;
 static bool s_has_pending_speech = false;
 
-static const char32_t* kForwardDrivingPhrases[] = {
-    U"ごー、ごーー",
-    U"いけ、いけーーー",
-    U"どんどん、すすむよーー",
-    U"ここわ、どこだーーー",
+struct DrivingPhrase {
+    const char* display;
+    const char32_t* reading;
+};
+
+static const DrivingPhrase kForwardDrivingPhrases[] = {
+    { "ごー、ごーー", U"ごー、ごーー" },
+    { "いけ、いけーーー", U"いけ、いけーーー" },
+    { "どんどん、すすむよーー", U"どんどん、すすむよーー" },
+    { "ここは、どこだーーー", U"ここわ、どこだーーー" },
 };
 
 void say_step(Speech& speech, SharedState& state, std::string_view display, std::u32string_view reading, uint32_t duration_ms = 2500) {
@@ -380,12 +385,14 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             send_command(CmdForward);
             state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
 
-            // 通常前進走行中のランダム定期発話（4〜8秒間隔、4種からランダム選択、吹き出しなし）
+            // 通常前進走行中のランダム定期発話（4〜8秒間隔、4種からランダム選択、吹き出し表示）
             if (now_ms >= s_next_drive_speech_ms && !speech.is_speaking() && !s_speech_pending) {
                 s_is_regular_driving_speech = true;
                 s_speech_pending = true;
                 const size_t phrase_idx = esp_random() % (sizeof(kForwardDrivingPhrases) / sizeof(kForwardDrivingPhrases[0]));
-                speech.say(kForwardDrivingPhrases[phrase_idx]);
+                const auto& phrase = kForwardDrivingPhrases[phrase_idx];
+                state.set_balloon_text(phrase.display, 2000);
+                speech.say(phrase.reading);
                 s_next_drive_speech_ms = now_ms + 4000 + (esp_random() % 4001);
             }
 
