@@ -93,6 +93,7 @@ enum class AutoDriveState {
     ScanEvaluate,     // 撮影 & VLM評価
     Decision,         // 全4方向の評価結果集計 & 最善方向決定
     Turning,          // IMUジャイロ積分による旋回中
+    VerifySonicOnly,  // 距離センサーモード: 旋回後の前方距離確認（クリアなら前進、壁なら再度旋回）
     VerifyCamera,     // 旋回完了後、カメラで新進路を視認
     VerifySonic,      // カメラ確認後、超音波ONに戻して距離確認
     ErrorHold,        // 画像認識エラー等による停止・待機
@@ -124,6 +125,7 @@ bool s_mode_selected = false;
 bool s_drive_type_speech_pending = false;
 uint32_t s_mode_selected_ms = 0;
 bool s_standby_prompt_shown = false;
+bool s_sonic_retried = false;
 
 // IMU旋回用
 float s_target_turn_deg = 0.0f;
@@ -355,8 +357,10 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
         }
 
         // 障害物検知時の画面演出（フキダシ・セリフ・表情フィードバック）
-        // ※超音波センサーをONに戻すタイミング: VerifySonic / Forward のみ
+        // ※超音波センサーをONに戻すタイミング: VerifySonic / Forward / BackingUp / VerifySonicOnly
         const bool ultrasonic_active = (s_drive_state == AutoDriveState::Forward ||
+                                        s_drive_state == AutoDriveState::BackingUp ||
+                                        s_drive_state == AutoDriveState::VerifySonicOnly ||
                                         s_drive_state == AutoDriveState::VerifySonic);
         const bool is_ultrasonic_enabled = (current_mode != SharedState::Driving::Mode::Autonomous) || ultrasonic_active;
 
@@ -520,9 +524,47 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             send_command(CmdStop);
             // 発話終了後、ユーザー希望のディレイ（1.0秒間静止待機）
             if (now_ms - s_state_start_ms >= 1000) {
+                s_sonic_retried = false;
+                // 壁との距離が10cm (100mm) 以下の場合は後退ステートへ
+                if (dist_mm > 0 && dist_mm < 100) {
+                    ESP_LOGI(kTag, "Distance (%u mm) < 100 mm. Backing up first.", dist_mm);
+                    state.set_balloon_text("少し下がるね", 1500);
+                    state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
+                    send_command(CmdBackward);
+                    s_drive_state = AutoDriveState::BackingUp;
+                    s_state_start_ms = now_ms;
+                } else {
+                    // すでに10cm以上離れていれば直接旋回（または探索）へ
+                    if (s_drive_type == DriveType::SonicOnly) {
+                        ESP_LOGI(kTag, "Distance ok (%u mm). Turning left 90 deg.", dist_mm);
+                        s_target_turn_deg = 90.0f;
+                        s_turn_spin_right = false; // 左回転
+                        s_turn_integrated_deg = 0.0f;
+                        s_turn_last_us = esp_timer_get_time();
+                        send_command(CmdSpinLeft);
+                        state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
+                        state.set_balloon_text("左へ方向転換！", 1500);
+                        s_drive_state = AutoDriveState::Turning;
+                        s_state_start_ms = now_ms;
+                    } else {
+                        ESP_LOGI(kTag, "Obstacle delay complete. Transitioning to StartScan (head moving).");
+                        s_drive_state = AutoDriveState::StartScan;
+                        s_state_start_ms = now_ms;
+                    }
+                }
+            }
+            break;
+        }
+
+        case AutoDriveState::BackingUp:
+            // 10cm (100mm) 以上離れるまで微速後退
+            send_command(CmdBackward);
+            state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
+            if (dist_mm >= 100 || (now_ms - s_state_start_ms >= 2500)) {
+                send_command(CmdStop);
+                state.set_balloon_text("よし、ここまで下がったよ", 1500);
                 if (s_drive_type == DriveType::SonicOnly) {
-                    // 自律運転（距離センサー）: カメラは使わず自動で左に90度回転
-                    ESP_LOGI(kTag, "Obstacle delay complete (SonicOnly). Turning left 90 deg.");
+                    ESP_LOGI(kTag, "Backing up complete (%u mm). Turning left 90 deg.", dist_mm);
                     s_target_turn_deg = 90.0f;
                     s_turn_spin_right = false; // 左回転
                     s_turn_integrated_deg = 0.0f;
@@ -533,25 +575,9 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
                     s_drive_state = AutoDriveState::Turning;
                     s_state_start_ms = now_ms;
                 } else {
-                    ESP_LOGI(kTag, "Obstacle delay complete. Transitioning to StartScan (head moving).");
                     s_drive_state = AutoDriveState::StartScan;
                     s_state_start_ms = now_ms;
                 }
-            }
-            break;
-        }
-
-        case AutoDriveState::BackingUp:
-            // 目標距離に達するまで微速後退（手動テスト等では通常スキップされ直接StartScanへ）
-            send_command(CmdBackward);
-            state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
-            if (dist_mm >= scan_threshold_mm || (now_ms - s_state_start_ms >= 1500)) {
-                send_command(CmdStop);
-                char buf[32];
-                std::snprintf(buf, sizeof(buf), "%u cmまで下がったよ", scan_threshold_cm);
-                state.set_balloon_text(buf, 1500);
-                s_drive_state = AutoDriveState::StartScan;
-                s_state_start_ms = now_ms;
             }
             break;
 
@@ -720,15 +746,39 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
                 s_turn_integrated_deg += std::abs(gz) * dt;
             }
 
-            // 目標角度到達（手動旋回含む）または机上旋回シミュレーション時間（1200ms）経過
-            if (s_turn_integrated_deg >= s_target_turn_deg || (now_ms - s_state_start_ms >= 1200)) {
+            // 目標角度到達（手動旋回含む）または安全上限タイムアウト（3500ms）経過
+            if (s_turn_integrated_deg >= s_target_turn_deg || (now_ms - s_state_start_ms >= 3500)) {
                 send_command(CmdStop);
                 ESP_LOGI(kTag, "Turn complete: integrated=%.1f deg (target=%.1f deg).",
                          s_turn_integrated_deg, s_target_turn_deg);
 
                 if (s_drive_type == DriveType::SonicOnly) {
-                    // 自律運転（距離センサー）: カメラ視認はスキップして直進を再開！
-                    ESP_LOGI(kTag, "SonicOnly: Resuming forward drive directly.");
+                    // 自律運転（距離センサー）: 旋回後の前方距離確認ステートへ
+                    ESP_LOGI(kTag, "SonicOnly: Entering VerifySonicOnly state.");
+                    s_drive_state = AutoDriveState::VerifySonicOnly;
+                    s_state_start_ms = now_ms;
+                } else {
+                    state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
+                    say_step(speech, state, "カメラで確認中", U"じゃまなものわ、ないかな", 2500);
+                    s_drive_state = AutoDriveState::VerifyCamera;
+                    s_state_start_ms = now_ms;
+                }
+            }
+            break;
+        }
+
+        case AutoDriveState::VerifySonicOnly: {
+            send_command(CmdStop);
+            // 旋回直後の静止待ち（300ms）
+            if (now_ms - s_state_start_ms >= 300) {
+                // 前方の障害物有無を確認 (検知しきい値内か)
+                const bool has_obstacle = (dist_mm > 0 && dist_mm <= scan_threshold_mm);
+                ESP_LOGI(kTag, "VerifySonicOnly: dist=%u mm, threshold=%u mm, obstacle=%d, retried=%d",
+                         dist_mm, scan_threshold_mm, has_obstacle, s_sonic_retried);
+
+                if (!has_obstacle) {
+                    // 前方に障害物なし（クリア）：前進スタート！
+                    ESP_LOGI(kTag, "SonicOnly: Path clear! Resuming forward drive.");
                     state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
                     state.face.bg_color.store(0x0000u, std::memory_order_relaxed);
                     say_step(speech, state, "よし！クリア", U"もんだいなし、れっつごー", 1500);
@@ -737,10 +787,31 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
                     s_state_start_ms = now_ms;
                     s_next_drive_speech_ms = now_ms + 4000 + (esp_random() % 4001);
                 } else {
-                    state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
-                    say_step(speech, state, "カメラで確認中", U"じゃまなものわ、ないかな", 2500);
-                    s_drive_state = AutoDriveState::VerifyCamera;
-                    s_state_start_ms = now_ms;
+                    // 前方にまだ障害物がある場合
+                    if (!s_sonic_retried) {
+                        // 1回目の旋回後なら、再度左90度旋回（計180度Uターンで元来た道へ戻る）
+                        ESP_LOGW(kTag, "SonicOnly: Front still blocked. Executing 2nd 90 deg turn (U-turn).");
+                        s_sonic_retried = true;
+                        state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
+                        say_step(speech, state, "まだ行き止まり！", U"まだ、ゆきどまりだ、もういっかい、まがるよ", 2000);
+                        s_target_turn_deg = 90.0f;
+                        s_turn_spin_right = false; // 再度左90度回転
+                        s_turn_integrated_deg = 0.0f;
+                        s_turn_last_us = esp_timer_get_time();
+                        send_command(CmdSpinLeft);
+                        s_drive_state = AutoDriveState::Turning;
+                        s_state_start_ms = now_ms;
+                    } else {
+                        // 2回旋回しても障害物がある場合（袋小路）：さらに左に回って抜け道を探す
+                        ESP_LOGW(kTag, "SonicOnly: Still blocked after U-turn. Turning left again.");
+                        s_target_turn_deg = 90.0f;
+                        s_turn_spin_right = false;
+                        s_turn_integrated_deg = 0.0f;
+                        s_turn_last_us = esp_timer_get_time();
+                        send_command(CmdSpinLeft);
+                        s_drive_state = AutoDriveState::Turning;
+                        s_state_start_ms = now_ms;
+                    }
                 }
             }
             break;
