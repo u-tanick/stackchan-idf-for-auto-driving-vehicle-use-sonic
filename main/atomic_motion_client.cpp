@@ -81,6 +81,7 @@ uint32_t s_last_tick_ms = 0;
 
 enum class AutoDriveState {
     InitWait,         // 起動後の待機（サーボ初期診断完了待ち）
+    Standby,          // 停止待機中（画面中央タップでスタート）
     Forward,          // 前進走行中
     ObstacleDetected, // 壁検知時の一時停止・「いきどまりかな」発話待機
     ObstacleDelay,    // 「いきどまりかな」発話完了後のディレイ待機（1秒）
@@ -303,9 +304,8 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
         }
 
         // 障害物検知時の画面演出（フキダシ・セリフ・表情フィードバック）
-        // ※超音波センサーをONに戻すタイミング: VerifySonic / Forward / InitWait のみ
+        // ※超音波センサーをONに戻すタイミング: VerifySonic / Forward のみ
         const bool ultrasonic_active = (s_drive_state == AutoDriveState::Forward ||
-                                        s_drive_state == AutoDriveState::InitWait ||
                                         s_drive_state == AutoDriveState::VerifySonic);
         const bool is_ultrasonic_enabled = (current_mode != SharedState::Driving::Mode::Autonomous) || ultrasonic_active;
 
@@ -370,15 +370,22 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
 
         switch (s_drive_state) {
         case AutoDriveState::InitWait:
-            // 起動後 15 秒（サーボセルフテスト完了）待機してから前進開始
-            if (now_ms >= 15000 && dist_mm > 0) {
+            // 起動後 15 秒（サーボセルフテスト完了）待機してから停止待機（Standby）へ移行
+            if (now_ms >= 15000) {
+                send_command(CmdStop);
+                state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
                 state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
-                say_step(speech, state, "前進スタート！", U"ぜんしん、すたーと", 1500);
-                send_command(CmdForward);
-                s_drive_state = AutoDriveState::Forward;
+                state.face.bg_color.store(0x0000u, std::memory_order_relaxed);
+                state.set_balloon_text("タップでスタート！", 5000);
+                ESP_LOGI(kTag, "Servo self-test complete. Ready in Standby (Tap center to start).");
+                s_drive_state = AutoDriveState::Standby;
                 s_state_start_ms = now_ms;
-                s_next_drive_speech_ms = now_ms + 4000 + (esp_random() % 4001);
             }
+            break;
+
+        case AutoDriveState::Standby:
+            // 停止待機中: モーター停止維持。画面中央タップでForwardへ移行する
+            send_command(CmdStop);
             break;
 
         case AutoDriveState::Forward:
@@ -728,6 +735,42 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             }
             break;
         }
+    }
+}
+
+void AtomicMotionClient::toggle_start_stop(SharedState& state, Speech& speech)
+{
+    const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+    const auto current_mode = state.driving.mode.load(std::memory_order_relaxed);
+    if (current_mode != SharedState::Driving::Mode::Autonomous) {
+        return;
+    }
+
+    if (s_drive_state == AutoDriveState::Standby || s_drive_state == AutoDriveState::InitWait) {
+        // 停止待機中から「前進スタート！」
+        ESP_LOGI(kTag, "Center tap: Starting autonomous driving!");
+        state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
+        state.face.bg_color.store(0x0000u, std::memory_order_relaxed);
+        say_step(speech, state, "前進スタート！", U"ぜんしん、すたーと", 1500);
+        send_command(CmdForward);
+        s_drive_state = AutoDriveState::Forward;
+        s_state_start_ms = now_ms;
+        s_next_drive_speech_ms = now_ms + 4000 + (esp_random() % 4001);
+    } else {
+        // 走行中・探索中から「強制停止！」
+        ESP_LOGI(kTag, "Center tap: Force stopping autonomous driving!");
+        send_command(CmdStop);
+        speech.stop();
+        s_is_regular_driving_speech = false;
+        s_has_pending_speech = false;
+        s_pending_speech_reading.clear();
+
+        state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
+        state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
+        state.face.bg_color.store(0x0000u, std::memory_order_relaxed);
+        state.set_balloon_text("一時停止中 (タップで再開)", 3000);
+        s_drive_state = AutoDriveState::Standby;
+        s_state_start_ms = now_ms;
     }
 }
 

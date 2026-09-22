@@ -42,6 +42,9 @@ public:
     // Periodic sync helper: synchronizes mode if changed, reads status and updates SharedState.
     // If in autonomous mode, can perform obstacle avoidance driving logic.
     static void tick(SharedState& state, Speech& speech);
+
+    // Toggle start / force stop via center screen tap
+    static void toggle_start_stop(SharedState& state, Speech& speech);
 };
 
 } // namespace stackchan::app

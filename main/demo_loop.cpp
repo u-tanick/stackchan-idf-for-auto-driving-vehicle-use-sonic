@@ -355,6 +355,13 @@ constexpr const char* kTag = "stackchan";
                     s_center_touch_start_ms = 0;
                 }
             } else if (!td.isPressed()) {
+                if (s_center_touch_start_ms > 0 && !s_reboot_triggered) {
+                    const uint32_t hold_ms = now_ms - s_center_touch_start_ms;
+                    // 短タップ（500ms未満）の場合は前進スタート / 強制停止をトグル
+                    if (hold_ms < 500 && !app::screens::overlay_active()) {
+                        app::AtomicMotionClient::toggle_start_stop(*g_state, speech);
+                    }
+                }
                 s_center_touch_start_ms = 0;
             }
 
