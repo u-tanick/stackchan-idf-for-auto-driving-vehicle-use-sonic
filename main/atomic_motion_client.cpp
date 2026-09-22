@@ -122,6 +122,8 @@ bool s_obstacle_speech_active = false;
 AtomicMotionClient::DriveType s_drive_type = AtomicMotionClient::DriveType::SonicOnly;
 bool s_mode_selected = false;
 bool s_drive_type_speech_pending = false;
+uint32_t s_mode_selected_ms = 0;
+bool s_standby_prompt_shown = false;
 
 // IMU旋回用
 float s_target_turn_deg = 0.0f;
@@ -336,7 +338,8 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
         }
 
         // 手動操縦モード（JoyC）のときの画面案内表示
-        if (current_mode == SharedState::Driving::Mode::Manual) {
+        // モード選択直後（3.5秒間）は「JoyC操作モード」の吹き出しを維持するため上書きしない
+        if (current_mode == SharedState::Driving::Mode::Manual && (now_ms - s_mode_selected_ms >= 3500)) {
             static int s_last_joy_active_state = -1;
             const int joy_now = status.joy_active ? 1 : 0;
             if (joy_now != s_last_joy_active_state) {
@@ -413,11 +416,19 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
     if (s_drive_type_speech_pending && !speech.is_speaking()) {
         s_drive_type_speech_pending = false;
         if (s_drive_type == DriveType::JoyCManual) {
-            say_step(speech, state, "JoyC操作モード", U"じょいしー、そうさもーど", 2000);
+            say_step(speech, state, "JoyC操作モード", U"じょいしー、そうさもーど", 3500);
         } else if (s_drive_type == DriveType::SonicOnly) {
-            say_step(speech, state, "距離センサーモード", U"きょりせんさー、もーど", 2000);
+            say_step(speech, state, "距離センサーモード", U"きょりせんさー、もーど", 3500);
         } else if (s_drive_type == DriveType::SonicCamera) {
-            say_step(speech, state, "カメラ認識モード", U"かめらにんしき、もーど", 2000);
+            say_step(speech, state, "距離＋カメラモード", U"きょりと、かめらもーど", 3500);
+        }
+    }
+
+    // 自律運転待機時、モード案内（約3.5秒）完了後に「タップでスタート！」を表示
+    if (current_mode == SharedState::Driving::Mode::Autonomous && s_drive_state == AutoDriveState::Standby) {
+        if (!s_standby_prompt_shown && (now_ms - s_mode_selected_ms >= 3500) && !speech.is_speaking()) {
+            s_standby_prompt_shown = true;
+            state.set_balloon_text("タップでスタート！", 5000);
         }
     }
 
@@ -866,17 +877,26 @@ void AtomicMotionClient::set_drive_type(DriveType type, SharedState& state)
     s_drive_type = type;
     s_mode_selected = true;
     s_drive_type_speech_pending = true;
+    s_mode_selected_ms = esp_timer_get_time() / 1000;
+    s_standby_prompt_shown = false;
 
     if (type == DriveType::JoyCManual) {
         state.driving.mode.store(SharedState::Driving::Mode::Manual, std::memory_order_relaxed);
         set_mode(SharedState::Driving::Mode::Manual);
-        state.set_balloon_text("JoyC操作モード", 4000);
+        state.set_balloon_text("JoyC操作モード", 3500);
         state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
         send_command(CmdStop);
-    } else {
+    } else if (type == DriveType::SonicOnly) {
         state.driving.mode.store(SharedState::Driving::Mode::Autonomous, std::memory_order_relaxed);
         set_mode(SharedState::Driving::Mode::Autonomous);
-        state.set_balloon_text("タップでスタート！", 5000);
+        state.set_balloon_text("距離センサーモード", 3500);
+        state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
+        s_drive_state = AutoDriveState::Standby;
+        send_command(CmdStop);
+    } else if (type == DriveType::SonicCamera) {
+        state.driving.mode.store(SharedState::Driving::Mode::Autonomous, std::memory_order_relaxed);
+        set_mode(SharedState::Driving::Mode::Autonomous);
+        state.set_balloon_text("距離＋カメラモード", 3500);
         state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
         s_drive_state = AutoDriveState::Standby;
         send_command(CmdStop);
