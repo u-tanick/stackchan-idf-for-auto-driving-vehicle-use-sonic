@@ -476,11 +476,12 @@ void draw_settings2()
     draw_toggle_row(1, "起動アルペジオ", g_stage_boot_arp.load(std::memory_order_relaxed),
                     kSettingsRowH);
     draw_button(2, "適用（保存して再起動）", g_cv->color565(60, 120, 200), kSettingsRowH);
+    draw_button(3, "本体を再起動", g_cv->color565(200, 60, 60), kSettingsRowH);
     g_cv->setFont(kFontBody);
     g_cv->setTextDatum(lgfx::textdatum_t::top_left);
     g_cv->setTextColor(g_cv->color565(150, 150, 150));
-    g_cv->drawString("設定1+2 の変更を「適用」で保存・再起動",
-                     12, kContentY + 3 * kSettingsRowH + 4);
+    g_cv->drawString("設定変更は「適用」、リセットは「再起動」",
+                     12, kContentY + 4 * kSettingsRowH + 4);
 }
 
 constexpr int kCtrlRowH = 36;
@@ -1005,6 +1006,9 @@ bool handle_tap(int x, int y)
             g_dirty.store(true, std::memory_order_relaxed);
         } else if (hit_row(2)) {
             apply_and_reboot(); // does not return
+        } else if (hit_row(3)) {
+            // 保存せずに今すぐ再起動
+            esp_restart();
         }
     } else if (page == kControl) {
         auto hit_ctrl = [&](int i) {

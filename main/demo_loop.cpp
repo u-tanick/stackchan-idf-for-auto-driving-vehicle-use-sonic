@@ -327,6 +327,37 @@ constexpr const char* kTag = "stackchan";
         app::screens::poll_inputs();
         {
             const auto td = M5.Touch.getDetail();
+
+            // 画面中央長押し（2秒）による本体再起動（キャタピラ装着時のリセットボタン代用）
+            static uint32_t s_center_touch_start_ms = 0;
+            static bool s_reboot_triggered = false;
+            if (!s_reboot_triggered && td.isPressed()) {
+                // 画面中央エリア (320x240 の中央領域: X 80..240, Y 60..180)
+                const bool in_center = (td.x >= 80 && td.x <= 240 && td.y >= 60 && td.y <= 180);
+                if (in_center && !app::screens::overlay_active()) {
+                    if (s_center_touch_start_ms == 0) {
+                        s_center_touch_start_ms = now_ms;
+                    }
+                    const uint32_t hold_ms = now_ms - s_center_touch_start_ms;
+                    if (hold_ms >= 500 && hold_ms < 2000) {
+                        char msg[64];
+                        const int remain_sec = (2000 - hold_ms + 999) / 1000;
+                        std::snprintf(msg, sizeof(msg), "長押しで再起動… (%d)", remain_sec);
+                        g_state->set_balloon_text(msg, 350);
+                    } else if (hold_ms >= 2000) {
+                        s_reboot_triggered = true;
+                        g_state->set_balloon_text("再起動します…", 1500);
+                        app::AtomicMotionClient::send_command(app::AtomicMotionClient::CmdStop);
+                        vTaskDelay(pdMS_TO_TICKS(150));
+                        esp_restart();
+                    }
+                } else {
+                    s_center_touch_start_ms = 0;
+                }
+            } else if (!td.isPressed()) {
+                s_center_touch_start_ms = 0;
+            }
+
             // Horizontal flick → next/prev tab. M5Unified emits this on the
             // release frame after a touch that travelled past the flick
             // threshold. We treat it independently of the press path so a
