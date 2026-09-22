@@ -350,6 +350,28 @@ extern "C" void app_main()
         }
     }
 
+    // ローカルLLMを最優先とする：
+    // provider が LocalLlm の場合、または provider が OpenAI Realtime (0) であっても
+    // OpenAI API キーが空の場合は自動的に LocalLlm を選択し NVS にも同期
+    if (cfg.provider == stackchan::config::Provider::LocalLlm ||
+        (cfg.provider == stackchan::config::Provider::OpenAi && cfg.openai_api_key.empty())) {
+        if (cfg.provider != stackchan::config::Provider::LocalLlm) {
+            ESP_LOGI(kTag, "Auto-promoting provider to LocalLlm (OpenAI key is empty, prioritizing Local LLM)");
+            cfg.provider = stackchan::config::Provider::LocalLlm;
+            auto res = stackchan::config::store::save(cfg);
+            if (!res) {
+                ESP_LOGW(kTag, "Failed to persist promoted LocalLlm provider: %d", static_cast<int>(res.error()));
+            }
+        }
+    }
+
+    if (cfg.llm_url.empty()) {
+        cfg.llm_url = "http://192.168.11.6:1234/v1/chat/completions";
+    }
+    if (cfg.llm_model.empty()) {
+        cfg.llm_model = "qwen3.5-9b-vlm";
+    }
+
     // Configure VLM endpoint, model, and optional API key from persistent config
     stackchan::app::VlmClient::configure(cfg.llm_url, cfg.llm_model, cfg.llm_api_key);
 
@@ -913,6 +935,12 @@ extern "C" void app_main()
     const char* xiaozhi_token = "";
     if (!cfg.openai_enabled) {
         ESP_LOGI(kTag, "Conversation disabled by configuration");
+    } else if (cfg.provider == stackchan::config::Provider::LocalLlm ||
+               (cfg.provider == stackchan::config::Provider::OpenAi && cfg.openai_api_key.empty())) {
+        cfg.provider = stackchan::config::Provider::LocalLlm;
+        api_key = cfg.llm_api_key.empty() ? "local-llm" : cfg.llm_api_key.c_str();
+        ESP_LOGI(kTag, "provider=Local LLM (OpenAI Compatible), url=%s, model=%s",
+                 cfg.llm_url.c_str(), cfg.llm_model.c_str());
     } else if (cfg.provider == stackchan::config::Provider::Gemini) {
         if (!cfg.gemini_api_key.empty()) {
             api_key = cfg.gemini_api_key.c_str();

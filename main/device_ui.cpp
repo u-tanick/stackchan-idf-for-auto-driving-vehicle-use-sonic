@@ -672,6 +672,7 @@ void draw_conversation()
     const int dy = 26;
     const char* provider_name = g_provider == 1   ? "Gemini Live"
                                 : g_provider == 2 ? "XiaoZhi"
+                                : g_provider == 3 ? "Local LLM"
                                                   : "OpenAI Realtime";
     draw_kv(y, "サービス", provider_name, fg); y += dy;
     draw_kv(y, "状態", status_text, status_color); y += dy;

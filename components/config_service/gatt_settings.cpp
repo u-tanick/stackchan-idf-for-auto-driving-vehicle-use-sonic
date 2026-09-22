@@ -1323,9 +1323,11 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
         }
         if (attr_handle == g_provider_handle) {
             if (pt.size() != 1) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
-            Provider p = Provider::OpenAi;
-            if (pt[0] == static_cast<std::uint8_t>(Provider::Gemini)) p = Provider::Gemini;
+            Provider p = Provider::LocalLlm;
+            if (pt[0] == static_cast<std::uint8_t>(Provider::OpenAi)) p = Provider::OpenAi;
+            else if (pt[0] == static_cast<std::uint8_t>(Provider::Gemini)) p = Provider::Gemini;
             else if (pt[0] == static_cast<std::uint8_t>(Provider::XiaoZhi)) p = Provider::XiaoZhi;
+            else if (pt[0] == static_cast<std::uint8_t>(Provider::LocalLlm)) p = Provider::LocalLlm;
             xSemaphoreTake(g_mutex, portMAX_DELAY);
             g_staging.set_num("provider", static_cast<std::uint32_t>(p));
             xSemaphoreGive(g_mutex);

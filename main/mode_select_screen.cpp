@@ -56,6 +56,20 @@ bool draw(avatar::RichCanvas& canvas)
     constexpr int32_t kCardH = 70;
     constexpr int32_t kRadius = 8;
 
+    // バッジ共通設定（3つすべて同一サイズ、VLM AIが余裕をもって収まる幅56px）
+    constexpr int32_t kBadgeX = kCardX + 10;
+    constexpr int32_t kBadgeYOff = 12;
+    constexpr int32_t kBadgeW = 56;
+    constexpr int32_t kBadgeH = 20;
+    constexpr int32_t kBadgeRadius = 4;
+    constexpr int32_t kBadgeCenterX = kBadgeX + kBadgeW / 2;
+    constexpr int32_t kBadgeCenterYOff = kBadgeYOff + kBadgeH / 2;
+
+    // タイトルおよび説明文の共通配置
+    constexpr int32_t kTitleX = kBadgeX + kBadgeW + 8; // kCardX + 74
+    constexpr int32_t kDescX = kCardX + 12;
+    constexpr int32_t kDescYOff = 44;
+
     // --- 上段: 自律運転（距離センサー） ---
     {
         constexpr int32_t kCardY = 6;
@@ -67,20 +81,23 @@ bool draw(avatar::RichCanvas& canvas)
         canvas.drawRoundRect(kCardX, kCardY, kCardW, kCardH, kRadius, border_color);
 
         // バッジ
-        canvas.fillRoundRect(kCardX + 8, kCardY + 8, 36, 18, 4, border_color);
+        canvas.fillRoundRect(kBadgeX, kCardY + kBadgeYOff, kBadgeW, kBadgeH, kBadgeRadius, border_color);
         canvas.setFont(kFontDesc);
         canvas.setTextColor(canvas.color565(0, 0, 0));
-        canvas.drawString("SONIC", kCardX + 10, kCardY + 10);
+        canvas.setTextDatum(lgfx::textdatum_t::middle_center);
+        canvas.drawString("SONIC", kBadgeCenterX, kCardY + kBadgeCenterYOff);
 
         // タイトル
         canvas.setFont(kFontTitle);
         canvas.setTextColor(border_color);
-        canvas.drawString("自律運転 (距離センサー)", kCardX + 50, kCardY + 9);
+        canvas.setTextDatum(lgfx::textdatum_t::middle_left);
+        canvas.drawString("自律運転 (距離センサー)", kTitleX, kCardY + kBadgeCenterYOff);
 
         // 説明文
         canvas.setFont(kFontDesc);
         canvas.setTextColor(sub_color);
-        canvas.drawString("カメラ不使用 / 壁検知で自動左90°旋回", kCardX + 12, kCardY + 38);
+        canvas.setTextDatum(lgfx::textdatum_t::top_left);
+        canvas.drawString("カメラ不使用 / 壁検知で自動左90°旋回", kDescX, kCardY + kDescYOff);
     }
 
     // --- 中段: 自律運転（距離＋カメラ） ---
@@ -94,20 +111,23 @@ bool draw(avatar::RichCanvas& canvas)
         canvas.drawRoundRect(kCardX, kCardY, kCardW, kCardH, kRadius, border_color);
 
         // バッジ
-        canvas.fillRoundRect(kCardX + 8, kCardY + 8, 36, 18, 4, border_color);
+        canvas.fillRoundRect(kBadgeX, kCardY + kBadgeYOff, kBadgeW, kBadgeH, kBadgeRadius, border_color);
         canvas.setFont(kFontDesc);
         canvas.setTextColor(canvas.color565(0, 0, 0));
-        canvas.drawString("VLM AI", kCardX + 10, kCardY + 10);
+        canvas.setTextDatum(lgfx::textdatum_t::middle_center);
+        canvas.drawString("VLM AI", kBadgeCenterX, kCardY + kBadgeCenterYOff);
 
         // タイトル
         canvas.setFont(kFontTitle);
         canvas.setTextColor(border_color);
-        canvas.drawString("自律運転 (距離＋カメラ)", kCardX + 50, kCardY + 9);
+        canvas.setTextDatum(lgfx::textdatum_t::middle_left);
+        canvas.drawString("自律運転 (距離＋カメラ)", kTitleX, kCardY + kBadgeCenterYOff);
 
         // 説明文
         canvas.setFont(kFontDesc);
         canvas.setTextColor(sub_color);
-        canvas.drawString("AI画像認識で4方向探索・最適ルート決定", kCardX + 12, kCardY + 38);
+        canvas.setTextDatum(lgfx::textdatum_t::top_left);
+        canvas.drawString("AI画像認識で4方向探索・最適ルート決定", kDescX, kCardY + kDescYOff);
     }
 
     // --- 下段: JoyC操作（ESPNow） ---
@@ -121,20 +141,23 @@ bool draw(avatar::RichCanvas& canvas)
         canvas.drawRoundRect(kCardX, kCardY, kCardW, kCardH, kRadius, border_color);
 
         // バッジ
-        canvas.fillRoundRect(kCardX + 8, kCardY + 8, 36, 18, 4, border_color);
+        canvas.fillRoundRect(kBadgeX, kCardY + kBadgeYOff, kBadgeW, kBadgeH, kBadgeRadius, border_color);
         canvas.setFont(kFontDesc);
         canvas.setTextColor(canvas.color565(0, 0, 0));
-        canvas.drawString("JOY-C", kCardX + 10, kCardY + 10);
+        canvas.setTextDatum(lgfx::textdatum_t::middle_center);
+        canvas.drawString("JOY-C", kBadgeCenterX, kCardY + kBadgeCenterYOff);
 
         // タイトル
         canvas.setFont(kFontTitle);
         canvas.setTextColor(border_color);
-        canvas.drawString("JoyC操作 (ESP-NOW)", kCardX + 50, kCardY + 9);
+        canvas.setTextDatum(lgfx::textdatum_t::middle_left);
+        canvas.drawString("JoyC操作 (ESP-NOW)", kTitleX, kCardY + kBadgeCenterYOff);
 
         // 説明文
         canvas.setFont(kFontDesc);
         canvas.setTextColor(sub_color);
-        canvas.drawString("プロポ手動操縦 / ラジコン走行モード", kCardX + 12, kCardY + 38);
+        canvas.setTextDatum(lgfx::textdatum_t::top_left);
+        canvas.drawString("プロポ手動操縦 / ラジコン走行モード", kDescX, kCardY + kDescYOff);
     }
 
     return true;

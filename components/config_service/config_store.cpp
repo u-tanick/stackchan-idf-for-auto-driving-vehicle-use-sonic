@@ -21,24 +21,29 @@ using registry::ApplyKind;
 using registry::SettingDescriptor;
 using registry::ValueType;
 
-std::string nvs_read_str(nvs_handle_t h, const char* key)
+bool nvs_read_str(nvs_handle_t h, const char* key, std::string& out)
 {
     std::size_t len = 0;
     esp_err_t err = nvs_get_str(h, key, nullptr, &len);
-    if (err == ESP_ERR_NVS_NOT_FOUND || len == 0) return {};
+    if (err == ESP_ERR_NVS_NOT_FOUND) return false;
     if (err != ESP_OK) {
         ESP_LOGW(kTag, "nvs_get_str(%s) size: %s", key, esp_err_to_name(err));
-        return {};
+        return false;
+    }
+    if (len == 0) {
+        out.clear();
+        return true;
     }
     std::string val(len, '\0');
     err = nvs_get_str(h, key, val.data(), &len);
     if (err != ESP_OK) {
         ESP_LOGW(kTag, "nvs_get_str(%s) read: %s", key, esp_err_to_name(err));
-        return {};
+        return false;
     }
     // nvs_get_str includes the null terminator in len; remove it from the string.
     if (!val.empty() && val.back() == '\0') val.pop_back();
-    return val;
+    out = std::move(val);
+    return true;
 }
 
 // Width-dispatched numeric read. Missing key leaves `cfg` at its built-in
@@ -142,7 +147,7 @@ DeviceConfig load()
     DeviceConfig cfg;
     for (const auto& d : registry::table()) {
         if (d.type == ValueType::Str) {
-            cfg.*(d.str_member) = nvs_read_str(h, d.nvs_key);
+            nvs_read_str(h, d.nvs_key, cfg.*(d.str_member));
         } else {
             load_numeric(h, d, cfg);
         }

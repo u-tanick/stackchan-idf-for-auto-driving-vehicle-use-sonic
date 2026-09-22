@@ -892,10 +892,12 @@ esp_err_t handle_provider_post(httpd_req_t* req)
     if (!require_auth(req)) return ESP_OK;
     std::string body;
     if (read_body_str(req, body, 8) != ESP_OK) return ESP_OK;
-    const int v = body.empty() ? 0 : (body[0] - '0');
-    config::Provider p = config::Provider::OpenAi;
-    if (v == static_cast<int>(config::Provider::Gemini)) p = config::Provider::Gemini;
+    const int v = body.empty() ? 3 : (body[0] - '0');
+    config::Provider p = config::Provider::LocalLlm;
+    if (v == static_cast<int>(config::Provider::OpenAi)) p = config::Provider::OpenAi;
+    else if (v == static_cast<int>(config::Provider::Gemini)) p = config::Provider::Gemini;
     else if (v == static_cast<int>(config::Provider::XiaoZhi)) p = config::Provider::XiaoZhi;
+    else if (v == static_cast<int>(config::Provider::LocalLlm)) p = config::Provider::LocalLlm;
     xSemaphoreTake(g_mutex, portMAX_DELAY);
     g_staging.set_num("provider", static_cast<std::uint32_t>(p));
     xSemaphoreGive(g_mutex);

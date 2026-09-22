@@ -224,6 +224,15 @@ public:
 
     void run()
     {
+        if (provider_ == config::Provider::LocalLlm) {
+            ESP_LOGI(kTag, "Local LLM mode active. Realtime WebSocket conversation task is idle.");
+            state_.conv.status.store(ConvStatus::Disabled, std::memory_order_relaxed);
+            while (true) {
+                vTaskDelay(pdMS_TO_TICKS(10000));
+            }
+            return;
+        }
+
         // XiaoZhi is keyed by its server URL rather than an API key; the other
         // providers need a non-empty api_key.
         const bool disabled = provider_ == config::Provider::XiaoZhi ? xiaozhi_url_.empty()
@@ -1113,6 +1122,7 @@ private:
         switch (provider_) {
         case config::Provider::Gemini: return "Gemini";
         case config::Provider::XiaoZhi: return "XiaoZhi";
+        case config::Provider::LocalLlm: return "LocalLlm";
         default: return "OpenAI";
         }
     }

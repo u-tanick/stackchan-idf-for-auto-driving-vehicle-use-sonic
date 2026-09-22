@@ -4,6 +4,7 @@
 #include "atomic_motion_client.hpp"
 #include "mode_select_screen.hpp"
 #include "speech.hpp"
+#include "wifi_sta.hpp"
 
 #include <cstdio>
 #include <cmath>
@@ -26,6 +27,7 @@ static bool s_is_regular_driving_speech = false; // 通常走行中のランダ�
 static bool s_speech_pending = false;            // 発話タスク起動中〜再生中フラグ
 static uint32_t s_speech_completed_ms = 0;       // 直近の発話終了時刻
 static uint32_t s_next_drive_speech_ms = 0;      // 次回通常走行発話予定時刻
+static bool s_init_check_failed = false;         // 起動時ヘルスチェック失敗フラグ
 
 // 音声合成タスクがビジーな場合にドロップせず保持するキュー
 static std::u32string s_pending_speech_reading;
@@ -83,6 +85,7 @@ uint32_t s_last_tick_ms = 0;
 enum class AutoDriveState {
     InitWait,         // 起動後の待機（サーボ初期診断完了待ち）
     Standby,          // 停止待機中（画面中央タップでスタート）
+    CameraCheck,      // 距離＋カメラモード起動時の事前ヘルスチェック（Wi-Fi & VLM確認）
     Forward,          // 前進走行中
     ObstacleDetected, // 壁検知時の一時停止・「いきどまりかな」発話待機
     ObstacleDelay,    // 「いきどまりかな」発話完了後のディレイ待機（1秒）
@@ -333,10 +336,30 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
         static uint32_t s_last_telemetry_log_ms = 0;
         if (now_ms - s_last_telemetry_log_ms >= 1000) {
             s_last_telemetry_log_ms = now_ms;
-            ESP_LOGI(kTag, "Telemetry: dist=%u mm, obs=0x%02X, joy=%d, mode=%s (atom=%s)",
-                     status.distance_mm, status.obstacle_flags, status.joy_active,
+            const char* state_str = "Unknown";
+            switch (s_drive_state) {
+                case AutoDriveState::InitWait: state_str = "InitWait"; break;
+                case AutoDriveState::Standby: state_str = "Standby"; break;
+                case AutoDriveState::CameraCheck: state_str = "CameraCheck"; break;
+                case AutoDriveState::Forward: state_str = "Forward"; break;
+                case AutoDriveState::ObstacleDetected: state_str = "ObstacleDetected"; break;
+                case AutoDriveState::ObstacleDelay: state_str = "ObstacleDelay"; break;
+                case AutoDriveState::BackingUp: state_str = "BackingUp"; break;
+                case AutoDriveState::StartScan: state_str = "StartScan"; break;
+                case AutoDriveState::ScanHeadMoving: state_str = "ScanHeadMoving"; break;
+                case AutoDriveState::ScanWait: state_str = "ScanWait"; break;
+                case AutoDriveState::ScanEvaluate: state_str = "ScanEvaluate"; break;
+                case AutoDriveState::Decision: state_str = "Decision"; break;
+                case AutoDriveState::Turning: state_str = "Turning"; break;
+                case AutoDriveState::VerifySonicOnly: state_str = "VerifySonicOnly"; break;
+                case AutoDriveState::VerifyCamera: state_str = "VerifyCamera"; break;
+                case AutoDriveState::VerifySonic: state_str = "VerifySonic"; break;
+                case AutoDriveState::ErrorHold: state_str = "ErrorHold"; break;
+            }
+            ESP_LOGI(kTag, "Telemetry: dist=%u mm, obs=0x%02X, state=%s, mode=%s (atom=%s, selected=%d)",
+                     status.distance_mm, status.obstacle_flags, state_str,
                      (current_mode == SharedState::Driving::Mode::Manual) ? "Manual" : "Auto",
-                     (status.robot_mode == 1) ? "Manual" : "Auto");
+                     (status.robot_mode == 1) ? "Manual" : "Auto", s_mode_selected);
         }
 
         // 手動操縦モード（JoyC）のときの画面案内表示
@@ -424,13 +447,13 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
         } else if (s_drive_type == DriveType::SonicOnly) {
             say_step(speech, state, "距離センサーモード", U"きょりせんさー、もーど", 3500);
         } else if (s_drive_type == DriveType::SonicCamera) {
-            say_step(speech, state, "距離＋カメラモード", U"きょりと、かめらもーど", 3500);
+            say_step(speech, state, "カメラ確認中…", U"きょりと、かめらもーど、ちぇっくちゅう", 3000);
         }
     }
 
-    // 自律運転待機時、モード案内（約3.5秒）完了後に「タップでスタート！」を表示
-    if (current_mode == SharedState::Driving::Mode::Autonomous && s_drive_state == AutoDriveState::Standby) {
-        if (!s_standby_prompt_shown && (now_ms - s_mode_selected_ms >= 3500) && !speech.is_speaking()) {
+    // 自律運転待機時、モード選択後に「タップでスタート！」の案内吹き出しを表示（タップされるまで待機）
+    if (s_mode_selected && current_mode == SharedState::Driving::Mode::Autonomous && s_drive_state == AutoDriveState::Standby) {
+        if (!s_standby_prompt_shown && !speech.is_speaking()) {
             s_standby_prompt_shown = true;
             state.set_balloon_text("タップでスタート！", 5000);
         }
@@ -462,6 +485,57 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             // 停止待機中: モーター停止維持。画面中央タップでForwardへ移行する
             send_command(CmdStop);
             break;
+
+        case AutoDriveState::CameraCheck: {
+            send_command(CmdStop);
+            state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
+
+            // モード案内発話中であれば待機
+            if (speech.is_speaking() || s_has_pending_speech || s_speech_pending || is_speech_cooling_down(now_ms, speech)) {
+                break;
+            }
+
+            // 1. Wi-Fi 接続確認
+            if (!wifi_is_connected()) {
+                ESP_LOGE(kTag, "CameraCheck: Wi-Fi not connected!");
+                s_init_check_failed = true;
+                state.face.bg_color.store(0xF800u, std::memory_order_relaxed); // 赤色背景
+                state.face.expression.store(static_cast<int>(avatar::Expression::Angry), std::memory_order_relaxed);
+                say_step(speech, state, "Wi-Fi未接続！", U"わいふぁいに、つながっていません", 4000);
+                s_drive_state = AutoDriveState::ErrorHold;
+                s_state_start_ms = now_ms;
+                break;
+            }
+
+            // 2. カメラ画像取得 ＆ VLM 疎通テスト
+            ESP_LOGI(kTag, "CameraCheck: Wi-Fi OK. Testing VLM connectivity with camera capture...");
+            state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
+            state.set_balloon_text("VLM接続テスト中…", 3000);
+
+            VlmEvaluation eval = VlmClient::evaluate_current_view("health_check");
+            if (!eval.success) {
+                ESP_LOGE(kTag, "CameraCheck: VLM eval failed! reason: %s", eval.reason.c_str());
+                s_init_check_failed = true;
+                state.face.bg_color.store(0xF800u, std::memory_order_relaxed); // 赤色背景
+                state.face.expression.store(static_cast<int>(avatar::Expression::Angry), std::memory_order_relaxed);
+                say_step(speech, state, "VLM接続失敗！", U"ぶいえるえむと、つながりません", 4000);
+                s_drive_state = AutoDriveState::ErrorHold;
+                s_state_start_ms = now_ms;
+                break;
+            }
+
+            // 3. Wi-Fi & VLM どちらも成功！
+            ESP_LOGI(kTag, "CameraCheck: All passed! (passable=%d, score=%d). Entering Standby.", eval.passable, eval.score);
+            state.face.bg_color.store(0x0000u, std::memory_order_relaxed); // 通常黒色
+            state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
+            say_step(speech, state, "カメラ確認完了！", U"かめら、おっけー、れっつごー", 2000);
+
+            s_drive_state = AutoDriveState::Standby;
+            s_mode_selected_ms = now_ms; // 「タップでスタート！」カウントダウン開始
+            s_standby_prompt_shown = false;
+            s_state_start_ms = now_ms;
+            break;
+        }
 
         case AutoDriveState::Forward:
             send_command(CmdForward);
@@ -735,22 +809,48 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             break;
 
         case AutoDriveState::Turning: {
-            // 机上テスト対応（DCモーター未接続時）:
-            // 手動旋回によるジャイロ積分、または1.2秒の旋回演出完了で次ステップへ進む
+            // 旋回中もコマンドを毎ループ継続送信
+            send_command(s_turn_spin_right ? CmdSpinRight : CmdSpinLeft);
+
             const int64_t now_us = esp_timer_get_time();
             const float dt = (now_us - s_turn_last_us) / 1000000.0f;
             s_turn_last_us = now_us;
 
             float gx = 0, gy = 0, gz = 0;
             if (M5.Imu.getGyro(&gx, &gy, &gz)) {
-                s_turn_integrated_deg += std::abs(gz) * dt;
+                // CoreS3直立時の旋回主成分はY軸。姿勢や首の傾きによる分散を吸収するため3軸ノルムを算出
+                float omega = std::sqrt(gx * gx + gy * gy + gz * gz);
+                // 静止時のノイズ・ドリフトを除去（不感帯: 8.0 deg/s未満はカット）
+                if (omega < 8.0f) {
+                    omega = 0.0f;
+                } else if (omega > 500.0f) {
+                    omega = 500.0f; // 衝撃ショックによる異常値スパイクをクランプ
+                }
+                s_turn_integrated_deg += omega * dt;
             }
 
-            // 目標角度到達（手動旋回含む）または安全上限タイムアウト（3500ms）経過
-            if (s_turn_integrated_deg >= s_target_turn_deg || (now_ms - s_state_start_ms >= 3500)) {
+            const uint32_t turn_elapsed_ms = now_ms - s_state_start_ms;
+            // 実測角速度（約60〜80 deg/s）に基づく旋回所要時間: 90度なら約1350ms、180度なら約2700ms
+            const uint32_t target_duration_ms = static_cast<uint32_t>((s_target_turn_deg / 90.0f) * 1350.0f);
+            // 最低旋回時間ガード（チャタリング・振動誤判定防止）: 90度なら最低700ms、180度なら最低1400ms
+            const uint32_t min_turn_ms = static_cast<uint32_t>((s_target_turn_deg / 90.0f) * 700.0f);
+
+            // 旋回テレメトリログ (150msごと)
+            static uint32_t s_last_turn_log_ms = 0;
+            if (now_ms - s_last_turn_log_ms >= 150) {
+                s_last_turn_log_ms = now_ms;
+                ESP_LOGI(kTag, "Turning: elapsed=%u ms, integrated=%.1f/%.1f deg, gyro=[%.1f, %.1f, %.1f]",
+                         turn_elapsed_ms, s_turn_integrated_deg, s_target_turn_deg, gx, gy, gz);
+            }
+
+            // 完了条件: 最低旋回時間を経過しており、かつ（ジャイロが目標角度に達した、または標準所要時間が経過した）
+            const bool turn_finished = (turn_elapsed_ms >= min_turn_ms) &&
+                                       (s_turn_integrated_deg >= s_target_turn_deg || turn_elapsed_ms >= target_duration_ms);
+
+            if (turn_finished || (turn_elapsed_ms >= 3500)) {
                 send_command(CmdStop);
-                ESP_LOGI(kTag, "Turn complete: integrated=%.1f deg (target=%.1f deg).",
-                         s_turn_integrated_deg, s_target_turn_deg);
+                ESP_LOGI(kTag, "Turn complete: elapsed=%u ms, integrated=%.1f deg (target=%.1f deg).",
+                         turn_elapsed_ms, s_turn_integrated_deg, s_target_turn_deg);
 
                 if (s_drive_type == DriveType::SonicOnly) {
                     // 自律運転（距離センサー）: 旋回後の前方距離確認ステートへ
@@ -769,8 +869,8 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
 
         case AutoDriveState::VerifySonicOnly: {
             send_command(CmdStop);
-            // 旋回直後の静止待ち（300ms）
-            if (now_ms - s_state_start_ms >= 300) {
+            // 旋回直後の車体静止待ちおよび超音波測定値の安定化（500ms）
+            if (now_ms - s_state_start_ms >= 500) {
                 // 前方の障害物有無を確認 (検知しきい値内か)
                 const bool has_obstacle = (dist_mm > 0 && dist_mm <= scan_threshold_mm);
                 ESP_LOGI(kTag, "VerifySonicOnly: dist=%u mm, threshold=%u mm, obstacle=%d, retried=%d",
@@ -893,13 +993,22 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             send_command(CmdStop);
             state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
             state.face.bg_color.store(0xF800u, std::memory_order_relaxed); // エラー停止中は赤色を維持
-            // 画面タップがあれば再探索シーケンスへ復帰
+            // 画面タップがあれば復帰
             if (M5.Touch.getCount() > 0) {
-                ESP_LOGI(kTag, "Screen tapped in ErrorHold. Resuming scan sequence...");
-                state.face.bg_color.store(0x0000u, std::memory_order_relaxed); // 標準黒
-                state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
-                say_step(speech, state, "再探索するよ", U"もういちど、さがすよ", 1500);
-                s_drive_state = AutoDriveState::StartScan;
+                if (s_init_check_failed) {
+                    ESP_LOGI(kTag, "Screen tapped in ErrorHold (init check failed). Returning to mode select...");
+                    s_init_check_failed = false;
+                    state.face.bg_color.store(0x0000u, std::memory_order_relaxed); // 標準黒
+                    state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
+                    mode_select::show();
+                    s_drive_state = AutoDriveState::Standby;
+                } else {
+                    ESP_LOGI(kTag, "Screen tapped in ErrorHold. Resuming scan sequence...");
+                    state.face.bg_color.store(0x0000u, std::memory_order_relaxed); // 標準黒
+                    state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
+                    say_step(speech, state, "再探索するよ", U"もういちど、さがすよ", 1500);
+                    s_drive_state = AutoDriveState::StartScan;
+                }
                 s_state_start_ms = now_ms;
             }
             break;
@@ -967,9 +1076,11 @@ void AtomicMotionClient::set_drive_type(DriveType type, SharedState& state)
     } else if (type == DriveType::SonicCamera) {
         state.driving.mode.store(SharedState::Driving::Mode::Autonomous, std::memory_order_relaxed);
         set_mode(SharedState::Driving::Mode::Autonomous);
-        state.set_balloon_text("距離＋カメラモード", 3500);
+        state.set_balloon_text("カメラ確認中…", 3000);
         state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
-        s_drive_state = AutoDriveState::Standby;
+        state.face.bg_color.store(0x0000u, std::memory_order_relaxed);
+        s_init_check_failed = false;
+        s_drive_state = AutoDriveState::CameraCheck;
         send_command(CmdStop);
     }
 }

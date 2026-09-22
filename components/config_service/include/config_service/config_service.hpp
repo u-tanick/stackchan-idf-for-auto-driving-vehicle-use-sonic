@@ -126,7 +126,7 @@ struct DeviceConfig {
     std::string llm_url = "http://192.168.11.6:1234/v1/chat/completions";
     std::string llm_model = "qwen3.5-9b-vlm";
     std::string llm_api_key;
-    Provider provider = Provider::OpenAi;
+    Provider provider = Provider::LocalLlm;
     // Master switch for the OpenAI Realtime conversation task. Independent
     // of openai_api_key so the key can stay persisted while the feature is
     // turned off (saves data, lets the user take Stack-chan offline without
