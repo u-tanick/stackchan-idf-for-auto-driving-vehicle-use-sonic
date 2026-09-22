@@ -560,6 +560,9 @@ extern "C" void app_main()
     // M5.Speaker は playRaw / tone で自動的に begin するので、ここで end() したまま
     // でよい。マイク リップシンク タスクは Speaker.isPlaying() を見て譲る。
     auto play_boot_sounds = [&cfg]() {
+        const uint8_t orig_volume = M5.Speaker.getVolume();
+        M5.Speaker.setVolume(orig_volume / 2);
+
         if (cfg.startup_arpeggio_enabled) {
             for (float freq : {523.25f, 659.25f, 783.99f}) { // C5 – E5 – G5
                 M5.Speaker.tone(freq, 150);
@@ -592,6 +595,9 @@ extern "C" void app_main()
                 vTaskDelay(pdMS_TO_TICKS(20));
             }
         }
+
+        // 起動音完了後、元の音量（最大音量など）に復帰
+        M5.Speaker.setVolume(orig_volume);
     };
     M5.Speaker.end();
     vTaskDelay(pdMS_TO_TICKS(20));

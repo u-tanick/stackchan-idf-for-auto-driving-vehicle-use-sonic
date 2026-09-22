@@ -238,6 +238,19 @@ esp_err_t AtomicMotionClient::read_status(Status& out_status)
         M5.Ex_I2C.stop();
     }
 
+    // Read Robot Mode (0x04)
+    uint8_t mode_byte = 0;
+    if (M5.Ex_I2C.start(kDefaultSlaveAddr, false, kI2cFreq) &&
+        M5.Ex_I2C.write(0x04) &&
+        M5.Ex_I2C.stop() &&
+        M5.Ex_I2C.start(kDefaultSlaveAddr, true, kI2cFreq) &&
+        M5.Ex_I2C.read(&mode_byte, 1) &&
+        M5.Ex_I2C.stop()) {
+        out_status.robot_mode = mode_byte;
+    } else {
+        M5.Ex_I2C.stop();
+    }
+
     return ESP_OK;
 }
 
@@ -300,11 +313,42 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
         state.driving.obstacle_flags.store(status.obstacle_flags, std::memory_order_relaxed);
         state.driving.joy_active.store(status.joy_active, std::memory_order_relaxed);
 
+        // AtomS3 Lite の実モードが CoreS3 の期待とズレていたら自動で再同期
+        const uint8_t expected_mode_val = (current_mode == SharedState::Driving::Mode::Manual) ? 0x01 : 0x00;
+        if (status.robot_mode != expected_mode_val) {
+            static uint32_t s_last_mode_warn_ms = 0;
+            if (now_ms - s_last_mode_warn_ms >= 1000) {
+                s_last_mode_warn_ms = now_ms;
+                ESP_LOGW(kTag, "Mode mismatch! CoreS3=%s, AtomS3=%s. Resynchronizing...",
+                         expected_mode_val ? "Manual" : "Autonomous",
+                         status.robot_mode ? "Manual" : "Autonomous");
+            }
+            set_mode(current_mode);
+        }
+
         static uint32_t s_last_telemetry_log_ms = 0;
         if (now_ms - s_last_telemetry_log_ms >= 1000) {
             s_last_telemetry_log_ms = now_ms;
-            ESP_LOGI(kTag, "Telemetry: dist=%u mm, obs=0x%02X, joy=%d",
-                     status.distance_mm, status.obstacle_flags, status.joy_active);
+            ESP_LOGI(kTag, "Telemetry: dist=%u mm, obs=0x%02X, joy=%d, mode=%s (atom=%s)",
+                     status.distance_mm, status.obstacle_flags, status.joy_active,
+                     (current_mode == SharedState::Driving::Mode::Manual) ? "Manual" : "Auto",
+                     (status.robot_mode == 1) ? "Manual" : "Auto");
+        }
+
+        // 手動操縦モード（JoyC）のときの画面案内表示
+        if (current_mode == SharedState::Driving::Mode::Manual) {
+            static int s_last_joy_active_state = -1;
+            const int joy_now = status.joy_active ? 1 : 0;
+            if (joy_now != s_last_joy_active_state) {
+                s_last_joy_active_state = joy_now;
+                if (joy_now) {
+                    state.set_balloon_text("JoyC操縦中 (受信中)", 3000);
+                    state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
+                } else {
+                    state.set_balloon_text("JoyC待機中 (TX OFF)", 3000);
+                    state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
+                }
+            }
         }
 
         // 障害物検知時の画面演出（フキダシ・セリフ・表情フィードバック）
