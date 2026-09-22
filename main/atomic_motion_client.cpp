@@ -26,6 +26,10 @@ static bool s_speech_pending = false;            // 発話タスク起動中〜�
 static uint32_t s_speech_completed_ms = 0;       // 直近の発話終了時刻
 static uint32_t s_next_drive_speech_ms = 0;      // 次回通常走行発話予定時刻
 
+// 音声合成タスクがビジーな場合にドロップせず保持するキュー
+static std::u32string s_pending_speech_reading;
+static bool s_has_pending_speech = false;
+
 static const char32_t* kForwardDrivingPhrases[] = {
     U"ごー、ごーー",
     U"いけ、いけーーー",
@@ -37,8 +41,17 @@ void say_step(Speech& speech, SharedState& state, std::string_view display, std:
     state.set_balloon_text(display, duration_ms);
     if (!reading.empty()) {
         s_is_regular_driving_speech = false;
-        s_speech_pending = true;
-        speech.say(reading);
+        if (speech.say(reading)) {
+            s_speech_pending = true;
+            s_has_pending_speech = false;
+            s_pending_speech_reading.clear();
+        } else {
+            // 前の合成タスクが完了するまでキューに保持して次tickで即時実行
+            s_has_pending_speech = true;
+            s_pending_speech_reading = std::u32string(reading);
+            s_speech_pending = true;
+            ESP_LOGI(kTag, "Speech busy, queued reading: %.*s", static_cast<int>(display.size()), display.data());
+        }
     }
 }
 
@@ -46,7 +59,7 @@ bool is_speech_cooling_down(uint32_t now_ms, const Speech& speech) {
     if (s_is_regular_driving_speech) {
         return false;
     }
-    if (speech.is_speaking() || s_speech_pending) {
+    if (s_has_pending_speech || speech.is_speaking() || s_speech_pending) {
         return true;
     }
     if (s_speech_completed_ms > 0 && (now_ms - s_speech_completed_ms < 1000)) {
@@ -64,10 +77,12 @@ uint32_t s_last_tick_ms = 0;
 enum class AutoDriveState {
     InitWait,         // 起動後の待機（サーボ初期診断完了待ち）
     Forward,          // 前進走行中
-    ObstacleDetected, // 壁検知時の一時停止待機（1.5秒待機 & 発話終了後1秒待機）
+    ObstacleDetected, // 壁検知時の一時停止・「いきどまりかな」発話待機
+    ObstacleDelay,    // 「いきどまりかな」発話完了後のディレイ待機（1秒）
     BackingUp,        // 10cm未満時の微速後退
     StartScan,        // 探索シーケンス開始（首振り開始）
-    ScanWait,         // 首振り静止待ち（1秒）
+    ScanHeadMoving,   // 顔の向き変更中待機（800ms）
+    ScanWait,         // 首振り完了後の発話終了＆手ブレ防止静止待ち（1秒）
     ScanEvaluate,     // 撮影 & VLM評価
     Decision,         // 全4方向の評価結果集計 & 最善方向決定
     Turning,          // IMUジャイロ積分による旋回中
@@ -96,6 +111,7 @@ int s_scan_index = 0;
 int s_eval_retry_count = 0;
 int s_verify_retry_count = 0;
 VlmEvaluation s_scan_evals[4];
+bool s_obstacle_speech_active = false;
 
 // IMU旋回用
 float s_target_turn_deg = 0.0f;
@@ -234,6 +250,16 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
     }
     s_last_tick_ms = now_ms;
 
+    // 未送信の pending 発話があれば、合成タスクが空き次第即座に開始！
+    if (s_has_pending_speech) {
+        if (speech.say(s_pending_speech_reading)) {
+            ESP_LOGI(kTag, "Queued speech successfully started!");
+            s_has_pending_speech = false;
+            s_pending_speech_reading.clear();
+            s_speech_pending = true;
+        }
+    }
+
     // 発話ライフサイクル監視（再生中検知、終了タイミング記録、クールダウン管理）
     const bool speaking = speech.is_speaking();
     static bool s_was_speaking = false;
@@ -369,14 +395,18 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
                 // 通常前進発話があれば即座に割り込みキャンセル
                 speech.stop();
                 s_is_regular_driving_speech = false;
-                s_speech_pending = false;
+                s_has_pending_speech = false;
+                s_pending_speech_reading.clear();
 
                 char buf[32];
                 std::snprintf(buf, sizeof(buf), "かべ検知！（%u cm）", dist_mm / 10);
                 state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
                 state.face.bg_color.store(0x001Fu, std::memory_order_relaxed); // 青色
+                ESP_LOGI(kTag, "WALL DETECTED: dist=%u mm (threshold=%u mm). Triggering speech: いきどまりかな",
+                         dist_mm, scan_threshold_mm);
                 say_step(speech, state, buf, U"いきどまりかな", 2000);
 
+                s_obstacle_speech_active = false;
                 s_drive_state = AutoDriveState::ObstacleDetected;
                 s_state_start_ms = now_ms;
             }
@@ -384,26 +414,36 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
 
         case AutoDriveState::ObstacleDetected: {
             send_command(CmdStop);
-            // 接近検知から最低1.5秒経過、かつ「いきどまりかな」発話終了後1秒経過を待つ
-            const bool delay_ok = (now_ms - s_state_start_ms >= 1500);
-            const bool speech_ok = !is_speech_cooling_down(now_ms, speech);
-            if (delay_ok && speech_ok) {
-                const uint16_t back_margin_mm = (scan_threshold_mm > 20) ? (scan_threshold_mm - 10) : scan_threshold_mm;
-                if (dist_mm > 0 && dist_mm < back_margin_mm) {
-                    // 目標距離未満まで近接してしまったら後退へ
-                    s_drive_state = AutoDriveState::BackingUp;
-                    s_state_start_ms = now_ms;
-                } else {
-                    // 目標距離付近で停止、首振り探索へ
-                    s_drive_state = AutoDriveState::StartScan;
-                    s_state_start_ms = now_ms;
-                }
+            const bool is_speaking = speech.is_speaking() || s_has_pending_speech || s_speech_pending;
+            if (is_speaking) {
+                s_obstacle_speech_active = true; // 発話または合成が開始された
+            }
+            // 発話が開始された後に終了したか、または安全タイムアウト(3.5秒)経過
+            const bool finished = s_obstacle_speech_active && !is_speaking;
+            const bool timeout = (now_ms - s_state_start_ms >= 3500);
+
+            if (finished || timeout) {
+                ESP_LOGI(kTag, "Obstacle speech finished (active=%d, timeout=%d). Entering ObstacleDelay (1000ms).",
+                         s_obstacle_speech_active, timeout);
+                s_drive_state = AutoDriveState::ObstacleDelay;
+                s_state_start_ms = now_ms;
+            }
+            break;
+        }
+
+        case AutoDriveState::ObstacleDelay: {
+            send_command(CmdStop);
+            // 発話終了後、ユーザー希望のディレイ（1.0秒間静止待機）
+            if (now_ms - s_state_start_ms >= 1000) {
+                ESP_LOGI(kTag, "Obstacle delay complete. Transitioning to StartScan (head moving).");
+                s_drive_state = AutoDriveState::StartScan;
+                s_state_start_ms = now_ms;
             }
             break;
         }
 
         case AutoDriveState::BackingUp:
-            // 目標距離に達するまで微速後退
+            // 目標距離に達するまで微速後退（手動テスト等では通常スキップされ直接StartScanへ）
             send_command(CmdBackward);
             state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
             if (dist_mm >= scan_threshold_mm || (now_ms - s_state_start_ms >= 1500)) {
@@ -417,29 +457,45 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             break;
 
         case AutoDriveState::StartScan:
-            // 首振り開始: 最初の方向 (右90°) へ向ける
+            // 首振り開始: 最初の方向 (右90°) へ向ける（※まだ喋らない！）
             s_scan_index = 0;
-            ESP_LOGI(kTag, "Start scan sequence. Target 0: %s (yaw=%.1f deg)",
+            ESP_LOGI(kTag, "Start scan sequence. Target 0: %s (yaw=%.1f deg) - rotating head first",
                      kScanPoints[0].name, kScanPoints[0].yaw_deg);
             state.servo.speed_override.store(250, std::memory_order_relaxed);
             state.servo.target_yaw_deg.store(kScanPoints[0].yaw_deg, std::memory_order_relaxed);
             state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
             state.face.bg_color.store(0x001Fu, std::memory_order_relaxed);
-            if (kScanPoints[0].reading != nullptr) {
-                say_step(speech, state, kScanPoints[0].msg, kScanPoints[0].reading, 2500);
-            } else {
-                state.set_balloon_text(kScanPoints[0].msg, 2000);
-            }
-            s_drive_state = AutoDriveState::ScanWait;
+            state.set_balloon_text(kScanPoints[0].msg, 2500);
+
+            // 顔の向き変更完了を待つステートへ遷移
+            s_drive_state = AutoDriveState::ScanHeadMoving;
             s_state_start_ms = now_ms;
             break;
 
-        case AutoDriveState::ScanWait:
-            // 首振り後、手ブレ防止のため 1 秒静止。さらに発話中・発話後クールダウン中は待機
-            if (now_ms - s_state_start_ms >= 1000 && !is_speech_cooling_down(now_ms, speech)) {
+        case AutoDriveState::ScanHeadMoving:
+            // 顔の向き変更（サーボ回転）完了を待機 (800ms)
+            if (now_ms - s_state_start_ms >= 800) {
+                // 首が向き終わったら、ここでセリフを発話！
+                const auto& pt = kScanPoints[s_scan_index];
+                if (pt.reading != nullptr) {
+                    ESP_LOGI(kTag, "Head aligned for %s. Triggering speech.", pt.name);
+                    say_step(speech, state, pt.msg, pt.reading, 2500);
+                } else {
+                    state.set_balloon_text(pt.msg, 2000);
+                }
+                s_drive_state = AutoDriveState::ScanWait;
+                s_state_start_ms = now_ms;
+            }
+            break;
+
+        case AutoDriveState::ScanWait: {
+            // 首振り完了後の発話終了、および手ブレ防止のため 1 秒静止
+            const bool is_speaking = speech.is_speaking() || s_has_pending_speech || s_speech_pending;
+            if (now_ms - s_state_start_ms >= 1000 && !is_speaking && !is_speech_cooling_down(now_ms, speech)) {
                 s_drive_state = AutoDriveState::ScanEvaluate;
             }
             break;
+        }
 
         case AutoDriveState::ScanEvaluate: {
             // 現在のカメラフレームを VLM で評価
@@ -484,17 +540,15 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
 
             s_scan_index++;
             if (s_scan_index < 4) {
-                // 次の方向へ首を向ける
-                ESP_LOGI(kTag, "Next scan target %d: %s (yaw=%.1f deg)",
+                // 次の方向へ首を向ける（※まだ喋らない！）
+                ESP_LOGI(kTag, "Next scan target %d: %s (yaw=%.1f deg) - rotating head first",
                          s_scan_index, kScanPoints[s_scan_index].name, kScanPoints[s_scan_index].yaw_deg);
                 state.servo.target_yaw_deg.store(kScanPoints[s_scan_index].yaw_deg, std::memory_order_relaxed);
                 state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
-                if (kScanPoints[s_scan_index].reading != nullptr) {
-                    say_step(speech, state, kScanPoints[s_scan_index].msg, kScanPoints[s_scan_index].reading, 2500);
-                } else {
-                    state.set_balloon_text(kScanPoints[s_scan_index].msg, 2000);
-                }
-                s_drive_state = AutoDriveState::ScanWait;
+                state.set_balloon_text(kScanPoints[s_scan_index].msg, 2500);
+
+                // 首の回転待ちステートへ遷移
+                s_drive_state = AutoDriveState::ScanHeadMoving;
                 s_state_start_ms = now_ms;
             } else {
                 // 4方向完了、首を正面に戻して判定へ
