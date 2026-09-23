@@ -1028,9 +1028,12 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
         }
     }
 
-    // 走行中フラグの更新（LED点灯連動用: 走行中はネコミミ＋本体LED、停止/待機中はネコミミのみ）
+    // 走行中フラグの更新（LED点灯連動用: 起動時テスト＆走行中はネコミミ＋本体LED、モード選択待機中はネコミミのみ）
     bool is_moving_now = false;
-    if (current_mode == SharedState::Driving::Mode::Manual) {
+    if (s_drive_state == AutoDriveState::InitWait) {
+        // 起動時LED点灯テスト: サーボ自己診断中（起動からモード選択画面が出るまで）は本体LEDも点灯
+        is_moving_now = true;
+    } else if (current_mode == SharedState::Driving::Mode::Manual) {
         // JoyC手動操縦モード: モード選択済み(s_mode_selected)なら操縦中として点灯
         is_moving_now = s_mode_selected || state.driving.joy_active.load(std::memory_order_relaxed);
     } else {
