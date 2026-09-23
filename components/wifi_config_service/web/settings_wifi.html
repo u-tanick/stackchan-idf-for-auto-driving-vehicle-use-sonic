@@ -543,23 +543,23 @@
         <span>アイドル時の発話を有効にする</span>
       </label>
 
-      <h2 class="section-title">マイク リップシンク 調整 (会話・jtts どちらもオフのとき有効)</h2>
-      <p class="hint" style="margin-bottom:0.5rem">マイク入力の音量に合わせて口を開閉します。CoreS3 はマイク感度が低めなので入力ゲインを上げると見栄えします。スライダーを動かすと <strong>即時反映</strong> + 自動保存します。</p>
+      <h2 class="section-title">リップシンク 感度調整 (発話音声・マイク連動)</h2>
+      <p class="hint" style="margin-bottom:0.5rem">sanoTTS等の発話時やマイク入力音量に合わせて口を開閉します。「口の開き ゲイン」を上げることで、控えめな声量でも口が大きく開くようになります。スライダーを動かすと <strong>即時反映</strong> + 自動保存します。</p>
       <div class="grid2">
         <div style="grid-column:span 2">
-          <label for="mic-lip-input">入力ゲイン <span id="mic-lip-input-value">200</span> %</label>
+          <label for="mic-lip-input">マイク入力ゲイン (マイクモード時) <span id="mic-lip-input-value">200</span> %</label>
           <input type="range" id="mic-lip-input" min="10" max="1000" step="10" value="200" style="width:100%">
         </div>
         <div style="grid-column:span 2">
-          <label for="mic-lip-output">口の開き ゲイン <span id="mic-lip-output-value">100</span> %</label>
+          <label for="mic-lip-output">口の開き ゲイン (発話・マイク共通) <span id="mic-lip-output-value">100</span> %</label>
           <input type="range" id="mic-lip-output" min="10" max="500" step="10" value="100" style="width:100%">
         </div>
       </div>
       <label class="toggle-label" for="mic-lip-agc" style="margin-top:0.5rem">
         <input type="checkbox" id="mic-lip-agc">
-        <span>自動ゲイン制御 (AGC) を有効にする</span>
+        <span>マイク自動ゲイン制御 (AGC) を有効にする</span>
       </label>
-      <p class="hint">周辺の雑音レベルを自動追跡して感度を調整します。OFF にすると固定閾値で判定。即時反映（再起動不要）。</p>
+      <p class="hint">マイクモード時、周辺の雑音レベルを自動追跡して感度を調整します。OFF にすると固定閾値で判定。即時反映（再起動不要）。</p>
 
       <h2 class="section-title" style="margin-top:1rem">jtts ボイス</h2>
       <p class="hint" style="margin-bottom:0.5rem">空欄や変更なしで「保存」を押すと現在の設定は維持されます。</p>
@@ -902,10 +902,10 @@
       </label>
       <p class="hint">アバターの口が開くと LED が反応します (会話再生・jtts 発話・マイク リップシンク いずれの口元アニメーションでも有効)。OFF のときは設定した明るさで固定。即時反映（再起動不要）。</p>
 
-      <label for="lip-sync-mode" style="margin-top:0.5rem">リップシンク モード</label>
+      <label for="lip-sync-mode" style="margin-top:0.5rem">ネコミミLED リップシンク表示形式 (連動ON時)</label>
       <p class="hint" style="margin-bottom:0.5rem">
-        ON のときの制御方式を選びます。「輝度」は口が開くほど LED 全体が明るくなる
-        従来動作。「レベル メーター」はネコミミの三角形 (LED1 = 底辺、LED5 = 頂点)
+        「ネコミミ LED を口の動きと連動させる」が ON のときの点灯方式を選びます。「輝度」は口が開くほど LED 全体が明るくなる
+        動作。「レベル メーター」はネコミミの三角形 (LED1 = 底辺、LED5 = 頂点)
         を 5 段階のバー グラフとして点灯させます。保存後の再起動で反映されます。
       </p>
       <select id="lip-sync-mode">

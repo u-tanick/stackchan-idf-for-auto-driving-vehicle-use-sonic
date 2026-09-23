@@ -472,7 +472,12 @@ constexpr const char* kTag = "stackchan";
             static bool s_was_speaking = false;
             const bool speaking_now = speech.is_speaking();
             if (speaking_now) {
-                g_state->face.mouth_open.store(speech.current_mouth_open(), std::memory_order_relaxed);
+                const float raw_mouth = speech.current_mouth_open();
+                // Web設定の「口の開き ゲイン (output_gain_pct: 10..500%)」を適用して感度調整可能に
+                const float out_gain = static_cast<float>(g_state->mic_lip.output_gain_pct.load(std::memory_order_relaxed)) / 100.0f;
+                float scaled = raw_mouth * out_gain;
+                if (scaled > 1.0f) scaled = 1.0f;
+                g_state->face.mouth_open.store(scaled, std::memory_order_relaxed);
                 s_was_speaking = true;
             } else if (s_was_speaking) {
                 g_state->face.mouth_open.store(0.0f, std::memory_order_relaxed);

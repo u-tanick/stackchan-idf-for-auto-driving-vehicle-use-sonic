@@ -121,8 +121,11 @@ void build_envelope_from_pcm(const std::vector<std::int16_t>& pcm,
         for (std::size_t i = begin; i < end; ++i) {
             peak = std::max(peak, std::abs(static_cast<std::int32_t>(pcm[i])));
         }
-        const float val = static_cast<float>(peak) / 18000.0f;
-        envelope[w] = (val > 1.0f) ? 1.0f : val;
+        // sanoTTS 等の音量でもしっかり口が開くよう、基準ピークを 6000.0f とする。
+        // さらに sqrt による非線形ガンマ補正をかけることで、小〜中音量でも自然かつ大きく口が開く。
+        float norm = static_cast<float>(peak) / 6000.0f;
+        if (norm > 1.0f) norm = 1.0f;
+        envelope[w] = std::sqrt(norm);
     }
 }
 
