@@ -16,9 +16,10 @@ public:
     static constexpr std::uint32_t kI2cFreq = 100'000;
 
     static constexpr std::uint8_t kPinServoPowerEnable = 0;
+    static constexpr std::uint8_t kPinRgbLed = 13;
 
     // M5 Stack-chan base mounts 12 WS2812 NeoPixels on the back, driven by
-    // the PY32 MCU on its IO14 pin and exposed via I2C as a small RAM (RGB565
+    // the PY32 MCU on its IO13 pin and exposed via I2C as a small RAM (RGB565
     // LE per LED) + a config register that holds the count + a refresh-trigger
     // bit. We never bit-bang the NeoPixel protocol from the ESP — the PY32
     // does it.
@@ -28,6 +29,7 @@ public:
 
     tl::expected<void, Error> set_direction(std::uint8_t pin, bool output);
     tl::expected<void, Error> set_pull_up(std::uint8_t pin, bool enable);
+    tl::expected<void, Error> set_drive_mode(std::uint8_t pin, bool open_drain);
     tl::expected<void, Error> digital_write(std::uint8_t pin, bool level);
 
     // Set how many of the up-to-32 LEDs are active (the rest are ignored even

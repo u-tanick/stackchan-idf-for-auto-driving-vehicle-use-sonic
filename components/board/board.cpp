@@ -178,6 +178,11 @@ tl::expected<Board, Error> Board::begin()
             return tl::unexpected{r.error()};
         if (auto r = expander->digital_write(Py32Expander::kPinServoPowerEnable, false); !r)
             return tl::unexpected{r.error()};
+
+        // Configure RGB LED pin (PIN 13: Output, Pull-Up, Push-Pull mode as per official StackChan-BSP)
+        (void)expander->set_direction(Py32Expander::kPinRgbLed, true);
+        (void)expander->set_pull_up(Py32Expander::kPinRgbLed, true);
+        (void)expander->set_drive_mode(Py32Expander::kPinRgbLed, false);
     } else {
         ESP_LOGI(kTag, "PY32 not found at 0x%02X -> Takao base (no servo-power / battery control)",
                  Py32Expander::kAddress);

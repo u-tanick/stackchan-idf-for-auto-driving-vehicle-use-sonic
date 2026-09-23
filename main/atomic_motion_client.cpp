@@ -364,7 +364,7 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
                      state.driving.is_moving.load(std::memory_order_relaxed) ? 1 : 0);
         }
 
-        // 手動操縦モード（JoyC）のときの画面案内表示
+        // 手動操縦モード（JoyC）のときの画面案内表示および走行中発話
         // モード選択直後（3.5秒間）は「JoyC操作モード」の吹き出しを維持するため上書きしない
         if (current_mode == SharedState::Driving::Mode::Manual && (now_ms - s_mode_selected_ms >= 3500)) {
             static int s_last_joy_active_state = -1;
@@ -378,6 +378,17 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
                     state.set_balloon_text("JoyC待機中 (TX OFF)", 3000);
                     state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
                 }
+            }
+
+            // JoyC走行中（通信中）のランダム定期発話（4〜8秒間隔、4種からランダム選択、吹き出し表示）
+            if (joy_now && now_ms >= s_next_drive_speech_ms && !speech.is_speaking() && !s_speech_pending) {
+                s_is_regular_driving_speech = true;
+                s_speech_pending = true;
+                const size_t phrase_idx = esp_random() % (sizeof(kForwardDrivingPhrases) / sizeof(kForwardDrivingPhrases[0]));
+                const auto& phrase = kForwardDrivingPhrases[phrase_idx];
+                state.set_balloon_text(phrase.display, 2000);
+                speech.say(phrase.reading);
+                s_next_drive_speech_ms = now_ms + 4000 + (esp_random() % 4001);
             }
         }
 

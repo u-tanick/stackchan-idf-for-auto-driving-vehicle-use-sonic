@@ -20,6 +20,11 @@ inline void pack_rgb565_le(std::uint8_t* out, std::uint8_t r, std::uint8_t g, st
 
 tl::expected<void, Error> Py32LedStrip::begin()
 {
+    // Match official StackChan-BSP IO expander RGB initialization:
+    (void)expander_->set_direction(Py32Expander::kPinRgbLed, true);
+    (void)expander_->set_pull_up(Py32Expander::kPinRgbLed, true);
+    (void)expander_->set_drive_mode(Py32Expander::kPinRgbLed, false);
+
     if (auto r = expander_->set_led_count(count_); !r) return r;
     clear();
     return show();
