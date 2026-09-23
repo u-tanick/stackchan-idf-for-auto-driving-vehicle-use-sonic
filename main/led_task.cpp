@@ -81,11 +81,12 @@ inline std::uint8_t scale8(std::uint8_t c, std::uint8_t gain) noexcept
 void led_task_entry(void* arg)
 {
     auto& args = *static_cast<LedTaskArgs*>(arg);
-    auto& strip = *args.strip;
+    auto* strip = args.strip;
+    auto* base_strip = args.base_strip;
     auto& state = *args.state;
-    const std::size_t n = strip.size();
-    if (n == 0) {
-        ESP_LOGW(kTag, "strip size = 0, exiting");
+    const std::size_t n = (strip != nullptr) ? strip->size() : 0;
+    if (n == 0 && base_strip == nullptr) {
+        ESP_LOGW(kTag, "no strips available, exiting");
         vTaskDeleteWithCaps(nullptr);
         return;
     }
@@ -94,6 +95,8 @@ void led_task_entry(void* arg)
     // clock-derived value (esp_timer) instead of a frame index keeps animations
     // running at the right speed even if the task ever gets paused / preempted.
     auto now_ms = [] { return static_cast<std::uint32_t>(esp_timer_get_time() / 1000); };
+
+    bool base_was_moving = false;
 
     TickType_t last_wake = xTaskGetTickCount();
     for (;;) {
@@ -146,74 +149,96 @@ void led_task_entry(void* arg)
 
         const float t = now_ms() / 1000.0f;
 
-        switch (mode) {
-        case kModeSolid: {
-            strip.fill(scale8(cr, bright), scale8(cg, bright), scale8(cb, bright));
-            break;
-        }
-        case kModeBreath: {
-            // 4 s period sine, biased so dim doesn't fully extinguish (32/255
-            // floor keeps the strip visibly "on" at the trough).
-            const float phase = std::sin(t * 2.0f * 3.14159265f / 4.0f);
-            const float gain = (phase * 0.5f + 0.5f) * 0.85f + 0.15f;
-            const std::uint8_t b2 = static_cast<std::uint8_t>(bright * gain);
-            strip.fill(scale8(cr, b2), scale8(cg, b2), scale8(cb, b2));
-            break;
-        }
-        case kModeGradient: {
-            // Full-strip rainbow that scrolls one full revolution every
-            // led_gradient_period_ds × 0.1 s. The colour stored in led_color
-            // is ignored in this mode (the hue is generated) — only
-            // brightness applies. Clamp the divisor so a runaway 0 doesn't
-            // blow up the float division.
-            const std::uint8_t period_ds = std::max<std::uint8_t>(
-                1, state.led.gradient_period_ds.load(std::memory_order_relaxed));
-            const float period_s = static_cast<float>(period_ds) * 0.1f;
-            const float h0 = t / period_s;
-            for (std::size_t i = 0; i < n; ++i) {
-                std::uint8_t r, g, b;
-                hsv_to_rgb(h0 + static_cast<float>(i) / static_cast<float>(n), r, g, b);
-                strip.set(i, scale8(r, bright), scale8(g, bright), scale8(b, bright));
+        if (strip != nullptr && n > 0) {
+            switch (mode) {
+            case kModeSolid: {
+                strip->fill(scale8(cr, bright), scale8(cg, bright), scale8(cb, bright));
+                break;
             }
-            break;
-        }
-        case kModeOff:
-        default:
-            strip.clear();
-            break;
-        }
+            case kModeBreath: {
+                // 4 s period sine, biased so dim doesn't fully extinguish (32/255
+                // floor keeps the strip visibly "on" at the trough).
+                const float phase = std::sin(t * 2.0f * 3.14159265f / 4.0f);
+                const float gain = (phase * 0.5f + 0.5f) * 0.85f + 0.15f;
+                const std::uint8_t b2 = static_cast<std::uint8_t>(bright * gain);
+                strip->fill(scale8(cr, b2), scale8(cg, b2), scale8(cb, b2));
+                break;
+            }
+            case kModeGradient: {
+                // Full-strip rainbow that scrolls one full revolution every
+                // led_gradient_period_ds × 0.1 s. The colour stored in led_color
+                // is ignored in this mode (the hue is generated) — only
+                // brightness applies. Clamp the divisor so a runaway 0 doesn't
+                // blow up the float division.
+                const std::uint8_t period_ds = std::max<std::uint8_t>(
+                    1, state.led.gradient_period_ds.load(std::memory_order_relaxed));
+                const float period_s = static_cast<float>(period_ds) * 0.1f;
+                const float h0 = t / period_s;
+                for (std::size_t i = 0; i < n; ++i) {
+                    std::uint8_t r, g, b;
+                    hsv_to_rgb(h0 + static_cast<float>(i) / static_cast<float>(n), r, g, b);
+                    strip->set(i, scale8(r, bright), scale8(g, bright), scale8(b, bright));
+                }
+                break;
+            }
+            case kModeOff:
+            default:
+                strip->clear();
+                break;
+            }
 
-        // Level-meter mask: after the base animation has painted every LED
-        // (solid colour / breath / gradient), zero out the LED pairs above
-        // the current mouth_open level so only the bottom `level` rows of
-        // the ear triangle stay lit. Hue/animation pattern of those lit
-        // LEDs comes from the base mode untouched — the meter only changes
-        // the lit/unlit set.
-        if (level_meter_active) {
-            std::size_t level = 0;
-            for (std::size_t k = 0; k < 5; ++k) {
-                if (mouth >= kLevelThresholds[k]) level = k + 1;
-            }
-            // Build a 18-bit lit mask. Level k lights the (k-1, 9-k) pair on
-            // each ear; level 5 lights only the apex (single LED at index 4
-            // / 13). Anything outside the mask gets zeroed.
-            std::array<bool, 18> lit{};
-            for (std::size_t k = 1; k <= level; ++k) {
-                const std::size_t a = k - 1;            // 0..4
-                const std::size_t b = kLedsPerEar - k;  // 8..4
-                lit[a] = true;
-                lit[kLedsPerEar + a] = true;
-                if (b != a) {
-                    lit[b] = true;
-                    lit[kLedsPerEar + b] = true;
+            // Level-meter mask
+            if (level_meter_active) {
+                std::size_t level = 0;
+                for (std::size_t k = 0; k < 5; ++k) {
+                    if (mouth >= kLevelThresholds[k]) level = k + 1;
+                }
+                std::array<bool, 18> lit{};
+                for (std::size_t k = 1; k <= level; ++k) {
+                    const std::size_t a = k - 1;            // 0..4
+                    const std::size_t b = kLedsPerEar - k;  // 8..4
+                    lit[a] = true;
+                    lit[kLedsPerEar + a] = true;
+                    if (b != a) {
+                        lit[b] = true;
+                        lit[kLedsPerEar + b] = true;
+                    }
+                }
+                for (std::size_t i = 0; i < n && i < lit.size(); ++i) {
+                    if (!lit[i]) strip->set(i, 0, 0, 0);
                 }
             }
-            for (std::size_t i = 0; i < n && i < lit.size(); ++i) {
-                if (!lit[i]) strip.set(i, 0, 0, 0);
+
+            (void)strip->show();
+        }
+
+        // Base NeoPixel strip on M5 base (PY32 I2C 12 LEDs)
+        // Lights up in rainbow gradient ONLY while vehicle is moving (all 3 drive modes).
+        // Stays completely off while waiting or stopped.
+        if (base_strip != nullptr) {
+            const bool is_moving = state.driving.is_moving.load(std::memory_order_relaxed);
+            if (is_moving) {
+                const std::size_t base_n = base_strip->size();
+                const std::uint8_t period_ds = std::max<std::uint8_t>(
+                    1, state.led.gradient_period_ds.load(std::memory_order_relaxed));
+                const float period_s = static_cast<float>(period_ds) * 0.1f;
+                const float h0 = t / period_s;
+                for (std::size_t i = 0; i < base_n; ++i) {
+                    std::uint8_t r, g, b;
+                    hsv_to_rgb(h0 + static_cast<float>(i) / static_cast<float>(base_n), r, g, b);
+                    base_strip->set(i, scale8(r, bright), scale8(g, bright), scale8(b, bright));
+                }
+                (void)base_strip->show();
+                base_was_moving = true;
+            } else {
+                if (base_was_moving) {
+                    base_strip->clear();
+                    (void)base_strip->show();
+                    base_was_moving = false;
+                }
             }
         }
 
-        (void)strip.show();
         vTaskDelayUntil(&last_wake, kPeriodTicks);
     }
 }

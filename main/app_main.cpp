@@ -986,10 +986,9 @@ extern "C" void app_main()
         stackchan::app::start_servo_task(*g_servo_args);
     }
     // NeoPixel animation task. Driven by SharedState (led_mode / led_color /
-    // led_brightness). Only spun up when the board actually has a strip
-    // (CoreS3 = GPIO9, AtomNyan = GPIO38; both surface a NekomimiLedStrip).
-    if (auto* strip = board.led_strip(); strip != nullptr && !kLedTaskDisabledForDebug) {
-        g_led_args = new stackchan::app::LedTaskArgs{g_state, strip};
+    // led_brightness). Supports both Nekomimi strip and M5 Base strip.
+    if (auto* strip = board.led_strip(); (strip != nullptr || board.base_led_strip() != nullptr) && !kLedTaskDisabledForDebug) {
+        g_led_args = new stackchan::app::LedTaskArgs{g_state, strip, board.base_led_strip()};
         stackchan::app::diag_heap("pre-led");
         stackchan::app::start_led_task(*g_led_args);
     } else if (kLedTaskDisabledForDebug) {
@@ -1272,6 +1271,10 @@ extern "C" void app_main()
     // LT timekeeper の残り時間を HTTP (GET /api/lt/status) から読めるようにする。
     // タイマー本体は demo_loop が回すので、ここは SharedState.lt の読み出しのみ。
     stackchan::wifi_config::set_lt_state_getter(&lt_state_view);
+
+    // demo_loop (AtomicMotionClient::tick() を含む) が音声合成タスク (優先度 1) に
+    // プリエンプトされて I2C 通信が途絶えないよう、メインループタスクの優先度を 2 に設定
+    vTaskPrioritySet(nullptr, tskIDLE_PRIORITY + 2);
 
     stackchan::app::diag_heap("pre-demo_loop");
     stackchan::app::run_demo_loop({

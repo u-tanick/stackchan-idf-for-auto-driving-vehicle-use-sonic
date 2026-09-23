@@ -19,6 +19,10 @@ void wifi_start(const config::DeviceConfig& cfg);
 // True once Wi-Fi has an IP address. Becomes false again on disconnect.
 bool wifi_is_connected();
 
+// Get the assigned STA IPv4 address as a string (e.g. "192.168.1.10").
+// Returns true on success, false if disconnected or unavailable.
+bool wifi_get_ip(char* buf, std::size_t cap);
+
 // True when 3 connection attempts failed and Wi-Fi gave up (offline mode).
 bool wifi_is_failed();
 

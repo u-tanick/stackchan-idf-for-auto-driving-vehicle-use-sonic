@@ -165,6 +165,7 @@ public:
         std::atomic<bool> joy_active{false};
         std::atomic<std::uint16_t> scan_distance_cm{10};  // 接近検知・探索開始距離 (cm)
         std::atomic<std::uint16_t> alert_distance_cm{5};  // 最接近アラート（赤色）距離 (cm)
+        std::atomic<bool> is_moving{false};               // 走行中フラグ（LED点灯連動用）
     };
     Driving driving;
 

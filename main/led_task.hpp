@@ -10,7 +10,8 @@ namespace stackchan::app {
 
 struct LedTaskArgs {
     SharedState* state;
-    board::LedStrip* strip; // owned by Board, never null when start_led_task is called
+    board::LedStrip* strip; // owned by Board, null if no nekomimi strip
+    board::LedStrip* base_strip{nullptr}; // Base PY32 LED strip (optional)
 };
 
 // Pinned to core 1 (off the servo / NimBLE / I2C-heavy core), ~30 Hz refresh.

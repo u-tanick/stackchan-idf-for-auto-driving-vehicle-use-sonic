@@ -3,6 +3,8 @@
 
 #include "mode_select_screen.hpp"
 #include "atomic_motion_client.hpp"
+#include "wifi_sta.hpp"
+#include <cstdio>
 #include <esp_log.h>
 
 namespace stackchan::app::mode_select {
@@ -50,15 +52,15 @@ bool draw(avatar::RichCanvas& canvas)
     const uint16_t bg_dark = canvas.color565(10, 14, 20);
     canvas.fillScreen(bg_dark);
 
-    // 縦3分割カードの共通設定
+    // 縦3分割カードの共通設定（フッター領域確保のため H=68）
     constexpr int32_t kCardX = 6;
     constexpr int32_t kCardW = 308;
-    constexpr int32_t kCardH = 70;
+    constexpr int32_t kCardH = 68;
     constexpr int32_t kRadius = 8;
 
     // バッジ共通設定（3つすべて同一サイズ、VLM AIが余裕をもって収まる幅56px）
     constexpr int32_t kBadgeX = kCardX + 10;
-    constexpr int32_t kBadgeYOff = 12;
+    constexpr int32_t kBadgeYOff = 11;
     constexpr int32_t kBadgeW = 56;
     constexpr int32_t kBadgeH = 20;
     constexpr int32_t kBadgeRadius = 4;
@@ -68,7 +70,7 @@ bool draw(avatar::RichCanvas& canvas)
     // タイトルおよび説明文の共通配置
     constexpr int32_t kTitleX = kBadgeX + kBadgeW + 8; // kCardX + 74
     constexpr int32_t kDescX = kCardX + 12;
-    constexpr int32_t kDescYOff = 44;
+    constexpr int32_t kDescYOff = 43;
 
     // --- 上段: 自律運転（距離センサー） ---
     {
@@ -102,7 +104,7 @@ bool draw(avatar::RichCanvas& canvas)
 
     // --- 中段: 自律運転（距離＋カメラ） ---
     {
-        constexpr int32_t kCardY = 85;
+        constexpr int32_t kCardY = 80;
         const uint16_t card_bg = canvas.color565(48, 28, 12);
         const uint16_t border_color = canvas.color565(255, 150, 0); // Orange
         const uint16_t sub_color  = canvas.color565(240, 190, 140);
@@ -132,7 +134,7 @@ bool draw(avatar::RichCanvas& canvas)
 
     // --- 下段: JoyC操作（ESPNow） ---
     {
-        constexpr int32_t kCardY = 164;
+        constexpr int32_t kCardY = 154;
         const uint16_t card_bg = canvas.color565(12, 42, 22);
         const uint16_t border_color = canvas.color565(50, 220, 80); // Green
         const uint16_t sub_color  = canvas.color565(140, 230, 160);
@@ -160,6 +162,17 @@ bool draw(avatar::RichCanvas& canvas)
         canvas.drawString("プロポ手動操縦 / ラジコン走行モード", kDescX, kCardY + kDescYOff);
     }
 
+    // --- 画面右下: Wi-Fi接続時のIP表示 ---
+    char ip_str[32] = {0};
+    if (wifi_get_ip(ip_str, sizeof(ip_str))) {
+        char msg[48];
+        std::snprintf(msg, sizeof(msg), "IP: %s", ip_str);
+        canvas.setFont(kFontDesc);
+        canvas.setTextColor(canvas.color565(100, 220, 140)); // エメラルドグリーン
+        canvas.setTextDatum(lgfx::textdatum_t::bottom_right);
+        canvas.drawString(msg, 314, 238);
+    }
+
     return true;
 }
 
@@ -169,13 +182,13 @@ bool handle_tap(int x, int y)
 
     ESP_LOGI(kTag, "Mode select screen tapped at (%d, %d)", x, y);
 
-    if (y < 80) {
+    if (y < 78) {
         // 上段: 自律運転（距離センサー）
         ESP_LOGI(kTag, "Selected: SonicOnly mode");
         AtomicMotionClient::set_drive_type(AtomicMotionClient::DriveType::SonicOnly, *g_state);
         hide();
         return true;
-    } else if (y < 160) {
+    } else if (y < 152) {
         // 中段: 自律運転（距離＋カメラ）
         ESP_LOGI(kTag, "Selected: SonicCamera mode");
         AtomicMotionClient::set_drive_type(AtomicMotionClient::DriveType::SonicCamera, *g_state);

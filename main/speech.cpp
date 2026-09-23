@@ -298,8 +298,9 @@ bool Speech::say(std::u32string_view reading)
     opt.sample_rate_hz = kSampleRate; // 他エンジンの既定レート。sanoTTS は 22.05 kHz を返す
     auto* job = new SynthJob{this, std::u32string{reading}, opt, gen_.load(std::memory_order_acquire)};
     // スタックは PSRAM (flash への書き込みはしない)。CPU 0 — CPU 1 は描画 / サーボ / スピーカー。
+    // demo_loop の 50ms 周期実行（優先度 2 以上）を阻害しないよう tskIDLE_PRIORITY + 1 で実行。
     const BaseType_t rc = xTaskCreatePinnedToCoreWithCaps(&synth_task, "speech_synth", 16 * 1024, job,
-                                                          tskIDLE_PRIORITY + 2, nullptr, 0,
+                                                          tskIDLE_PRIORITY + 1, nullptr, 0,
                                                           stackchan::kNoFlashTaskStackCaps);
     if (rc != pdPASS) {
         ESP_LOGE("speech", "synth task create failed");

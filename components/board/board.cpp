@@ -32,15 +32,15 @@ public:
          std::optional<Si12tTouch>&& touch) noexcept
         : kind_{kind}, expander_{std::move(expander)}, touch_{std::move(touch)}
     {
+        // M5 Stack-chan base back-panel NeoPixel (12 LEDs driven by PY32 over I2C)
+        if (expander_) {
+            base_led_ = std::make_unique<Py32LedStrip>(*expander_, kM5LedCount);
+        }
+
         // Stack-chan ネコミミ NeoPixel (18 LEDs = 9 per ear) — present on
         // M5/Takao/AtomNyan bases, but the data line varies: CoreS3 uses
         // GPIO9 (free pin near the M-BUS), AtomNyan uses GPIO38 (the
-        // available pin on Atomic ECHO BASE's headers). We prefer the
-        // nekomimi strip over the M5-base PY32 ring (currently disabled —
-        // JOURNAL: "M5 base 背面 NeoPixel … 完全に無効化中"); the PY32
-        // path can come back via a separate accessor without disturbing
-        // this one. StopWatch (C152) has no nekomimi wiring at all — leave
-        // led_ as nullptr so app_main / led_task null-check naturally.
+        // available pin on Atomic ECHO BASE's headers).
         if (kind_ == BoardKind::StopWatch) {
             return;
         }
@@ -54,6 +54,7 @@ public:
     std::optional<Py32Expander>& expander() noexcept { return expander_; }
     Si12tTouch* touch() noexcept { return touch_ ? &*touch_ : nullptr; }
     LedStrip* led() noexcept { return led_.get(); }
+    LedStrip* base_led() noexcept { return base_led_.get(); }
 
 private:
     BoardKind kind_;
@@ -63,6 +64,7 @@ private:
     // NekomimiLedStrip have different sizes / move semantics. nullptr on
     // hardware without any strip (AtomNyan).
     std::unique_ptr<LedStrip> led_;
+    std::unique_ptr<LedStrip> base_led_;
 };
 
 tl::expected<Board, Error> Board::begin()
@@ -202,12 +204,19 @@ tl::expected<Board, Error> Board::begin()
     LedStrip* led = board.impl_->led();
     if (led != nullptr) {
         if (auto r = led->begin(); !r) {
-            ESP_LOGW(kTag, "LED strip begin failed: %d", static_cast<int>(r.error()));
+            ESP_LOGW(kTag, "Nekomimi LED strip begin failed: %d", static_cast<int>(r.error()));
         }
     }
-    ESP_LOGI(kTag, "board initialized: kind=%s (servo power: OFF, leds: %s)",
+    LedStrip* base_led = board.impl_->base_led();
+    if (base_led != nullptr) {
+        if (auto r = base_led->begin(); !r) {
+            ESP_LOGW(kTag, "Base LED strip begin failed: %d", static_cast<int>(r.error()));
+        }
+    }
+    ESP_LOGI(kTag, "board initialized: kind=%s (servo power: OFF, leds: %s, base_leds: %s)",
              kind == BoardKind::M5Base ? "M5Base" : "TakaoBase",
-             led != nullptr ? "ready" : "none");
+             led != nullptr ? "ready" : "none",
+             base_led != nullptr ? "ready" : "none");
     return board;
 }
 
@@ -303,6 +312,11 @@ Si12tTouch* Board::touch_sensor() noexcept
 LedStrip* Board::led_strip() noexcept
 {
     return impl_->led();
+}
+
+LedStrip* Board::base_led_strip() noexcept
+{
+    return impl_->base_led();
 }
 
 bool Board::vibrate(std::uint32_t duration_ms)

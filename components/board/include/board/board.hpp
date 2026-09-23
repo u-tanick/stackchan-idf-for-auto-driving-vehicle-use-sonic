@@ -134,6 +134,9 @@ public:
     // should null-check (animation tasks skip themselves when absent).
     LedStrip* led_strip() noexcept;
 
+    // NeoPixel strip on the M5 base back panel (PY32 I2C 12 LEDs).
+    LedStrip* base_led_strip() noexcept;
+
     // Brief tactile pulse on the vibration motor (StopWatch M5IOE1 PYG9).
     // Blocking — duration_ms ≤ 200 is the intended range. No-op on boards
     // without a motor (returns immediately). Returns true if a pulse was

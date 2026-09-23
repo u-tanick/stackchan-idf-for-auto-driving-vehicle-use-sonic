@@ -398,6 +398,24 @@ bool wifi_is_connected()
     return g_connected.load(std::memory_order_acquire);
 }
 
+bool wifi_get_ip(char* buf, std::size_t cap)
+{
+    if (buf == nullptr || cap < 8) return false;
+    if (!g_connected.load(std::memory_order_acquire)) {
+        return false;
+    }
+    esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (netif == nullptr) {
+        return false;
+    }
+    esp_netif_ip_info_t ip_info;
+    if (esp_netif_get_ip_info(netif, &ip_info) != ESP_OK || ip_info.ip.addr == 0) {
+        return false;
+    }
+    esp_ip4addr_ntoa(&ip_info.ip, buf, cap);
+    return true;
+}
+
 bool wifi_is_failed()
 {
     return g_wifi_failed.load(std::memory_order_acquire);

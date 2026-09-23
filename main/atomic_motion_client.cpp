@@ -1014,6 +1014,19 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             break;
         }
     }
+
+    // 走行中フラグの更新（LED点灯連動用: 走行中はネコミミ＋本体LED、停止/待機中はネコミミのみ）
+    bool is_moving_now = false;
+    if (current_mode == SharedState::Driving::Mode::Manual) {
+        // JoyC手動操縦モード: TX ON (joy_active) の時走行中
+        is_moving_now = state.driving.joy_active.load(std::memory_order_relaxed);
+    } else {
+        // 自律走行モード: 前進、旋回、後退ステートの時走行中
+        is_moving_now = (s_drive_state == AutoDriveState::Forward ||
+                         s_drive_state == AutoDriveState::Turning ||
+                         s_drive_state == AutoDriveState::BackingUp);
+    }
+    state.driving.is_moving.store(is_moving_now, std::memory_order_relaxed);
 }
 
 void AtomicMotionClient::toggle_start_stop(SharedState& state, Speech& speech)
@@ -1034,6 +1047,7 @@ void AtomicMotionClient::toggle_start_stop(SharedState& state, Speech& speech)
         s_drive_state = AutoDriveState::Forward;
         s_state_start_ms = now_ms;
         s_next_drive_speech_ms = now_ms + 4000 + (esp_random() % 4001);
+        state.driving.is_moving.store(true, std::memory_order_relaxed);
     } else {
         // 走行中・探索中から「強制停止！」
         ESP_LOGI(kTag, "Center tap: Force stopping autonomous driving!");
@@ -1049,6 +1063,7 @@ void AtomicMotionClient::toggle_start_stop(SharedState& state, Speech& speech)
         state.set_balloon_text("一時停止中 (タップで再開)", 3000);
         s_drive_state = AutoDriveState::Standby;
         s_state_start_ms = now_ms;
+        state.driving.is_moving.store(false, std::memory_order_relaxed);
     }
 }
 
