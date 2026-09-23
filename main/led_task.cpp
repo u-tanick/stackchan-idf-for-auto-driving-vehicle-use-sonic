@@ -218,20 +218,33 @@ void led_task_entry(void* arg)
         if (base_strip != nullptr) {
             const bool is_moving = state.driving.is_moving.load(std::memory_order_relaxed);
             if (is_moving) {
+                if (!base_was_moving) {
+                    ESP_LOGI(kTag, "Base LED strip turned ON (moving=true)");
+                }
                 const std::size_t base_n = base_strip->size();
                 const std::uint8_t period_ds = std::max<std::uint8_t>(
                     1, state.led.gradient_period_ds.load(std::memory_order_relaxed));
                 const float period_s = static_cast<float>(period_ds) * 0.1f;
                 const float h0 = t / period_s;
+                // Base strip is behind a diffuser and uses RGB565 packing.
+                // Low brightness values (e.g. 26) get quantized to 0 in RGB565.
+                // Use a dedicated vivid brightness (200 / 255) for the base LEDs.
+                constexpr std::uint8_t kBaseStripBright = 200;
                 for (std::size_t i = 0; i < base_n; ++i) {
                     std::uint8_t r, g, b;
                     hsv_to_rgb(h0 + static_cast<float>(i) / static_cast<float>(base_n), r, g, b);
-                    base_strip->set(i, scale8(r, bright), scale8(g, bright), scale8(b, bright));
+                    base_strip->set(i, scale8(r, kBaseStripBright), scale8(g, kBaseStripBright), scale8(b, kBaseStripBright));
                 }
-                (void)base_strip->show();
+                if (auto r = base_strip->show(); !r) {
+                    static int s_err_throttle = 0;
+                    if ((s_err_throttle++ & 31) == 0) {
+                        ESP_LOGW(kTag, "base_strip show() failed: %d", static_cast<int>(r.error()));
+                    }
+                }
                 base_was_moving = true;
             } else {
                 if (base_was_moving) {
+                    ESP_LOGI(kTag, "Base LED strip turned OFF (moving=false)");
                     base_strip->clear();
                     (void)base_strip->show();
                     base_was_moving = false;

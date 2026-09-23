@@ -356,10 +356,12 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
                 case AutoDriveState::VerifySonic: state_str = "VerifySonic"; break;
                 case AutoDriveState::ErrorHold: state_str = "ErrorHold"; break;
             }
-            ESP_LOGI(kTag, "Telemetry: dist=%u mm, obs=0x%02X, state=%s, mode=%s (atom=%s, selected=%d)",
+            ESP_LOGI(kTag, "Telemetry: dist=%u mm, obs=0x%02X, state=%s, mode=%s (atom=%s, selected=%d, joy_active=%d, is_moving=%d)",
                      status.distance_mm, status.obstacle_flags, state_str,
                      (current_mode == SharedState::Driving::Mode::Manual) ? "Manual" : "Auto",
-                     (status.robot_mode == 1) ? "Manual" : "Auto", s_mode_selected);
+                     (status.robot_mode == 1) ? "Manual" : "Auto", s_mode_selected,
+                     status.joy_active ? 1 : 0,
+                     state.driving.is_moving.load(std::memory_order_relaxed) ? 1 : 0);
         }
 
         // 手動操縦モード（JoyC）のときの画面案内表示
@@ -1018,8 +1020,8 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
     // 走行中フラグの更新（LED点灯連動用: 走行中はネコミミ＋本体LED、停止/待機中はネコミミのみ）
     bool is_moving_now = false;
     if (current_mode == SharedState::Driving::Mode::Manual) {
-        // JoyC手動操縦モード: TX ON (joy_active) の時走行中
-        is_moving_now = state.driving.joy_active.load(std::memory_order_relaxed);
+        // JoyC手動操縦モード: モード選択済み(s_mode_selected)なら操縦中として点灯
+        is_moving_now = s_mode_selected || state.driving.joy_active.load(std::memory_order_relaxed);
     } else {
         // 自律走行モード: 前進、旋回、後退ステートの時走行中
         is_moving_now = (s_drive_state == AutoDriveState::Forward ||
