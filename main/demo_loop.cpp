@@ -467,14 +467,21 @@ constexpr const char* kTag = "stackchan";
         }
 
         if (allow_full_demo) {
-            // When idle jtts babble is enabled, drive the mouth from the
-            // speech envelope and run the Wi-Fi check + random babble. When
-            // disabled, demo_loop becomes a no-op on the mouth so the mic
-            // lip-sync task (main/mic_lip_sync_task.cpp), if active, owns
-            // `mouth_open` without us overwriting it with 0 every tick.
-            if (jtts_idle_enabled) {
-                // Mouth opens with the current speech envelope; closed while silent.
+            // Speech (sanoTTS / HMM / jtts / driving speech) が発話中のときは、
+            // jtts_idle_enabled の設定にかかわらず speech のエンベロープでアバターの口を駆動
+            static bool s_was_speaking = false;
+            const bool speaking_now = speech.is_speaking();
+            if (speaking_now) {
                 g_state->face.mouth_open.store(speech.current_mouth_open(), std::memory_order_relaxed);
+                s_was_speaking = true;
+            } else if (s_was_speaking) {
+                g_state->face.mouth_open.store(0.0f, std::memory_order_relaxed);
+                s_was_speaking = false;
+            } else if (jtts_idle_enabled) {
+                g_state->face.mouth_open.store(0.0f, std::memory_order_relaxed);
+            }
+
+            if (jtts_idle_enabled) {
 
                 // The "Wi-Fi: 切断中" balloon and the babble suppression below only
                 // make sense when the assistant actually needs the network — i.e.

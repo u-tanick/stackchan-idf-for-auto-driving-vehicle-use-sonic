@@ -121,7 +121,8 @@ void build_envelope_from_pcm(const std::vector<std::int16_t>& pcm,
         for (std::size_t i = begin; i < end; ++i) {
             peak = std::max(peak, std::abs(static_cast<std::int32_t>(pcm[i])));
         }
-        envelope[w] = static_cast<float>(peak) / 32767.0f;
+        const float val = static_cast<float>(peak) / 18000.0f;
+        envelope[w] = (val > 1.0f) ? 1.0f : val;
     }
 }
 

@@ -1059,17 +1059,15 @@
       </div>
       <label class="toggle-label" for="led-mouth-sync" style="margin-top:1rem">
         <input type="checkbox" id="led-mouth-sync">
-        <span>口の動きに合わせて LED を制御する</span>
+        <span>【LED】口の動きに合わせて LED を連動制御する</span>
       </label>
-      <p class="hint">アバターの口が開くと LED が反応します (会話再生・jtts 発話・マイク リップシンク いずれの口元アニメーションでも有効)。OFF のときは設定した明るさ で固定。保存後の再起動で反映されます。</p>
-      <label for="lip-sync-mode" style="margin-top:0.5rem">リップシンク モード</label>
+      <p class="hint">アバターの口の開き（リップシンク）に合わせて LED が反応します (会話再生・jtts/sanoTTS 発話・マイク リップシンク いずれの口元アニメーションでも有効)。OFF のときは設定した明るさで固定。保存後の再起動で反映されます。</p>
+      <label for="lip-sync-mode" style="margin-top:0.5rem">LED 口元連動方式 (LED LipSync Mode)</label>
       <p class="hint">
-        ON のときの制御方式を選びます。「輝度」は口が開くほど LED 全体が明るくなる
-        従来動作。「レベル メーター」はネコミミの三角形 (LED1 = 底辺、LED5 = 頂点)
-        を 5 段階のバー グラフとして点灯させます。保存後の再起動で反映されます。
+        「口の動きに合わせて LED を連動制御する」が ON のときの表示方式を選びます。「輝度」は口が開くほど LED 全体が明るくなる動作。「レベル メーター」はネコミミの三角形 (LED1 = 底辺、LED5 = 頂点) を 5 段階のバー グラフとして点灯させます。保存後の再起動で反映されます。
       </p>
       <select id="lip-sync-mode">
-        <option value="0">輝度 (Brightness)</option>
+        <option value="0">輝度連動 (Brightness)</option>
         <option value="1">レベル メーター (LevelMeter)</option>
       </select>
     </div>
