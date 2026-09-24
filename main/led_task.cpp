@@ -235,16 +235,24 @@ void led_task_entry(void* arg)
                     {160,   0, 255}, // 紫 (Violet)
                 }};
                 constexpr uint32_t kStepPeriodMs = 1500;
-                const uint32_t color_idx = (now_ms() / kStepPeriodMs) % kRainbow7Colors.size();
-                const auto& col = kRainbow7Colors[color_idx];
+                const uint32_t now = now_ms();
+                const uint32_t color_idx = (now / kStepPeriodMs) % kRainbow7Colors.size();
+                const uint32_t next_idx = (color_idx + 1) % kRainbow7Colors.size();
+                const float frac = static_cast<float>(now % kStepPeriodMs) / static_cast<float>(kStepPeriodMs);
+
+                const auto& c1 = kRainbow7Colors[color_idx];
+                const auto& c2 = kRainbow7Colors[next_idx];
+                const auto cur_r = static_cast<std::uint8_t>(c1.r + static_cast<float>(static_cast<int>(c2.r) - static_cast<int>(c1.r)) * frac);
+                const auto cur_g = static_cast<std::uint8_t>(c1.g + static_cast<float>(static_cast<int>(c2.g) - static_cast<int>(c1.g)) * frac);
+                const auto cur_b = static_cast<std::uint8_t>(c1.b + static_cast<float>(static_cast<int>(c2.b) - static_cast<int>(c1.b)) * frac);
 
                 // Base strip is behind a diffuser and uses RGB565 packing.
                 // Low brightness values (e.g. 26) get quantized to 0 in RGB565.
                 // Use a dedicated vivid brightness (200 / 255) for the base LEDs.
                 constexpr std::uint8_t kBaseStripBright = 200;
-                base_strip->fill(scale8(col.r, kBaseStripBright),
-                                 scale8(col.g, kBaseStripBright),
-                                 scale8(col.b, kBaseStripBright));
+                base_strip->fill(scale8(cur_r, kBaseStripBright),
+                                 scale8(cur_g, kBaseStripBright),
+                                 scale8(cur_b, kBaseStripBright));
 
                 if (auto r = base_strip->show(); !r) {
                     static int s_err_throttle = 0;
