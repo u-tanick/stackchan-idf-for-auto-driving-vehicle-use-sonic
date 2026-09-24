@@ -150,16 +150,16 @@ VlmEvaluation VlmClient::evaluate_current_view(const char* direction_label)
 
     // 3. プロンプトと JSON リクエストペイロードの作成
     // PSRAM 上に文字列を構築
-    char prompt_raw[256];
+    char prompt_raw[512];
     std::snprintf(prompt_raw, sizeof(prompt_raw),
-                  "自律移動ロボットの回避判断です。画像の前方（向き: %s）の通行可能性を判断し、"
-                  "次のJSON形式のみで出力してください: "
-                  "{\"passable\": trueまたはfalse, \"score\": 0〜100の安全度, \"reason\": \"理由\"}",
-                  direction_label ? direction_label : "front");
+                  "幅10cmの小型ロボットの自律走行ナビ判断です。画像内の向き(%s)について、直前50cm〜1mの床面に走行スペースがあるか判定し、次のJSON形式のみで出力してください: "
+                  "{\"passable\": trueまたはfalse, \"score\": 0〜100, \"reason\": \"理由\"} "
+                  "※直前50cm以内に壁や箱等の障害物が密着していなければpassable:true(score:60〜100)とし、遠くの壁や家具、薄暗さは無視してください。",
+                  direction_label ? direction_label : "正面");
     const std::string prompt_escaped = json_escape(prompt_raw);
 
     std::string payload;
-    payload.reserve(written + 512);
+    payload.reserve(written + 768);
     payload += "{\"model\":\"";
     payload += s_model;
     payload += "\",\"messages\":[{\"role\":\"user\",\"content\":[";

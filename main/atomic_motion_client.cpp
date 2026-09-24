@@ -823,13 +823,20 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
                 int best_idx = -1;
                 int best_score = -1;
                 for (int i = 0; i < 4; ++i) {
-                    if (s_scan_evals[i].success && s_scan_evals[i].passable && s_scan_evals[i].score > best_score) {
-                        best_score = s_scan_evals[i].score;
-                        best_idx = i;
+                    if (s_scan_evals[i].success) {
+                        // passable優先、スコア比較（passable=falseはスコア半減で重み付け）
+                        int effective_score = s_scan_evals[i].score;
+                        if (!s_scan_evals[i].passable) {
+                            effective_score /= 2;
+                        }
+                        if (effective_score > best_score) {
+                            best_score = effective_score;
+                            best_idx = i;
+                        }
                     }
                 }
 
-                if (best_idx < 0 || best_score < 40) {
+                if (best_idx < 0 || best_score < 25) {
                     // 全方向障害物（袋小路）：180度Uターン
                     ESP_LOGW(kTag, "All directions blocked (best score=%d). Executing 180 deg U-turn.", best_score);
                     state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
@@ -995,8 +1002,12 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
         case AutoDriveState::VerifyCamera:
             // 旋回直後の手ブレ静止待ち (800ms) かつ 発話終了後1秒待機
             if (now_ms - s_state_start_ms >= 800 && !is_speech_cooling_down(now_ms, speech)) {
-                ESP_LOGI(kTag, "Verifying new path with camera view (front_check, try %d/3)...", s_verify_retry_count + 1);
-                VlmEvaluation eval = VlmClient::evaluate_current_view("front_check");
+                const uint16_t current_dist = state.driving.distance_mm.load(std::memory_order_relaxed);
+                const uint16_t verify_limit_mm = scan_threshold_mm + 20;
+
+                ESP_LOGI(kTag, "Verifying new path with camera view (front_check, try %d/3, sonic=%u mm)...",
+                         s_verify_retry_count + 1, current_dist);
+                VlmEvaluation eval = VlmClient::evaluate_current_view("正面確認");
                 if (!eval.success) {
                     s_verify_retry_count++;
                     ESP_LOGW(kTag, "Front check VLM failed (retry %d/3)", s_verify_retry_count);
@@ -1006,51 +1017,40 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
                         s_state_start_ms = now_ms;
                         break;
                     } else {
-                        s_verify_retry_count = 0;
-                        state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
-                        state.face.bg_color.store(0xF800u, std::memory_order_relaxed); // 接続失敗：赤色
-                        state.face.expression.store(static_cast<int>(avatar::Expression::Sad), std::memory_order_relaxed);
-                        say_step(speech, state, "画像認識失敗", U"たすけてー、にんしき、しっぱい", 6000);
-                        send_command(CmdStop);
-                        s_drive_state = AutoDriveState::ErrorHold;
-                        s_state_start_ms = now_ms;
-                        break;
+                        // VLM失敗でも超音波センサーで十分に前方クリア(> verify_limit_mm)なら走行を優先！
+                        if (current_dist > verify_limit_mm) {
+                            ESP_LOGW(kTag, "VLM failed but ultrasonic clear (%u mm). Proceeding anyway.", current_dist);
+                            eval.passable = true;
+                            eval.score = 60;
+                        } else {
+                            s_verify_retry_count = 0;
+                            state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
+                            state.face.bg_color.store(0xF800u, std::memory_order_relaxed); // 接続失敗：赤色
+                            state.face.expression.store(static_cast<int>(avatar::Expression::Sad), std::memory_order_relaxed);
+                            say_step(speech, state, "画像認識失敗", U"たすけてー、にんしき、しっぱい", 6000);
+                            send_command(CmdStop);
+                            s_drive_state = AutoDriveState::ErrorHold;
+                            s_state_start_ms = now_ms;
+                            break;
+                        }
                     }
                 }
                 s_verify_retry_count = 0;
 
-                if (!eval.passable || eval.score < 40) {
-                    ESP_LOGW(kTag, "Camera detected obstacle in new path (score=%d). Rescanning...", eval.score);
+                // 複合判定:
+                // カメラが極めて低スコア (score < 25) かつ 超音波センサーでも前方に壁を検知 (<= verify_limit_mm) している場合のみ障害物とみなす。
+                // 超音波センサーで前方が抜けている（400mm以上等）なら、カメラの遠景・陰影の誤判定として前進を優先する。
+                const bool sonic_blocked = (current_dist > 0 && current_dist <= verify_limit_mm);
+                if ((!eval.passable && eval.score < 25) && sonic_blocked) {
+                    ESP_LOGW(kTag, "Obstacle confirmed by both camera (score=%d) and sonic (%u mm). Rescanning...",
+                             eval.score, current_dist);
                     state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
                     say_step(speech, state, "障害物あり！", U"しょうがいぶつ、はっけん", 2500);
                     s_drive_state = AutoDriveState::StartScan;
                     s_state_start_ms = now_ms;
                 } else {
-                    ESP_LOGI(kTag, "Camera path clear (score=%d). Now verifying with ultrasonic sensor...", eval.score);
-                    // カメラ確認OK → 首を正面に戻して超音波センサーをONにし距離確認
-                    state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
-                    state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
-                    state.set_balloon_text("センサー確認中", 2000); // 発話なし
-                    s_drive_state = AutoDriveState::VerifySonic;
-                    s_state_start_ms = now_ms;
-                }
-            }
-            break;
-
-        case AutoDriveState::VerifySonic:
-            // 超音波センサーの測定値反映待ち (600ms)
-            if (now_ms - s_state_start_ms >= 600) {
-                const uint16_t current_dist = state.driving.distance_mm.load(std::memory_order_relaxed);
-                const uint16_t verify_limit_mm = scan_threshold_mm + 20;
-                if (current_dist > 0 && current_dist <= verify_limit_mm) {
-                    ESP_LOGW(kTag, "Ultrasonic sensor detected obstacle (%u mm). Rescanning...", current_dist);
-                    state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
-                    say_step(speech, state, "壁検知！再探索", U"しょうがいぶつ、はっけん", 2500);
-                    s_drive_state = AutoDriveState::StartScan;
-                    s_state_start_ms = now_ms;
-                } else {
-                    // カメラ・超音波ともにOK！
-                    ESP_LOGI(kTag, "Both camera and ultrasonic clear! Resuming forward drive.");
+                    ESP_LOGI(kTag, "Camera path clear (score=%d, passable=%d, sonic=%u mm). Resuming forward drive.",
+                             eval.score, eval.passable, current_dist);
                     state.servo.speed_override.store(0, std::memory_order_relaxed);
                     state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
                     state.face.bg_color.store(0x0000u, std::memory_order_relaxed); // 標準黒
@@ -1062,6 +1062,11 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
                     s_next_drive_speech_ms = now_ms + 4000 + (esp_random() % 4001);
                 }
             }
+            break;
+
+        case AutoDriveState::VerifySonic:
+            // 互換性のため残すが、VerifyCameraから直接Forwardに移行可能
+            s_drive_state = AutoDriveState::Forward;
             break;
 
         case AutoDriveState::ErrorHold:
