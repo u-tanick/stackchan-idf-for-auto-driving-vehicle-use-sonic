@@ -851,15 +851,15 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             }
 
             const uint32_t turn_elapsed_ms = now_ms - s_state_start_ms;
-            // モーター停止コマンド送信から完全停止までの慣性・遅延（約16度のオーバーシュート）を考慮した先行停止角
-            // 実測85度から+6度伸ばし、90度強（わずかにオーバー気味の91〜92度）を狙って調整
-            constexpr float kTurnOvershootDeg = 16.0f;
+            // モーター停止コマンド送信から完全停止までの慣性・遅延を考慮した先行停止角
+            // 85度（kTurnOvershootDeg=22度）からわずかに伸ばす（kTurnOvershootDeg=19.5度、停止閾値70.5度）
+            constexpr float kTurnOvershootDeg = 19.5f;
             const float stop_threshold_deg = (s_target_turn_deg > kTurnOvershootDeg)
                                            ? (s_target_turn_deg - kTurnOvershootDeg)
                                            : (s_target_turn_deg * 0.75f);
 
-            // 実測角速度に基づく旋回所要時間: 90度なら約1130ms（85度から約+6度伸ばす調整）
-            const uint32_t target_duration_ms = static_cast<uint32_t>((s_target_turn_deg / 90.0f) * 1130.0f);
+            // 実測角速度に基づく旋回所要時間: 90度なら約1080ms（85度だった1050msから+30msの微増）
+            const uint32_t target_duration_ms = static_cast<uint32_t>((s_target_turn_deg / 90.0f) * 1080.0f);
             // 最低旋回時間ガード
             const uint32_t min_turn_ms = static_cast<uint32_t>((s_target_turn_deg / 90.0f) * 500.0f);
 
@@ -875,7 +875,9 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             const bool turn_finished = (turn_elapsed_ms >= min_turn_ms) &&
                                        (s_turn_integrated_deg >= stop_threshold_deg || turn_elapsed_ms >= target_duration_ms);
 
-            if (turn_finished || (turn_elapsed_ms >= 3000)) {
+            // 安全上限ガード: 大回り（115度など）を防止するため最大でも1400msで強制終了
+            const uint32_t max_turn_limit_ms = static_cast<uint32_t>((s_target_turn_deg / 90.0f) * 1300.0f);
+            if (turn_finished || (turn_elapsed_ms >= max_turn_limit_ms)) {
                 send_command(CmdStop);
                 ESP_LOGI(kTag, "Turn complete: elapsed=%u ms, integrated=%.1f deg (target=%.1f deg, thresh=%.1f deg).",
                          turn_elapsed_ms, s_turn_integrated_deg, s_target_turn_deg, stop_threshold_deg);
