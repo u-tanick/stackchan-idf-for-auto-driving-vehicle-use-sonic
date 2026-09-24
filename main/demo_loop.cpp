@@ -29,6 +29,7 @@
 #include "speech.hpp"
 #include "wifi_sta.hpp"
 #include "atomic_motion_client.hpp"
+#include "mode_select_screen.hpp"
 
 namespace stackchan::app {
 
@@ -204,14 +205,15 @@ constexpr const char* kTag = "stackchan";
         ESP_LOGI(kTag, "Servo self-test complete. Head centered at (0, +15).");
     }
 
-    // 顔の位置セット完了後、Atom (車体側マイコン: 0x42) と通信できなければ電源ONを促す発話
+    // 顔の位置セット完了後、Atom (車体側マイコン: 0x42) と通信できなければ電源ONを促す発話＆泣き顔赤顔
     bool s_atom_power_prompted = false;
     if (!app::AtomicMotionClient::is_connected()) {
-        ESP_LOGW(kTag, "AtomS3 Lite not detected on Port A (0x42)! Prompting user to turn on Atom power.");
-        g_state->face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
-        g_state->set_balloon_text("Atomの電源を入れてください", 4000);
+        ESP_LOGW(kTag, "AtomS3 Lite not detected on Port A (0x42)! Showing sad red face.");
+        g_state->face.expression.store(static_cast<int>(avatar::Expression::Sad), std::memory_order_relaxed);
+        g_state->face.bg_color.store(0xF800u, std::memory_order_relaxed); // 赤い顔 (RGB565 Red)
+        g_state->set_balloon_text("Atomの電源を入れてください", /*hold_ms=*/UINT32_MAX);
         speech.say(U"あとむの、でんげんを、いれてください");
-        next_speech_ms = 8000;
+        next_speech_ms = 15000;
         s_atom_power_prompted = true;
     }
 
@@ -331,13 +333,15 @@ constexpr const char* kTag = "stackchan";
         // Synchronize driving mode and sensor telemetry with AtomS3 Lite over Port A I2C
         app::AtomicMotionClient::tick(*g_state, speech);
 
-        // 起動時に未接続で発話後、電源がONになって接続復帰した場合
+        // 起動時に未接続で発話後、電源がONになって接続復帰した場合（自動検知）
         if (s_atom_power_prompted && app::AtomicMotionClient::is_connected()) {
             s_atom_power_prompted = false;
-            ESP_LOGI(kTag, "AtomS3 Lite connected! Restoring expression.");
-            g_state->face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
-            g_state->set_balloon_text("Atomと接続しました！", 2500);
-            speech.say(U"あとむと、つながったよ");
+            ESP_LOGI(kTag, "AtomS3 Lite connected! Transitioning to mode select screen.");
+            g_state->face.bg_color.store(0x0000u, std::memory_order_relaxed);
+            g_state->face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
+            g_state->set_balloon_text("", 0);
+            speech.stop();
+            app::mode_select::show(); // 3モード選択画面に移行！
             next_speech_ms = now_ms + 6000;
         }
 
@@ -381,8 +385,8 @@ constexpr const char* kTag = "stackchan";
             } else if (!td.isPressed()) {
                 if (s_center_touch_start_ms > 0 && !s_reboot_triggered && !s_touch_consumed_by_screen) {
                     const uint32_t hold_ms = now_ms - s_center_touch_start_ms;
-                    // 短タップ（500ms未満）の場合は前進スタート / 強制停止をトグル
-                    if (hold_ms < 500 && !app::screens::overlay_active()) {
+                    // 短タップ（500ms未満）の場合は前進スタート / 強制停止をトグル (未接続警告中はガード)
+                    if (hold_ms < 500 && !app::screens::overlay_active() && !s_atom_power_prompted) {
                         app::AtomicMotionClient::toggle_start_stop(*g_state, speech);
                     }
                 }
@@ -398,24 +402,49 @@ constexpr const char* kTag = "stackchan";
                 app::screens::handle_flick(td.distanceX(), td.distanceY());
             }
             if (td.wasPressed()) {
-                // Priority dispatch through the screen stack (AP screen
-                // swallows everything while up; device_ui owns its hot
-                // corners even when closed).
-                const bool consumed = app::screens::handle_tap(td.x, td.y);
-                if (consumed) {
+                if (s_atom_power_prompted) {
+                    // 未接続警告中に画面タップされた場合：再度電源が入っているかをチェック
+                    if (app::AtomicMotionClient::is_connected()) {
+                        // 電源ON検知！3モード選択画面へ移行
+                        s_atom_power_prompted = false;
+                        ESP_LOGI(kTag, "Tap detected AtomS3 Lite connected! Transitioning to mode select.");
+                        g_state->face.bg_color.store(0x0000u, std::memory_order_relaxed);
+                        g_state->face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
+                        g_state->set_balloon_text("", 0);
+                        speech.stop();
+                        app::mode_select::show(); // 3モード選択画面に移行！
+                        next_speech_ms = now_ms + 6000;
+                    } else {
+                        // まだ検知できない場合：メッセージ更新＆再発話
+                        ESP_LOGW(kTag, "Tap re-check: AtomS3 Lite still not detected.");
+                        g_state->face.bg_color.store(0xF800u, std::memory_order_relaxed); // 赤い顔維持
+                        g_state->face.expression.store(static_cast<int>(avatar::Expression::Sad), std::memory_order_relaxed);
+                        g_state->set_balloon_text("Atomの電源を入れて、画面をタップしてください", /*hold_ms=*/UINT32_MAX);
+                        speech.say(U"あとむの、でんげんを、いれて、がめんを、たっぷしてください");
+                        next_speech_ms = now_ms + 10000;
+                    }
                     s_touch_consumed_by_screen = true;
                     s_center_touch_start_ms = 0;
-                }
-                // A tap no screen consumed, while the assistant is
-                // mid-reply, is a barge-in request: voice input is paused
-                // for the whole turn, so the screen tap is how the user
-                // interrupts. The conversation task consumes this during
-                // playback.
-                if (!consumed &&
-                    g_state->barge_in_enabled.load(std::memory_order_relaxed) &&
-                    g_state->conv.active.load(std::memory_order_relaxed) &&
-                    !g_state->conv.idle.load(std::memory_order_relaxed)) {
-                    g_state->barge_in_request.store(true, std::memory_order_relaxed);
+                } else {
+                    // Priority dispatch through the screen stack (AP screen
+                    // swallows everything while up; device_ui owns its hot
+                    // corners even when closed).
+                    const bool consumed = app::screens::handle_tap(td.x, td.y);
+                    if (consumed) {
+                        s_touch_consumed_by_screen = true;
+                        s_center_touch_start_ms = 0;
+                    }
+                    // A tap no screen consumed, while the assistant is
+                    // mid-reply, is a barge-in request: voice input is paused
+                    // for the whole turn, so the screen tap is how the user
+                    // interrupts. The conversation task consumes this during
+                    // playback.
+                    if (!consumed &&
+                        g_state->barge_in_enabled.load(std::memory_order_relaxed) &&
+                        g_state->conv.active.load(std::memory_order_relaxed) &&
+                        !g_state->conv.idle.load(std::memory_order_relaxed)) {
+                        g_state->barge_in_request.store(true, std::memory_order_relaxed);
+                    }
                 }
             }
 

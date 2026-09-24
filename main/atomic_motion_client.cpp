@@ -487,13 +487,13 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
 
         switch (s_drive_state) {
         case AutoDriveState::InitWait:
-            // 起動後 15 秒（サーボセルフテスト完了）待機してからモード選択画面を表示
-            if (now_ms >= 15000) {
+            // 起動後 15 秒（サーボセルフテスト完了）待機してからモード選択画面を表示 (Atom接続時のみ)
+            if (now_ms >= 15000 && is_connected()) {
                 send_command(CmdStop);
                 state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
                 state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
                 state.face.bg_color.store(0x0000u, std::memory_order_relaxed);
-                ESP_LOGI(kTag, "Servo self-test complete. Showing mode select screen.");
+                ESP_LOGI(kTag, "Servo self-test complete & Atom connected. Showing mode select screen.");
                 mode_select::show();
                 s_drive_state = AutoDriveState::Standby;
                 s_state_start_ms = now_ms;
