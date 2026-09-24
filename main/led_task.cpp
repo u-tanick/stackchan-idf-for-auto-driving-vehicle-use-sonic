@@ -213,7 +213,8 @@ void led_task_entry(void* arg)
         }
 
         // Base NeoPixel strip on M5 base (PY32 I2C 12 LEDs)
-        // Lights up in rainbow gradient ONLY while vehicle is moving (all 3 drive modes).
+        // Lights up in 7 rainbow colors (Red -> Orange -> Yellow -> Green -> Blue -> Indigo -> Violet)
+        // cycling sequentially ONLY while vehicle is moving (all 3 drive modes).
         // Stays completely off while waiting or stopped.
         if (base_strip != nullptr) {
             const bool is_moving = state.driving.is_moving.load(std::memory_order_relaxed);
@@ -221,20 +222,30 @@ void led_task_entry(void* arg)
                 if (!base_was_moving) {
                     ESP_LOGI(kTag, "Base LED strip turned ON (moving=true)");
                 }
-                const std::size_t base_n = base_strip->size();
-                const std::uint8_t period_ds = std::max<std::uint8_t>(
-                    1, state.led.gradient_period_ds.load(std::memory_order_relaxed));
-                const float period_s = static_cast<float>(period_ds) * 0.1f;
-                const float h0 = t / period_s;
+                struct RgbColor {
+                    std::uint8_t r, g, b;
+                };
+                static constexpr std::array<RgbColor, 7> kRainbow7Colors = {{
+                    {255,   0,   0}, // 赤 (Red)
+                    {255,  80,   0}, // 橙 (Orange)
+                    {255, 200,   0}, // 黄 (Yellow)
+                    {  0, 255,   0}, // 緑 (Green)
+                    {  0, 130, 255}, // 青 (Blue)
+                    {  0,   0, 255}, // 藍 (Indigo)
+                    {160,   0, 255}, // 紫 (Violet)
+                }};
+                constexpr uint32_t kStepPeriodMs = 600;
+                const uint32_t color_idx = (now_ms() / kStepPeriodMs) % kRainbow7Colors.size();
+                const auto& col = kRainbow7Colors[color_idx];
+
                 // Base strip is behind a diffuser and uses RGB565 packing.
                 // Low brightness values (e.g. 26) get quantized to 0 in RGB565.
                 // Use a dedicated vivid brightness (200 / 255) for the base LEDs.
                 constexpr std::uint8_t kBaseStripBright = 200;
-                for (std::size_t i = 0; i < base_n; ++i) {
-                    std::uint8_t r, g, b;
-                    hsv_to_rgb(h0 + static_cast<float>(i) / static_cast<float>(base_n), r, g, b);
-                    base_strip->set(i, scale8(r, kBaseStripBright), scale8(g, kBaseStripBright), scale8(b, kBaseStripBright));
-                }
+                base_strip->fill(scale8(col.r, kBaseStripBright),
+                                 scale8(col.g, kBaseStripBright),
+                                 scale8(col.b, kBaseStripBright));
+
                 if (auto r = base_strip->show(); !r) {
                     static int s_err_throttle = 0;
                     if ((s_err_throttle++ & 31) == 0) {
