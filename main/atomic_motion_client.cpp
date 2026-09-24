@@ -885,14 +885,22 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             }
 
             const uint32_t turn_elapsed_ms = now_ms - s_state_start_ms;
-            // モーター停止コマンド送信から完全停止までの慣性・遅延を考慮した先行停止角
-            // 85度（kTurnOvershootDeg=22度）からわずかに伸ばす（kTurnOvershootDeg=19.5度、停止閾値70.5度）
-            constexpr float kTurnOvershootDeg = 19.5f;
-            const float stop_threshold_deg = (s_target_turn_deg > kTurnOvershootDeg)
-                                           ? (s_target_turn_deg - kTurnOvershootDeg)
-                                           : (s_target_turn_deg * 0.75f);
+            // モーター停止コマンド送信から完全停止までの慣性・通信遅延を考慮した先行停止角
+            // 45度旋回（斜め）: 加速過渡期のためオーバーシュートは約10度（停止閾値35度、ショートせず45〜47度に着地）
+            // 90度旋回（直角）: 定常速度のためオーバーシュート19.5度（停止閾値70.5度、90〜91度に着地）
+            // 180度旋回（Uターン）: 最高速定常時のためオーバーシュート約19.5度（停止閾値160.5度）
+            float stop_threshold_deg = 0.0f;
+            if (s_target_turn_deg <= 45.0f) {
+                stop_threshold_deg = s_target_turn_deg * (35.0f / 45.0f); // 45度時: 35.0度
+            } else if (s_target_turn_deg <= 90.0f) {
+                const float t = (s_target_turn_deg - 45.0f) / 45.0f;
+                const float overshoot = 10.0f + t * (19.5f - 10.0f);     // 10.0度〜19.5度へ線形補間
+                stop_threshold_deg = s_target_turn_deg - overshoot;      // 90度時: 70.5度
+            } else {
+                stop_threshold_deg = s_target_turn_deg - 19.5f;          // 180度時: 160.5度
+            }
 
-            // 実測角速度に基づく旋回所要時間: 90度なら約1080ms（85度だった1050msから+30msの微増）
+            // 実測角速度に基づく旋回所要時間: 90度なら約1080ms、45度なら約540ms、180度なら約2160ms
             const uint32_t target_duration_ms = static_cast<uint32_t>((s_target_turn_deg / 90.0f) * 1080.0f);
             // 最低旋回時間ガード
             const uint32_t min_turn_ms = static_cast<uint32_t>((s_target_turn_deg / 90.0f) * 500.0f);
@@ -909,12 +917,15 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             const bool turn_finished = (turn_elapsed_ms >= min_turn_ms) &&
                                        (s_turn_integrated_deg >= stop_threshold_deg || turn_elapsed_ms >= target_duration_ms);
 
-            // 安全上限ガード: 大回り（115度など）を防止するため最大でも1400msで強制終了
+            // 安全上限ガード: 大回り（オーバーシュート）を防止するための最大時間キャップ
             const uint32_t max_turn_limit_ms = static_cast<uint32_t>((s_target_turn_deg / 90.0f) * 1300.0f);
             if (turn_finished || (turn_elapsed_ms >= max_turn_limit_ms)) {
                 send_command(CmdStop);
                 ESP_LOGI(kTag, "Turn complete: elapsed=%u ms, integrated=%.1f deg (target=%.1f deg, thresh=%.1f deg).",
                          turn_elapsed_ms, s_turn_integrated_deg, s_target_turn_deg, stop_threshold_deg);
+
+                // 車体が新進路へ旋回完了したため、首を正面（0度）に戻して新進路をまっすぐ見据える
+                state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
 
                 if (s_drive_type == DriveType::SonicOnly) {
                     // 自律運転（距離センサー）: 旋回後の前方距離確認ステートへ
