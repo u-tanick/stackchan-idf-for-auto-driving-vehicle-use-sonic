@@ -163,6 +163,12 @@ esp_err_t AtomicMotionClient::init(int sda_pin, int scl_pin)
     return ESP_OK;
 }
 
+bool AtomicMotionClient::is_connected()
+{
+    if (!s_initialized) return false;
+    return M5.Ex_I2C.scanID(kDefaultSlaveAddr, kI2cFreq);
+}
+
 esp_err_t AtomicMotionClient::set_mode(SharedState::Driving::Mode mode)
 {
     if (!s_initialized) return ESP_ERR_INVALID_STATE;

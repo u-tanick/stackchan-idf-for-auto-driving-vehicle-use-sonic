@@ -33,6 +33,7 @@ public:
     };
 
     static esp_err_t init(int sda_pin = kPortASdaPin, int scl_pin = kPortASclPin);
+    static bool is_connected();
     static esp_err_t set_mode(SharedState::Driving::Mode mode);
     static esp_err_t send_command(Command cmd);
     static esp_err_t set_motor_speeds(int8_t left, int8_t right);

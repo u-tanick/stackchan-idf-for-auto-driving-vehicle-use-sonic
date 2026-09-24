@@ -204,6 +204,17 @@ constexpr const char* kTag = "stackchan";
         ESP_LOGI(kTag, "Servo self-test complete. Head centered at (0, +15).");
     }
 
+    // 顔の位置セット完了後、Atom (車体側マイコン: 0x42) と通信できなければ電源ONを促す発話
+    bool s_atom_power_prompted = false;
+    if (!app::AtomicMotionClient::is_connected()) {
+        ESP_LOGW(kTag, "AtomS3 Lite not detected on Port A (0x42)! Prompting user to turn on Atom power.");
+        g_state->face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
+        g_state->set_balloon_text("Atomの電源を入れてください", 4000);
+        speech.say(U"あとむの、でんげんを、いれてください");
+        next_speech_ms = 8000;
+        s_atom_power_prompted = true;
+    }
+
     for (;;) {
         // Camera session in progress: every In_I2C touch (M5.update's
         // touch/BtnPWR poll, INA226 battery, Si12T nadenade, BMI270 shake)
@@ -319,6 +330,16 @@ constexpr const char* kTag = "stackchan";
 
         // Synchronize driving mode and sensor telemetry with AtomS3 Lite over Port A I2C
         app::AtomicMotionClient::tick(*g_state, speech);
+
+        // 起動時に未接続で発話後、電源がONになって接続復帰した場合
+        if (s_atom_power_prompted && app::AtomicMotionClient::is_connected()) {
+            s_atom_power_prompted = false;
+            ESP_LOGI(kTag, "AtomS3 Lite connected! Restoring expression.");
+            g_state->face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
+            g_state->set_balloon_text("Atomと接続しました！", 2500);
+            speech.say(U"あとむと、つながったよ");
+            next_speech_ms = now_ms + 6000;
+        }
 
         // On-device overlay input. Button-driven screens (atom_status's
         // BtnA gesture vocab) poll every tick; the LCD-touch block below is
