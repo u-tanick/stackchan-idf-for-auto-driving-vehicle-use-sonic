@@ -163,29 +163,29 @@ constexpr const char* kTag = "stackchan";
     std::uint32_t next_shake_ms = 0;
 
     // 起動時サーボセルフテスト:
-    // 正面(90°: 0°) → 右(30°: -60°) → 左(150°: +60°) → 正面(90°: 0°) → 上(45°: +45°) → 下(初期位置: 0°) → 最終位置(15°上向き: +15°)
+    // 最初から最終位置の高さ(kHomePitchDeg: +15°)に揃えて左右に首を振り、その後に上下テストを行って最終ポジションにセット
     if (!external_servo_control) {
         ESP_LOGI(kTag, "Starting servo self-test (Center -> Right -> Left -> Center -> Up -> Down -> Final +15)...");
         g_state->servo.speed_override.store(350, std::memory_order_relaxed);
 
-        // 0. 正面（90度: Yaw=0°, Pitch=0°）
+        // 0. 正面（最初から最終の高さ: Yaw=0°, Pitch=+15°）
         g_state->servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
-        g_state->servo.target_pitch_deg.store(0.0f, std::memory_order_relaxed);
+        g_state->servo.target_pitch_deg.store(kHomePitchDeg, std::memory_order_relaxed);
         vTaskDelay(pdMS_TO_TICKS(600));
 
-        // 1. 右（30度: Yaw -60°）
+        // 1. 右（Yaw -60°, Pitch=+15°）
         g_state->servo.target_yaw_deg.store(-60.0f, std::memory_order_relaxed);
-        g_state->servo.target_pitch_deg.store(0.0f, std::memory_order_relaxed);
+        g_state->servo.target_pitch_deg.store(kHomePitchDeg, std::memory_order_relaxed);
         vTaskDelay(pdMS_TO_TICKS(900));
 
-        // 2. 左（150度: Yaw +60°）
+        // 2. 左（Yaw +60°, Pitch=+15°）
         g_state->servo.target_yaw_deg.store(+60.0f, std::memory_order_relaxed);
-        g_state->servo.target_pitch_deg.store(0.0f, std::memory_order_relaxed);
+        g_state->servo.target_pitch_deg.store(kHomePitchDeg, std::memory_order_relaxed);
         vTaskDelay(pdMS_TO_TICKS(1200));
 
-        // 3. 正面（90度: Yaw 0°）★完全に正面に戻して静止
+        // 3. 正面（Yaw 0°, Pitch=+15°）★正面に戻して静止
         g_state->servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
-        g_state->servo.target_pitch_deg.store(0.0f, std::memory_order_relaxed);
+        g_state->servo.target_pitch_deg.store(kHomePitchDeg, std::memory_order_relaxed);
         vTaskDelay(pdMS_TO_TICKS(900));
 
         // 4. 上（45度: Pitch +45°）★正面のまま上を向く
@@ -193,11 +193,11 @@ constexpr const char* kTag = "stackchan";
         g_state->servo.target_pitch_deg.store(45.0f, std::memory_order_relaxed);
         vTaskDelay(pdMS_TO_TICKS(900));
 
-        // 5. 下（初期位置: Pitch 0°）
+        // 5. 下（Pitch 0°）
         g_state->servo.target_pitch_deg.store(0.0f, std::memory_order_relaxed);
         vTaskDelay(pdMS_TO_TICKS(900));
 
-        // 6. 最終位置（15度上を向く: Pitch +15°）
+        // 6. 最終位置（Pitch +15° = kHomePitchDeg にセット）
         g_state->servo.target_pitch_deg.store(kHomePitchDeg, std::memory_order_relaxed);
         vTaskDelay(pdMS_TO_TICKS(800));
 
