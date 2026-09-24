@@ -1045,19 +1045,18 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
         }
     }
 
-    // 走行中フラグの更新（LED点灯連動用: 起動時テスト＆走行中はネコミミ＋本体LED、モード選択待機中はネコミミのみ）
+    // 走行中フラグの更新（LED点灯連動用: 起動時テスト＆自律走行常時点灯）
     bool is_moving_now = false;
     if (s_drive_state == AutoDriveState::InitWait) {
         // 起動時LED点灯テスト: サーボ自己診断中（起動からモード選択画面が出るまで）は本体LEDも点灯
         is_moving_now = true;
     } else if (current_mode == SharedState::Driving::Mode::Manual) {
-        // JoyC手動操縦モード: モード選択済み(s_mode_selected)なら操縦中として点灯
+        // JoyC手動操縦モード: モード選択済み(s_mode_selected)なら点灯
         is_moving_now = s_mode_selected || state.driving.joy_active.load(std::memory_order_relaxed);
     } else {
-        // 自律走行モード: 前進、旋回、後退ステートの時走行中
-        is_moving_now = (s_drive_state == AutoDriveState::Forward ||
-                         s_drive_state == AutoDriveState::Turning ||
-                         s_drive_state == AutoDriveState::BackingUp);
+        // 自律走行モード: ユーザー要望により、モード選択後はモーター動作時だけでなく常時点灯
+        // （探索中・待機中・旋回中・確認中も含めて常時点灯。エラー停止中のみ消灯）
+        is_moving_now = s_mode_selected && (s_drive_state != AutoDriveState::ErrorHold);
     }
     state.driving.is_moving.store(is_moving_now, std::memory_order_relaxed);
 }
@@ -1096,7 +1095,6 @@ void AtomicMotionClient::toggle_start_stop(SharedState& state, Speech& speech)
         state.set_balloon_text("一時停止中 (タップで再開)", 3000);
         s_drive_state = AutoDriveState::Standby;
         s_state_start_ms = now_ms;
-        state.driving.is_moving.store(false, std::memory_order_relaxed);
     }
 }
 
