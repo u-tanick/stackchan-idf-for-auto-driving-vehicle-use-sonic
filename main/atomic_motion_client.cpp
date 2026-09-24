@@ -851,15 +851,15 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             }
 
             const uint32_t turn_elapsed_ms = now_ms - s_state_start_ms;
-            // モーター停止コマンド送信から完全停止までの慣性・遅延（約20〜25度のオーバーシュート）を考慮した先行停止角
-            // 実測115度 → 90度へ補正（目標90度なら約68〜70度到達時点で停止コマンド送信）
-            constexpr float kTurnOvershootDeg = 22.0f;
+            // モーター停止コマンド送信から完全停止までの慣性・遅延（約16度のオーバーシュート）を考慮した先行停止角
+            // 実測85度から+6度伸ばし、90度強（わずかにオーバー気味の91〜92度）を狙って調整
+            constexpr float kTurnOvershootDeg = 16.0f;
             const float stop_threshold_deg = (s_target_turn_deg > kTurnOvershootDeg)
                                            ? (s_target_turn_deg - kTurnOvershootDeg)
                                            : (s_target_turn_deg * 0.75f);
 
-            // 実測角速度に基づく旋回所要時間: 90度なら約1050ms（従来の1350msから115度→90度へ短縮補正）
-            const uint32_t target_duration_ms = static_cast<uint32_t>((s_target_turn_deg / 90.0f) * 1050.0f);
+            // 実測角速度に基づく旋回所要時間: 90度なら約1130ms（85度から約+6度伸ばす調整）
+            const uint32_t target_duration_ms = static_cast<uint32_t>((s_target_turn_deg / 90.0f) * 1130.0f);
             // 最低旋回時間ガード
             const uint32_t min_turn_ms = static_cast<uint32_t>((s_target_turn_deg / 90.0f) * 500.0f);
 
