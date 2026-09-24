@@ -97,7 +97,11 @@ VlmEvaluation VlmClient::evaluate_current_view(const char* direction_label)
     VlmEvaluation eval;
     eval.success = false;
 
-    // 1. カメラフレーム取得
+    // 1. カメラフレーム取得（首回転前の古いフレームをフラッシュして最新を取得）
+    camera_fb_t* old_fb = esp_camera_fb_get();
+    if (old_fb != nullptr) {
+        esp_camera_fb_return(old_fb);
+    }
     camera_fb_t* fb = esp_camera_fb_get();
     if (fb == nullptr) {
         ESP_LOGE(kTag, "Failed to capture camera frame");
@@ -150,16 +154,19 @@ VlmEvaluation VlmClient::evaluate_current_view(const char* direction_label)
 
     // 3. プロンプトと JSON リクエストペイロードの作成
     // PSRAM 上に文字列を構築
-    char prompt_raw[512];
+    char prompt_raw[1024];
     std::snprintf(prompt_raw, sizeof(prompt_raw),
-                  "幅10cmの小型ロボットの自律走行ナビ判断です。画像内の向き(%s)について、直前50cm〜1mの床面に走行スペースがあるか判定し、次のJSON形式のみで出力してください: "
+                  "幅10cmの小型自律走行ロボットの進路選択です。ロボットがこの方向（向き: %s）を向いて撮影した画像です。"
+                  "この進行方向について安全に走れる空間の広さ・奥行きを評価し、次のJSON形式のみで出力してください: "
                   "{\"passable\": trueまたはfalse, \"score\": 0〜100, \"reason\": \"理由\"} "
-                  "※直前50cm以内に壁や箱等の障害物が密着していなければpassable:true(score:60〜100)とし、遠くの壁や家具、薄暗さは無視してください。",
+                  "【判定基準】奥まで床が見通せて広い空間や通路がある開けた方向は高スコア(70〜100)。"
+                  "直前1m以内に壁や箱などの障害物があり塞がっている方向は低スコア(0〜39, passable:false)。"
+                  "空間の広さに応じてスコアに明確な差をつけてください。",
                   direction_label ? direction_label : "正面");
     const std::string prompt_escaped = json_escape(prompt_raw);
 
     std::string payload;
-    payload.reserve(written + 768);
+    payload.reserve(written + 1200);
     payload += "{\"model\":\"";
     payload += s_model;
     payload += "\",\"messages\":[{\"role\":\"user\",\"content\":[";

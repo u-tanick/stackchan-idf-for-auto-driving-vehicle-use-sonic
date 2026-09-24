@@ -856,10 +856,10 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
                     s_turn_spin_right = (best_pt.yaw_deg < 0); // 負が右、正が左
                 }
 
-                // 机上テスト対応: 車体が自力旋回できない場合でも進路方向を視認できるよう首を進路に向ける
-                state.servo.target_yaw_deg.store(best_idx >= 0 ? kScanPoints[best_idx].yaw_deg : 0.0f, std::memory_order_relaxed);
+                // 首は確実に正面（0度）に固定（首を動かすとIMUが首の回転角速度を拾って誤停止するため）
+                state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
 
-                // 旋回開始（机上テスト時は1.2秒の旋回演出後にカメラ視認へ進行）
+                // 旋回開始
                 s_turn_integrated_deg = 0.0f;
                 s_turn_last_us = esp_timer_get_time();
                 state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
@@ -880,8 +880,9 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
 
             float gx = 0, gy = 0, gz = 0;
             if (M5.Imu.getGyro(&gx, &gy, &gz)) {
-                // CoreS3直立時の旋回主成分はY軸。姿勢や首の傾きによる分散を吸収するため3軸ノルムを算出
-                float omega = std::sqrt(gx * gx + gy * gy + gz * gz);
+                // CoreS3垂直搭載時の車体旋回軸はY軸（ヨー回転）。
+                // ピッチやロールの微振動・首の揺れを排除するため、Y軸角速度の絶対値のみを積算する
+                float omega = std::abs(gy);
                 // 静止時のノイズ・ドリフトを除去（不感帯: 8.0 deg/s未満はカット）
                 if (omega < 8.0f) {
                     omega = 0.0f;
@@ -898,7 +899,7 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             // 180度旋回（Uターン）: 最高速定常時のためオーバーシュート約19.5度（停止閾値160.5度）
             float stop_threshold_deg = 0.0f;
             if (s_target_turn_deg <= 45.0f) {
-                stop_threshold_deg = s_target_turn_deg * (35.0f / 45.0f); // 45度時: 35.0度
+                stop_threshold_deg = s_target_turn_deg * (32.0f / 45.0f); // 45度時: 32.0度
             } else if (s_target_turn_deg <= 90.0f) {
                 const float t = (s_target_turn_deg - 45.0f) / 45.0f;
                 const float overshoot = 10.0f + t * (19.5f - 10.0f);     // 10.0度〜19.5度へ線形補間
@@ -907,10 +908,10 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
                 stop_threshold_deg = s_target_turn_deg - 19.5f;          // 180度時: 160.5度
             }
 
-            // 実測角速度に基づく旋回所要時間: 90度なら約1080ms、45度なら約540ms、180度なら約2160ms
-            const uint32_t target_duration_ms = static_cast<uint32_t>((s_target_turn_deg / 90.0f) * 1080.0f);
-            // 最低旋回時間ガード
-            const uint32_t min_turn_ms = static_cast<uint32_t>((s_target_turn_deg / 90.0f) * 500.0f);
+            // 実測角速度に基づく旋回所要時間: 90度なら約1080ms、45度なら約600ms、180度なら約2160ms
+            const uint32_t target_duration_ms = (s_target_turn_deg <= 45.0f) ? 600 : static_cast<uint32_t>((s_target_turn_deg / 90.0f) * 1080.0f);
+            // 最低旋回時間ガード（45度でも最低400msを確保）
+            const uint32_t min_turn_ms = std::max<uint32_t>(400, static_cast<uint32_t>((s_target_turn_deg / 90.0f) * 500.0f));
 
             // 旋回テレメトリログ (150msごと)
             static uint32_t s_last_turn_log_ms = 0;
