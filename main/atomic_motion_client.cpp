@@ -399,12 +399,12 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
         }
 
         // 障害物検知時の画面演出（フキダシ・セリフ・表情フィードバック）
-        // ※超音波センサーをONに戻すタイミング: VerifySonic / Forward / BackingUp / VerifySonicOnly
+        // ※超音波センサーによる演出は、自律走行モード(Autonomous)の走行中のみ有効（JoyC手動モードでは使用しない）
         const bool ultrasonic_active = (s_drive_state == AutoDriveState::Forward ||
                                         s_drive_state == AutoDriveState::BackingUp ||
                                         s_drive_state == AutoDriveState::VerifySonicOnly ||
                                         s_drive_state == AutoDriveState::VerifySonic);
-        const bool is_ultrasonic_enabled = (current_mode != SharedState::Driving::Mode::Autonomous) || ultrasonic_active;
+        const bool is_ultrasonic_enabled = (current_mode == SharedState::Driving::Mode::Autonomous) && ultrasonic_active;
 
         static bool s_last_obstacle = false;
         static uint32_t s_last_balloon_update_ms = 0;
@@ -454,8 +454,10 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
                 // 障害物がなくなった時
                 state.set_balloon_text("よし、クリア！", 1500);
             }
+            s_last_obstacle = obstacle;
+        } else {
+            s_last_obstacle = false;
         }
-        s_last_obstacle = obstacle;
     }
 
     // モード選択時の案内発話保留があれば再生
@@ -1102,12 +1104,14 @@ void AtomicMotionClient::set_drive_type(DriveType type, SharedState& state)
         set_mode(SharedState::Driving::Mode::Manual);
         state.set_balloon_text("JoyC操作モード", 3500);
         state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
+        state.face.bg_color.store(0x0000u, std::memory_order_relaxed);
         send_command(CmdStop);
     } else if (type == DriveType::SonicOnly) {
         state.driving.mode.store(SharedState::Driving::Mode::Autonomous, std::memory_order_relaxed);
         set_mode(SharedState::Driving::Mode::Autonomous);
         state.set_balloon_text("距離センサーモード", 3500);
         state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
+        state.face.bg_color.store(0x0000u, std::memory_order_relaxed);
         s_drive_state = AutoDriveState::Standby;
         send_command(CmdStop);
     } else if (type == DriveType::SonicCamera) {
