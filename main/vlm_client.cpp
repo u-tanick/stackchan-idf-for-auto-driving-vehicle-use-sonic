@@ -206,7 +206,8 @@ VlmEvaluation VlmClient::evaluate_current_view(const char* direction_label)
             ESP_LOGE(kTag, "Failed to write HTTP payload");
             err = ESP_FAIL;
         } else {
-            int status_code = esp_http_client_fetch_headers(client);
+            esp_http_client_fetch_headers(client);
+            int status_code = esp_http_client_get_status_code(client);
             if (status_code >= 200 && status_code < 300) {
                 // 残りのボディを読み込む
                 while (true) {
@@ -324,7 +325,8 @@ void vlm_health_check_task(void* arg)
         if (err == ESP_OK) {
             int wlen = esp_http_client_write(client, payload, std::strlen(payload));
             if (wlen >= 0) {
-                int status_code = esp_http_client_fetch_headers(client);
+                esp_http_client_fetch_headers(client);
+                int status_code = esp_http_client_get_status_code(client);
                 ESP_LOGI(kTag, "VLM probe response HTTP status: %d", status_code);
                 // 200 OK、または 2xx/3xx/400 (model responded) ならサーバー稼働と判定
                 if (status_code >= 200 && status_code < 500) {
