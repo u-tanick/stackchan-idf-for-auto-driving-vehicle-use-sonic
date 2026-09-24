@@ -124,6 +124,9 @@ int s_eval_retry_count = 0;
 int s_verify_retry_count = 0;
 VlmEvaluation s_scan_evals[4];
 bool s_obstacle_speech_active = false;
+bool s_start_speech_active = false;
+uint32_t s_start_delay_ms = 0;
+uint32_t s_last_toggle_ms = 0;
 AtomicMotionClient::DriveType s_drive_type = AtomicMotionClient::DriveType::SonicOnly;
 bool s_mode_selected = false;
 bool s_drive_type_speech_pending = false;
@@ -509,17 +512,34 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             send_command(CmdStop);
             break;
 
-        case AutoDriveState::StartWait:
+        case AutoDriveState::StartWait: {
             send_command(CmdStop);
-            // 「スタートするよ」発話開始後、1.2秒待機してからスムーズに前進開始
-            if (now_ms - s_state_start_ms >= 1200) {
-                ESP_LOGI(kTag, "StartWait complete. Moving forward!");
-                send_command(CmdForward);
-                s_drive_state = AutoDriveState::Forward;
-                s_state_start_ms = now_ms;
-                s_next_drive_speech_ms = now_ms + 4000 + (esp_random() % 4001);
+            const bool is_speaking = speech.is_speaking() || s_has_pending_speech || s_speech_pending;
+            if (is_speaking) {
+                s_start_speech_active = true;
+            }
+            // 発話が開始された後に終了したか、または安全タイムアウト(4.5秒)経過
+            const bool finished = s_start_speech_active && !is_speaking;
+            const bool timeout = (now_ms - s_state_start_ms >= 4500);
+
+            if (finished || timeout) {
+                // 発話完了後、自然な間（350ms）を置いてから前進開始（タップ→発話→走り出しのテンポ）
+                if (s_start_delay_ms == 0) {
+                    s_start_delay_ms = now_ms;
+                }
+                if (now_ms - s_start_delay_ms >= 350) {
+                    ESP_LOGI(kTag, "Start speech finished (active=%d, timeout=%d). Moving forward!",
+                             s_start_speech_active, timeout);
+                    send_command(CmdForward);
+                    s_drive_state = AutoDriveState::Forward;
+                    s_state_start_ms = now_ms;
+                    s_start_speech_active = false;
+                    s_start_delay_ms = 0;
+                    s_next_drive_speech_ms = now_ms + 4000 + (esp_random() % 4001);
+                }
             }
             break;
+        }
 
         case AutoDriveState::CameraCheck: {
             send_command(CmdStop);
@@ -1083,13 +1103,30 @@ void AtomicMotionClient::toggle_start_stop(SharedState& state, Speech& speech)
         return;
     }
 
+    // チャタリング・二重トグル防止 (500ms デバウンス)
+    if (now_ms - s_last_toggle_ms < 500) {
+        ESP_LOGI(kTag, "toggle_start_stop: Debounced (within 500ms)");
+        return;
+    }
+    s_last_toggle_ms = now_ms;
+
     if (s_drive_state == AutoDriveState::Standby || s_drive_state == AutoDriveState::InitWait) {
-        // 停止待機中から「スタートするよ」と宣言して、1.2秒後に前進開始
+        // 停止待機中から「スタートするよ」と宣言して、発話完了後に前進開始
         ESP_LOGI(kTag, "Tap: Starting autonomous driving (announcing start)!");
+        send_command(CmdStop); // まだ走らない
+
+        // 前の発話があれば確実に停止してからスタート発話を開始
+        speech.stop();
+        s_is_regular_driving_speech = false;
+        s_has_pending_speech = false;
+        s_pending_speech_reading.clear();
+
         state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
         state.face.bg_color.store(0x0000u, std::memory_order_relaxed);
-        say_step(speech, state, "スタートするよ", U"すたーと、するよ", 2000);
-        send_command(CmdStop); // まだ走らない
+        say_step(speech, state, "スタートするよ", U"すたーと、するよ", 2500);
+
+        s_start_speech_active = false;
+        s_start_delay_ms = 0;
         s_drive_state = AutoDriveState::StartWait;
         s_state_start_ms = now_ms;
     } else {

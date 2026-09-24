@@ -353,44 +353,38 @@ constexpr const char* kTag = "stackchan";
         {
             const auto td = M5.Touch.getDetail();
 
-            // 画面中央長押し（2秒）による本体再起動（どの画面でも有効）
-            static uint32_t s_center_touch_start_ms = 0;
+            // 画面長押し（2秒）による本体再起動（どの画面でも有効）
+            static uint32_t s_touch_start_ms = 0;
             static bool s_reboot_triggered = false;
             static bool s_touch_consumed_by_screen = false;
             if (!s_reboot_triggered && td.isPressed()) {
-                // 画面中央エリア (320x240 の中央寄り広域: X 50..270, Y 35..205)
-                const bool in_center = (td.x >= 50 && td.x <= 270 && td.y >= 35 && td.y <= 205);
-                if (in_center) {
-                    if (s_center_touch_start_ms == 0 && !s_touch_consumed_by_screen) {
-                        s_center_touch_start_ms = now_ms;
+                if (s_touch_start_ms == 0 && !s_touch_consumed_by_screen) {
+                    s_touch_start_ms = now_ms;
+                }
+                if (s_touch_start_ms > 0) {
+                    const uint32_t hold_ms = now_ms - s_touch_start_ms;
+                    if (hold_ms >= 500 && hold_ms < 2000) {
+                        char msg[64];
+                        const int remain_sec = (2000 - hold_ms + 999) / 1000;
+                        std::snprintf(msg, sizeof(msg), "長押しで再起動… (%d)", remain_sec);
+                        g_state->set_balloon_text(msg, 350);
+                    } else if (hold_ms >= 2000) {
+                        s_reboot_triggered = true;
+                        g_state->set_balloon_text("再起動します…", 1500);
+                        app::AtomicMotionClient::send_command(app::AtomicMotionClient::CmdStop);
+                        vTaskDelay(pdMS_TO_TICKS(150));
+                        esp_restart();
                     }
-                    if (s_center_touch_start_ms > 0) {
-                        const uint32_t hold_ms = now_ms - s_center_touch_start_ms;
-                        if (hold_ms >= 500 && hold_ms < 2000) {
-                            char msg[64];
-                            const int remain_sec = (2000 - hold_ms + 999) / 1000;
-                            std::snprintf(msg, sizeof(msg), "長押しで再起動… (%d)", remain_sec);
-                            g_state->set_balloon_text(msg, 350);
-                        } else if (hold_ms >= 2000) {
-                            s_reboot_triggered = true;
-                            g_state->set_balloon_text("再起動します…", 1500);
-                            app::AtomicMotionClient::send_command(app::AtomicMotionClient::CmdStop);
-                            vTaskDelay(pdMS_TO_TICKS(150));
-                            esp_restart();
-                        }
-                    }
-                } else {
-                    s_center_touch_start_ms = 0;
                 }
             } else if (!td.isPressed()) {
-                if (s_center_touch_start_ms > 0 && !s_reboot_triggered && !s_touch_consumed_by_screen) {
-                    const uint32_t hold_ms = now_ms - s_center_touch_start_ms;
-                    // 短タップ（500ms未満）の場合は前進スタート / 強制停止をトグル (未接続警告中はガード)
+                if (s_touch_start_ms > 0 && !s_reboot_triggered && !s_touch_consumed_by_screen) {
+                    const uint32_t hold_ms = now_ms - s_touch_start_ms;
+                    // 短タップ（500ms未満）の場合は前進スタート / 強制停止をトグル (未接続警告中・オーバーレイ中はガード)
                     if (hold_ms < 500 && !app::screens::overlay_active() && !s_atom_power_prompted) {
                         app::AtomicMotionClient::toggle_start_stop(*g_state, speech);
                     }
                 }
-                s_center_touch_start_ms = 0;
+                s_touch_start_ms = 0;
                 s_touch_consumed_by_screen = false;
             }
 
@@ -424,7 +418,7 @@ constexpr const char* kTag = "stackchan";
                         next_speech_ms = now_ms + 10000;
                     }
                     s_touch_consumed_by_screen = true;
-                    s_center_touch_start_ms = 0;
+                    s_touch_start_ms = 0;
                 } else if (!app::screens::overlay_active() &&
                            g_state->driving.mode.load(std::memory_order_relaxed) == SharedState::Driving::Mode::Autonomous &&
                            app::AtomicMotionClient::is_running()) {
@@ -432,8 +426,8 @@ constexpr const char* kTag = "stackchan";
                     // 画面のどこを触っても即座に安全停止！
                     ESP_LOGI(kTag, "Tap during autonomous run: Force stopping immediately!");
                     app::AtomicMotionClient::toggle_start_stop(*g_state, speech);
-                    // そのまま押し続ければ長押し再起動へシームレスに移行できるよう center_touch_start_ms をセット
-                    s_center_touch_start_ms = now_ms;
+                    // そのまま押し続ければ長押し再起動へシームレスに移行できるよう touch_start_ms をセット
+                    s_touch_start_ms = now_ms;
                     s_touch_consumed_by_screen = true;
                 } else {
                     // Priority dispatch through the screen stack (AP screen
@@ -442,7 +436,7 @@ constexpr const char* kTag = "stackchan";
                     const bool consumed = app::screens::handle_tap(td.x, td.y);
                     if (consumed) {
                         s_touch_consumed_by_screen = true;
-                        s_center_touch_start_ms = 0;
+                        s_touch_start_ms = 0;
                     }
                     // A tap no screen consumed, while the assistant is
                     // mid-reply, is a barge-in request: voice input is paused
