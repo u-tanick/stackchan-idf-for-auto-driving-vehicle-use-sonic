@@ -234,7 +234,7 @@ void led_task_entry(void* arg)
                     {  0,   0, 255}, // 藍 (Indigo)
                     {160,   0, 255}, // 紫 (Violet)
                 }};
-                constexpr uint32_t kStepPeriodMs = 600;
+                constexpr uint32_t kStepPeriodMs = 1500;
                 const uint32_t color_idx = (now_ms() / kStepPeriodMs) % kRainbow7Colors.size();
                 const auto& col = kRainbow7Colors[color_idx];
 
