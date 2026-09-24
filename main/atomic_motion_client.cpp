@@ -1143,4 +1143,12 @@ bool AtomicMotionClient::is_mode_selected()
     return s_mode_selected;
 }
 
+bool AtomicMotionClient::is_running()
+{
+    return s_mode_selected &&
+           (s_drive_state != AutoDriveState::Standby &&
+            s_drive_state != AutoDriveState::InitWait &&
+            s_drive_state != AutoDriveState::ErrorHold);
+}
+
 } // namespace stackchan::app

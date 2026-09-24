@@ -358,8 +358,8 @@ constexpr const char* kTag = "stackchan";
             static bool s_reboot_triggered = false;
             static bool s_touch_consumed_by_screen = false;
             if (!s_reboot_triggered && td.isPressed()) {
-                // 画面中央エリア (320x240 の中央領域: X 80..240, Y 60..180)
-                const bool in_center = (td.x >= 80 && td.x <= 240 && td.y >= 60 && td.y <= 180);
+                // 画面中央エリア (320x240 の中央寄り広域: X 50..270, Y 35..205)
+                const bool in_center = (td.x >= 50 && td.x <= 270 && td.y >= 35 && td.y <= 205);
                 if (in_center) {
                     if (s_center_touch_start_ms == 0 && !s_touch_consumed_by_screen) {
                         s_center_touch_start_ms = now_ms;
@@ -425,6 +425,16 @@ constexpr const char* kTag = "stackchan";
                     }
                     s_touch_consumed_by_screen = true;
                     s_center_touch_start_ms = 0;
+                } else if (!app::screens::overlay_active() &&
+                           g_state->driving.mode.load(std::memory_order_relaxed) == SharedState::Driving::Mode::Autonomous &&
+                           app::AtomicMotionClient::is_running()) {
+                    // ★ 自律運転中（走行中・探索中・旋回中など）に画面がタップされた場合：
+                    // 画面のどこを触っても即座に安全停止！
+                    ESP_LOGI(kTag, "Tap during autonomous run: Force stopping immediately!");
+                    app::AtomicMotionClient::toggle_start_stop(*g_state, speech);
+                    // そのまま押し続ければ長押し再起動へシームレスに移行できるよう center_touch_start_ms をセット
+                    s_center_touch_start_ms = now_ms;
+                    s_touch_consumed_by_screen = true;
                 } else {
                     // Priority dispatch through the screen stack (AP screen
                     // swallows everything while up; device_ui owns its hot

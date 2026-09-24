@@ -53,6 +53,7 @@ public:
     static void set_drive_type(DriveType type, SharedState& state);
     static DriveType get_drive_type();
     static bool is_mode_selected();
+    static bool is_running(); // True while autonomous driving is actively running (not Standby/InitWait)
 
     // Toggle start / force stop via center screen tap
     static void toggle_start_stop(SharedState& state, Speech& speech);
