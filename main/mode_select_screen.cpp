@@ -19,6 +19,8 @@ bool g_active = false;
 const auto* const kFontTitle = &fonts::lgfxJapanGothic_16;
 const auto* const kFontDesc  = &fonts::lgfxJapanGothic_12;
 
+uint32_t s_disabled_alert_until_ms = 0;
+
 } // namespace
 
 void init(SharedState& state)
@@ -105,23 +107,28 @@ bool draw(avatar::RichCanvas& canvas)
     // --- 中段: 自律運転（距離＋カメラ） ---
     {
         constexpr int32_t kCardY = 80;
-        const uint16_t card_bg = canvas.color565(48, 28, 12);
-        const uint16_t border_color = canvas.color565(255, 150, 0); // Orange
-        const uint16_t sub_color  = canvas.color565(240, 190, 140);
+        const bool wifi_ok = wifi_is_connected();
+
+        const uint16_t card_bg = wifi_ok ? canvas.color565(48, 28, 12) : canvas.color565(22, 22, 24);
+        const uint16_t border_color = wifi_ok ? canvas.color565(255, 150, 0) : canvas.color565(70, 70, 75); // Orange or Dark Gray
+        const uint16_t title_color  = wifi_ok ? border_color : canvas.color565(120, 120, 125);
+        const uint16_t sub_color    = wifi_ok ? canvas.color565(240, 190, 140) : canvas.color565(210, 100, 100);
+        const uint16_t badge_bg     = wifi_ok ? border_color : canvas.color565(50, 50, 55);
+        const uint16_t badge_text   = wifi_ok ? canvas.color565(0, 0, 0) : canvas.color565(140, 140, 145);
 
         canvas.fillRoundRect(kCardX, kCardY, kCardW, kCardH, kRadius, card_bg);
         canvas.drawRoundRect(kCardX, kCardY, kCardW, kCardH, kRadius, border_color);
 
         // バッジ
-        canvas.fillRoundRect(kBadgeX, kCardY + kBadgeYOff, kBadgeW, kBadgeH, kBadgeRadius, border_color);
+        canvas.fillRoundRect(kBadgeX, kCardY + kBadgeYOff, kBadgeW, kBadgeH, kBadgeRadius, badge_bg);
         canvas.setFont(kFontDesc);
-        canvas.setTextColor(canvas.color565(0, 0, 0));
+        canvas.setTextColor(badge_text);
         canvas.setTextDatum(lgfx::textdatum_t::middle_center);
-        canvas.drawString("VLM AI", kBadgeCenterX, kCardY + kBadgeCenterYOff);
+        canvas.drawString(wifi_ok ? "VLM AI" : "OFFLINE", kBadgeCenterX, kCardY + kBadgeCenterYOff);
 
         // タイトル
         canvas.setFont(kFontTitle);
-        canvas.setTextColor(border_color);
+        canvas.setTextColor(title_color);
         canvas.setTextDatum(lgfx::textdatum_t::middle_left);
         canvas.drawString("自律運転 (距離＋カメラ)", kTitleX, kCardY + kBadgeCenterYOff);
 
@@ -129,7 +136,11 @@ bool draw(avatar::RichCanvas& canvas)
         canvas.setFont(kFontDesc);
         canvas.setTextColor(sub_color);
         canvas.setTextDatum(lgfx::textdatum_t::top_left);
-        canvas.drawString("AI画像認識で4方向探索・最適ルート決定", kDescX, kCardY + kDescYOff);
+        if (wifi_ok) {
+            canvas.drawString("AI画像認識で4方向探索・最適ルート決定", kDescX, kCardY + kDescYOff);
+        } else {
+            canvas.drawString("※Wi-Fi未接続のため選択できません", kDescX, kCardY + kDescYOff);
+        }
     }
 
     // --- 下段: JoyC操作（ESPNow） ---
@@ -162,7 +173,18 @@ bool draw(avatar::RichCanvas& canvas)
         canvas.drawString("プロポ手動操縦 / ラジコン走行モード", kDescX, kCardY + kDescYOff);
     }
 
-    // --- 画面右下: Wi-Fi接続時のIP表示 ---
+    // --- フッター: Wi-Fiステータス / IP表示 / 警告表示 ---
+    const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+
+    // 左下: タップ時の警告メッセージ
+    if (now_ms < s_disabled_alert_until_ms) {
+        canvas.setFont(kFontDesc);
+        canvas.setTextColor(canvas.color565(255, 90, 90)); // 赤色警告
+        canvas.setTextDatum(lgfx::textdatum_t::bottom_left);
+        canvas.drawString("※Wi-Fiに接続してください", 10, 238);
+    }
+
+    // 右下: Wi-Fi接続ステータス & IP表示
     char ip_str[32] = {0};
     if (wifi_get_ip(ip_str, sizeof(ip_str))) {
         char msg[48];
@@ -171,6 +193,11 @@ bool draw(avatar::RichCanvas& canvas)
         canvas.setTextColor(canvas.color565(100, 220, 140)); // エメラルドグリーン
         canvas.setTextDatum(lgfx::textdatum_t::bottom_right);
         canvas.drawString(msg, 314, 238);
+    } else {
+        canvas.setFont(kFontDesc);
+        canvas.setTextColor(canvas.color565(140, 140, 145)); // グレー
+        canvas.setTextDatum(lgfx::textdatum_t::bottom_right);
+        canvas.drawString("Wi-Fi: 未接続", 314, 238);
     }
 
     return true;
@@ -190,6 +217,12 @@ bool handle_tap(int x, int y)
         return true;
     } else if (y < 152) {
         // 中段: 自律運転（距離＋カメラ）
+        if (!wifi_is_connected()) {
+            ESP_LOGW(kTag, "SonicCamera tapped but Wi-Fi not connected. Tap ignored.");
+            // 警告表示を2.5秒間トリガー（フッター左下に案内表示）
+            s_disabled_alert_until_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000) + 2500;
+            return true; // 画面遷移せずイベント消費
+        }
         ESP_LOGI(kTag, "Selected: SonicCamera mode");
         AtomicMotionClient::set_drive_type(AtomicMotionClient::DriveType::SonicCamera, *g_state);
         hide();
