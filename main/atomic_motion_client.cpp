@@ -84,7 +84,8 @@ uint32_t s_last_tick_ms = 0;
 
 enum class AutoDriveState {
     InitWait,         // 起動後の待機（サーボ初期診断完了待ち）
-    Standby,          // 停止待機中（画面中央タップでスタート）
+    Standby,          // 停止待機中（画面タップでスタート）
+    StartWait,        // 「スタートするよ」発話待機（1.2秒後に前進開始）
     CameraCheck,      // 距離＋カメラモード起動時の事前ヘルスチェック（Wi-Fi & VLM確認）
     Forward,          // 前進走行中
     ObstacleDetected, // 壁検知時の一時停止・「いきどまりかな」発話待機
@@ -346,6 +347,7 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             switch (s_drive_state) {
                 case AutoDriveState::InitWait: state_str = "InitWait"; break;
                 case AutoDriveState::Standby: state_str = "Standby"; break;
+                case AutoDriveState::StartWait: state_str = "StartWait"; break;
                 case AutoDriveState::CameraCheck: state_str = "CameraCheck"; break;
                 case AutoDriveState::Forward: state_str = "Forward"; break;
                 case AutoDriveState::ObstacleDetected: state_str = "ObstacleDetected"; break;
@@ -503,8 +505,20 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             break;
 
         case AutoDriveState::Standby:
-            // 停止待機中: モーター停止維持。画面中央タップでForwardへ移行する
+            // 停止待機中: モーター停止維持。画面タップでStartWaitへ移行する
             send_command(CmdStop);
+            break;
+
+        case AutoDriveState::StartWait:
+            send_command(CmdStop);
+            // 「スタートするよ」発話開始後、1.2秒待機してからスムーズに前進開始
+            if (now_ms - s_state_start_ms >= 1200) {
+                ESP_LOGI(kTag, "StartWait complete. Moving forward!");
+                send_command(CmdForward);
+                s_drive_state = AutoDriveState::Forward;
+                s_state_start_ms = now_ms;
+                s_next_drive_speech_ms = now_ms + 4000 + (esp_random() % 4001);
+            }
             break;
 
         case AutoDriveState::CameraCheck: {
@@ -1070,19 +1084,17 @@ void AtomicMotionClient::toggle_start_stop(SharedState& state, Speech& speech)
     }
 
     if (s_drive_state == AutoDriveState::Standby || s_drive_state == AutoDriveState::InitWait) {
-        // 停止待機中から「前進スタート！」
-        ESP_LOGI(kTag, "Center tap: Starting autonomous driving!");
+        // 停止待機中から「スタートするよ」と宣言して、1.2秒後に前進開始
+        ESP_LOGI(kTag, "Tap: Starting autonomous driving (announcing start)!");
         state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
         state.face.bg_color.store(0x0000u, std::memory_order_relaxed);
-        say_step(speech, state, "前進スタート！", U"ぜんしん、すたーと", 1500);
-        send_command(CmdForward);
-        s_drive_state = AutoDriveState::Forward;
+        say_step(speech, state, "スタートするよ", U"すたーと、するよ", 2000);
+        send_command(CmdStop); // まだ走らない
+        s_drive_state = AutoDriveState::StartWait;
         s_state_start_ms = now_ms;
-        s_next_drive_speech_ms = now_ms + 4000 + (esp_random() % 4001);
-        state.driving.is_moving.store(true, std::memory_order_relaxed);
     } else {
-        // 走行中・探索中から「強制停止！」
-        ESP_LOGI(kTag, "Center tap: Force stopping autonomous driving!");
+        // 走行中・探索中・スタート待機中から即座に停止し、「停止するよ」と発話
+        ESP_LOGI(kTag, "Tap: Stopping autonomous driving (announcing stop)!");
         send_command(CmdStop);
         speech.stop();
         s_is_regular_driving_speech = false;
@@ -1092,7 +1104,7 @@ void AtomicMotionClient::toggle_start_stop(SharedState& state, Speech& speech)
         state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
         state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
         state.face.bg_color.store(0x0000u, std::memory_order_relaxed);
-        state.set_balloon_text("一時停止中 (タップで再開)", 3000);
+        say_step(speech, state, "停止するよ", U"ていし、するよ", 2500);
         s_drive_state = AutoDriveState::Standby;
         s_state_start_ms = now_ms;
     }
