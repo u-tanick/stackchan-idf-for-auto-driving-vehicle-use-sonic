@@ -3,6 +3,7 @@
 
 #include "mode_select_screen.hpp"
 #include "atomic_motion_client.hpp"
+#include "vlm_client.hpp"
 #include "wifi_sta.hpp"
 #include <cstdio>
 #include <esp_log.h>
@@ -20,6 +21,7 @@ const auto* const kFontTitle = &fonts::lgfxJapanGothic_16;
 const auto* const kFontDesc  = &fonts::lgfxJapanGothic_12;
 
 uint32_t s_disabled_alert_until_ms = 0;
+const char* s_disabled_alert_msg = "※Wi-Fiに接続してください";
 
 } // namespace
 
@@ -108,23 +110,30 @@ bool draw(avatar::RichCanvas& canvas)
     {
         constexpr int32_t kCardY = 80;
         const bool wifi_ok = wifi_is_connected();
+        if (wifi_ok) {
+            VlmClient::trigger_health_check(false);
+        }
+        const VlmStatus vlm_stat = VlmClient::get_status();
+        const bool vlm_ok = wifi_ok && (vlm_stat == VlmStatus::Available);
+        const bool vlm_checking = wifi_ok && (vlm_stat == VlmStatus::Checking || vlm_stat == VlmStatus::Unknown);
 
-        const uint16_t card_bg = wifi_ok ? canvas.color565(48, 28, 12) : canvas.color565(22, 22, 24);
-        const uint16_t border_color = wifi_ok ? canvas.color565(255, 150, 0) : canvas.color565(70, 70, 75); // Orange or Dark Gray
-        const uint16_t title_color  = wifi_ok ? border_color : canvas.color565(120, 120, 125);
-        const uint16_t sub_color    = wifi_ok ? canvas.color565(240, 190, 140) : canvas.color565(210, 100, 100);
-        const uint16_t badge_bg     = wifi_ok ? border_color : canvas.color565(50, 50, 55);
-        const uint16_t badge_text   = wifi_ok ? canvas.color565(0, 0, 0) : canvas.color565(140, 140, 145);
+        const uint16_t card_bg = vlm_ok ? canvas.color565(48, 28, 12) : (vlm_checking ? canvas.color565(32, 24, 16) : canvas.color565(22, 22, 24));
+        const uint16_t border_color = vlm_ok ? canvas.color565(255, 150, 0) : (vlm_checking ? canvas.color565(180, 120, 40) : canvas.color565(70, 70, 75)); // Orange, Dim Orange, Dark Gray
+        const uint16_t title_color  = vlm_ok ? border_color : (vlm_checking ? canvas.color565(200, 160, 100) : canvas.color565(120, 120, 125));
+        const uint16_t sub_color    = vlm_ok ? canvas.color565(240, 190, 140) : (vlm_checking ? canvas.color565(200, 180, 140) : canvas.color565(210, 100, 100));
+        const uint16_t badge_bg     = vlm_ok ? border_color : (vlm_checking ? canvas.color565(140, 90, 30) : canvas.color565(50, 50, 55));
+        const uint16_t badge_text   = vlm_ok ? canvas.color565(0, 0, 0) : (vlm_checking ? canvas.color565(255, 230, 180) : canvas.color565(140, 140, 145));
 
         canvas.fillRoundRect(kCardX, kCardY, kCardW, kCardH, kRadius, card_bg);
         canvas.drawRoundRect(kCardX, kCardY, kCardW, kCardH, kRadius, border_color);
 
         // バッジ
+        const char* badge_label = !wifi_ok ? "OFFLINE" : (vlm_ok ? "VLM AI" : (vlm_checking ? "CHECK" : "NO VLM"));
         canvas.fillRoundRect(kBadgeX, kCardY + kBadgeYOff, kBadgeW, kBadgeH, kBadgeRadius, badge_bg);
         canvas.setFont(kFontDesc);
         canvas.setTextColor(badge_text);
         canvas.setTextDatum(lgfx::textdatum_t::middle_center);
-        canvas.drawString(wifi_ok ? "VLM AI" : "OFFLINE", kBadgeCenterX, kCardY + kBadgeCenterYOff);
+        canvas.drawString(badge_label, kBadgeCenterX, kCardY + kBadgeCenterYOff);
 
         // タイトル
         canvas.setFont(kFontTitle);
@@ -136,10 +145,14 @@ bool draw(avatar::RichCanvas& canvas)
         canvas.setFont(kFontDesc);
         canvas.setTextColor(sub_color);
         canvas.setTextDatum(lgfx::textdatum_t::top_left);
-        if (wifi_ok) {
-            canvas.drawString("AI画像認識で4方向探索・最適ルート決定", kDescX, kCardY + kDescYOff);
-        } else {
+        if (!wifi_ok) {
             canvas.drawString("※Wi-Fi未接続のため選択できません", kDescX, kCardY + kDescYOff);
+        } else if (vlm_ok) {
+            canvas.drawString("AI画像認識で4方向探索・最適ルート決定", kDescX, kCardY + kDescYOff);
+        } else if (vlm_checking) {
+            canvas.drawString("VLMサーバー接続確認中…", kDescX, kCardY + kDescYOff);
+        } else {
+            canvas.drawString("※VLMサーバー未接続のため選択不可", kDescX, kCardY + kDescYOff);
         }
     }
 
@@ -181,7 +194,7 @@ bool draw(avatar::RichCanvas& canvas)
         canvas.setFont(kFontDesc);
         canvas.setTextColor(canvas.color565(255, 90, 90)); // 赤色警告
         canvas.setTextDatum(lgfx::textdatum_t::bottom_left);
-        canvas.drawString("※Wi-Fiに接続してください", 10, 238);
+        canvas.drawString(s_disabled_alert_msg, 10, 238);
     }
 
     // 右下: Wi-Fi接続ステータス & IP表示
@@ -219,8 +232,20 @@ bool handle_tap(int x, int y)
         // 中段: 自律運転（距離＋カメラ）
         if (!wifi_is_connected()) {
             ESP_LOGW(kTag, "SonicCamera tapped but Wi-Fi not connected. Tap ignored.");
-            // 警告表示を2.5秒間トリガー（フッター左下に案内表示）
+            s_disabled_alert_msg = "※Wi-Fiに接続してください";
             s_disabled_alert_until_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000) + 2500;
+            return true; // 画面遷移せずイベント消費
+        }
+        const VlmStatus vlm_stat = VlmClient::get_status();
+        if (vlm_stat != VlmStatus::Available) {
+            ESP_LOGW(kTag, "SonicCamera tapped but VLM unavailable (status=%d).", static_cast<int>(vlm_stat));
+            s_disabled_alert_until_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000) + 2500;
+            if (vlm_stat == VlmStatus::Checking || vlm_stat == VlmStatus::Unknown) {
+                s_disabled_alert_msg = "※VLM接続確認中です…";
+            } else {
+                s_disabled_alert_msg = "※VLMサーバー未接続(再確認中)";
+                VlmClient::trigger_health_check(true); // タップされたら強制再試行！
+            }
             return true; // 画面遷移せずイベント消費
         }
         ESP_LOGI(kTag, "Selected: SonicCamera mode");

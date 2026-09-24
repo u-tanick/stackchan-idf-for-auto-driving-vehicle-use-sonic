@@ -7,13 +7,16 @@
 #include <cstdio>
 #include <vector>
 #include <memory>
+#include <atomic>
 
 #include <esp_log.h>
 #include <esp_heap_caps.h>
 #include <esp_camera.h>
 #include <esp_http_client.h>
+#include <esp_timer.h>
 #include <mbedtls/base64.h>
 #include <cJSON.h>
+#include "wifi_sta.hpp"
 
 namespace stackchan::app {
 
@@ -24,6 +27,9 @@ constexpr const char* kTag = "vlm_client";
 static std::string s_endpoint = VlmClient::kDefaultEndpoint;
 static std::string s_model = VlmClient::kDefaultModel;
 static std::string s_api_key;
+static std::atomic<VlmStatus> s_status{VlmStatus::Unknown};
+static std::atomic<bool> s_check_in_progress{false};
+static uint32_t s_last_check_ms = 0;
 
 struct HttpResponseContext {
     std::string body;
@@ -275,7 +281,98 @@ VlmEvaluation VlmClient::evaluate_current_view(const char* direction_label)
     ESP_LOGI(kTag, "Evaluation for '%s': success=%d, passable=%d, score=%d, reason='%s'",
              direction_label, eval.success, eval.passable, eval.score, eval.reason.c_str());
 
+    // 評価結果によりステータスを追従更新
+    if (eval.success) {
+        s_status.store(VlmStatus::Available, std::memory_order_relaxed);
+    }
+
     return eval;
+}
+
+namespace {
+
+void vlm_health_check_task(void* arg)
+{
+    s_status.store(VlmStatus::Checking, std::memory_order_relaxed);
+    ESP_LOGI(kTag, "Starting VLM health check probe to %s ...", s_endpoint.c_str());
+
+    HttpResponseContext resp_ctx;
+    esp_http_client_config_t http_cfg{};
+    http_cfg.url = s_endpoint.c_str();
+    http_cfg.method = HTTP_METHOD_POST;
+    http_cfg.timeout_ms = 3000;
+    http_cfg.buffer_size = 512;
+    http_cfg.buffer_size_tx = 512;
+    http_cfg.event_handler = http_event_handler;
+    http_cfg.user_data = &resp_ctx;
+
+    esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
+    bool ok = false;
+    if (client != nullptr) {
+        esp_http_client_set_header(client, "Content-Type", "application/json");
+        if (!s_api_key.empty()) {
+            std::string auth = "Bearer " + s_api_key;
+            esp_http_client_set_header(client, "Authorization", auth.c_str());
+        }
+
+        char payload[160];
+        std::snprintf(payload, sizeof(payload),
+                      "{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}",
+                      s_model.c_str());
+
+        esp_err_t err = esp_http_client_open(client, std::strlen(payload));
+        if (err == ESP_OK) {
+            int wlen = esp_http_client_write(client, payload, std::strlen(payload));
+            if (wlen >= 0) {
+                int status_code = esp_http_client_fetch_headers(client);
+                ESP_LOGI(kTag, "VLM probe response HTTP status: %d", status_code);
+                // 200 OK、または 2xx/3xx/400 (model responded) ならサーバー稼働と判定
+                if (status_code >= 200 && status_code < 500) {
+                    ok = true;
+                }
+            }
+        } else {
+            ESP_LOGW(kTag, "VLM probe connection failed: %s (%s)", esp_err_to_name(err), s_endpoint.c_str());
+        }
+        esp_http_client_cleanup(client);
+    }
+
+    s_status.store(ok ? VlmStatus::Available : VlmStatus::Unavailable, std::memory_order_relaxed);
+    ESP_LOGI(kTag, "VLM health check finished: %s", ok ? "AVAILABLE" : "UNAVAILABLE");
+    s_check_in_progress.store(false, std::memory_order_release);
+    vTaskDelete(nullptr);
+}
+
+} // namespace
+
+VlmStatus VlmClient::get_status()
+{
+    if (!wifi_is_connected()) {
+        return VlmStatus::Unavailable;
+    }
+    return s_status.load(std::memory_order_relaxed);
+}
+
+void VlmClient::trigger_health_check(bool force_recheck)
+{
+    if (!wifi_is_connected()) {
+        s_status.store(VlmStatus::Unavailable, std::memory_order_relaxed);
+        return;
+    }
+    const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+    const auto current = s_status.load(std::memory_order_relaxed);
+    if (!force_recheck && current != VlmStatus::Unknown) {
+        // 前回チェックから 8 秒以内なら再チェックを抑止
+        if (now_ms - s_last_check_ms < 8000) {
+            return;
+        }
+    }
+    bool expected = false;
+    if (s_check_in_progress.compare_exchange_strong(expected, true)) {
+        s_last_check_ms = now_ms;
+        s_status.store(VlmStatus::Checking, std::memory_order_relaxed);
+        xTaskCreatePinnedToCore(&vlm_health_check_task, "vlm_probe", 6144, nullptr, 2, nullptr, 0);
+    }
 }
 
 } // namespace stackchan::app
