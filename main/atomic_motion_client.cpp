@@ -851,27 +851,34 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             }
 
             const uint32_t turn_elapsed_ms = now_ms - s_state_start_ms;
-            // 実測角速度（約60〜80 deg/s）に基づく旋回所要時間: 90度なら約1350ms、180度なら約2700ms
-            const uint32_t target_duration_ms = static_cast<uint32_t>((s_target_turn_deg / 90.0f) * 1350.0f);
-            // 最低旋回時間ガード（チャタリング・振動誤判定防止）: 90度なら最低700ms、180度なら最低1400ms
-            const uint32_t min_turn_ms = static_cast<uint32_t>((s_target_turn_deg / 90.0f) * 700.0f);
+            // モーター停止コマンド送信から完全停止までの慣性・遅延（約20〜25度のオーバーシュート）を考慮した先行停止角
+            // 実測115度 → 90度へ補正（目標90度なら約68〜70度到達時点で停止コマンド送信）
+            constexpr float kTurnOvershootDeg = 22.0f;
+            const float stop_threshold_deg = (s_target_turn_deg > kTurnOvershootDeg)
+                                           ? (s_target_turn_deg - kTurnOvershootDeg)
+                                           : (s_target_turn_deg * 0.75f);
+
+            // 実測角速度に基づく旋回所要時間: 90度なら約1050ms（従来の1350msから115度→90度へ短縮補正）
+            const uint32_t target_duration_ms = static_cast<uint32_t>((s_target_turn_deg / 90.0f) * 1050.0f);
+            // 最低旋回時間ガード
+            const uint32_t min_turn_ms = static_cast<uint32_t>((s_target_turn_deg / 90.0f) * 500.0f);
 
             // 旋回テレメトリログ (150msごと)
             static uint32_t s_last_turn_log_ms = 0;
             if (now_ms - s_last_turn_log_ms >= 150) {
                 s_last_turn_log_ms = now_ms;
-                ESP_LOGI(kTag, "Turning: elapsed=%u ms, integrated=%.1f/%.1f deg, gyro=[%.1f, %.1f, %.1f]",
-                         turn_elapsed_ms, s_turn_integrated_deg, s_target_turn_deg, gx, gy, gz);
+                ESP_LOGI(kTag, "Turning: elapsed=%u ms, integrated=%.1f/%.1f deg (stop_thresh=%.1f), gyro=[%.1f, %.1f, %.1f]",
+                         turn_elapsed_ms, s_turn_integrated_deg, s_target_turn_deg, stop_threshold_deg, gx, gy, gz);
             }
 
-            // 完了条件: 最低旋回時間を経過しており、かつ（ジャイロが目標角度に達した、または標準所要時間が経過した）
+            // 完了条件: 最低旋回時間を経過しており、かつ（ジャイロが先行停止角度に達した、または標準所要時間が経過した）
             const bool turn_finished = (turn_elapsed_ms >= min_turn_ms) &&
-                                       (s_turn_integrated_deg >= s_target_turn_deg || turn_elapsed_ms >= target_duration_ms);
+                                       (s_turn_integrated_deg >= stop_threshold_deg || turn_elapsed_ms >= target_duration_ms);
 
-            if (turn_finished || (turn_elapsed_ms >= 3500)) {
+            if (turn_finished || (turn_elapsed_ms >= 3000)) {
                 send_command(CmdStop);
-                ESP_LOGI(kTag, "Turn complete: elapsed=%u ms, integrated=%.1f deg (target=%.1f deg).",
-                         turn_elapsed_ms, s_turn_integrated_deg, s_target_turn_deg);
+                ESP_LOGI(kTag, "Turn complete: elapsed=%u ms, integrated=%.1f deg (target=%.1f deg, thresh=%.1f deg).",
+                         turn_elapsed_ms, s_turn_integrated_deg, s_target_turn_deg, stop_threshold_deg);
 
                 if (s_drive_type == DriveType::SonicOnly) {
                     // 自律運転（距離センサー）: 旋回後の前方距離確認ステートへ
