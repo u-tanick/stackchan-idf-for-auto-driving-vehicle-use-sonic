@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cmath>
 #include "avatar/expression.hpp"
+#include "board/ltr553.hpp"
 #include "vlm_client.hpp"
 #include <M5Unified.h>
 #include <esp_log.h>
@@ -110,11 +111,9 @@ struct ScanPoint {
     const char32_t* reading;
 };
 
-static const ScanPoint kScanPoints[4] = {
-    { -90.0f, "右(90度)", "右(90°)を見てみるね…", U"こっちわ、あいてるかな" },
-    { -45.0f, "右斜め(45度)", "右斜め(45°)を見てみるね…", nullptr },
-    { +90.0f, "左(90度)", "左(90°)を見てみるね…", U"はんたいわ、どうだろう" },
-    { +45.0f, "左斜め(45度)", "左斜め(45°)を見てみるね…", nullptr }
+static const ScanPoint kScanPoints[2] = {
+    { -90.0f, "右(90度)", "右を見てみるね…", U"みぎわ、あいてるかな" },
+    { +90.0f, "左(90度)", "左を見てみるね…", U"ひだりわ、どうだろう" }
 };
 
 AutoDriveState s_drive_state = AutoDriveState::InitWait;
@@ -122,7 +121,7 @@ uint32_t s_state_start_ms = 0;
 int s_scan_index = 0;
 int s_eval_retry_count = 0;
 int s_verify_retry_count = 0;
-VlmEvaluation s_scan_evals[4];
+VlmEvaluation s_scan_evals[2];
 bool s_obstacle_speech_active = false;
 bool s_start_speech_active = false;
 uint32_t s_start_delay_ms = 0;
@@ -134,11 +133,131 @@ uint32_t s_mode_selected_ms = 0;
 bool s_standby_prompt_shown = false;
 bool s_sonic_retried = false;
 
-// IMU旋回用
-float s_target_turn_deg = 0.0f;
-bool s_turn_spin_right = true;
-float s_turn_integrated_deg = 0.0f;
-int64_t s_turn_last_us = 0;
+// 収束型IMU旋回制御
+enum class TurnSubStep {
+    PulseRotate,   // キャタピラ回転パルス送信中
+    WaitSettle,    // 停止後の静止・安定待ち（慣性滑り積算含む）
+    Evaluate,      // 静止角度測定・差分評価・次回補正計算
+};
+
+struct TurnSequence {
+    float target_deg = 90.0f;           // 目標角度 (90.0 or 180.0)
+    bool initial_right = true;          // 初回旋回方向 (true: 右, false: 左)
+    float accumulated_deg = 0.0f;       // 初回目標方向への累積旋回角度
+    float last_step_start_deg = 0.0f;   // 今回のパルス開始時の累積角度
+    uint32_t pulse_duration_ms = 0;     // 今回のパルス回転時間 (ms)
+    bool current_spin_right = true;     // 今回のパルス回転方向 (右/左)
+    float effective_deg_per_ms = 0.100f;// 推定実効角速度 (deg/ms, 実測約100 deg/s)
+    int iteration = 0;                  // 補正回数 (0: 初回大回転, 1..: 微調整)
+    TurnSubStep sub_step = TurnSubStep::PulseRotate;
+};
+
+// ======================================================================
+// オフライン走行ログ（RAMリングバッファ：リブート時に自動クリア）
+// ======================================================================
+struct TurnHistoryEntry {
+    uint32_t turn_id = 0;
+    uint32_t timestamp_s = 0;
+    float target_deg = 0.0f;
+    bool spin_right = true;
+    uint32_t init_pulse_ms = 0;
+    float init_accum_deg = 0.0f;    // 初回パルス終了直後の累積角度
+    uint32_t settle_ms = 0;          // 静止待機時間
+    float settled_deg = 0.0f;       // 静止完了時の角度
+    float error_deg = 0.0f;         // 静止完了時の誤差
+    int iterations = 0;              // 0: 初回で合格, 1: 微調整実施
+    uint32_t corr_pulse_ms = 0;      // 微調整パルス時間
+    bool corr_spin_right = true;    // 微調整方向
+    float final_deg = 0.0f;         // 最終確定角度
+};
+
+static constexpr size_t kMaxTurnHistory = 32;
+static TurnHistoryEntry s_turn_history[kMaxTurnHistory];
+static size_t s_turn_history_count = 0;
+static uint32_t s_total_turns_counter = 0;
+static TurnHistoryEntry s_current_turn;
+
+void record_turn_history(const TurnHistoryEntry& entry)
+{
+    s_turn_history[s_turn_history_count % kMaxTurnHistory] = entry;
+    s_turn_history_count++;
+}
+
+void dump_turn_history()
+{
+    if (s_turn_history_count == 0) {
+        ESP_LOGI(kTag, "=== [TURN HISTORY]: No turns recorded in this session yet ===");
+        return;
+    }
+
+    ESP_LOGI(kTag, "==================== [OFFLINE TURN HISTORY (%zu turns recorded)] ====================", s_turn_history_count);
+    const size_t start = (s_turn_history_count > kMaxTurnHistory) ? (s_turn_history_count - kMaxTurnHistory) : 0;
+    for (size_t i = start; i < s_turn_history_count; ++i) {
+        const auto& e = s_turn_history[i % kMaxTurnHistory];
+        if (e.iterations == 0) {
+            ESP_LOGI(kTag, "#%u [%us] Target: %.1f deg (%s) | InitPulse: %ums -> Cutoff: %.1f deg -> Settled: %.1f deg (Err: %+.1f deg) => PERFECT (0 corr)",
+                     static_cast<unsigned>(e.turn_id), static_cast<unsigned>(e.timestamp_s), e.target_deg,
+                     e.spin_right ? "RIGHT" : "LEFT", static_cast<unsigned>(e.init_pulse_ms),
+                     e.init_accum_deg, e.settled_deg, e.error_deg);
+        } else {
+            ESP_LOGI(kTag, "#%u [%us] Target: %.1f deg (%s) | InitPulse: %ums -> Settled: %.1f deg (Err: %+.1f deg) => CORR: %s %ums -> Final: %.1f deg (Err: %+.1f deg)",
+                     static_cast<unsigned>(e.turn_id), static_cast<unsigned>(e.timestamp_s), e.target_deg,
+                     e.spin_right ? "RIGHT" : "LEFT", static_cast<unsigned>(e.init_pulse_ms),
+                     e.settled_deg, e.error_deg,
+                     e.corr_spin_right ? "RIGHT" : "LEFT", static_cast<unsigned>(e.corr_pulse_ms),
+                     e.final_deg, e.target_deg - e.final_deg);
+        }
+    }
+    ESP_LOGI(kTag, "======================================================================================");
+}
+
+static float s_target_turn_deg = 0.0f;
+static bool s_turn_spin_right = true;
+static int64_t s_turn_last_us = 0;
+static TurnSequence s_turn_seq;
+
+void start_turning(SharedState& state, float target_deg, bool spin_right, uint32_t now_ms)
+{
+    s_target_turn_deg = target_deg;
+    s_turn_spin_right = spin_right;
+
+    s_turn_seq.target_deg = target_deg;
+    s_turn_seq.initial_right = spin_right;
+    s_turn_seq.accumulated_deg = 0.0f;
+    s_turn_seq.last_step_start_deg = 0.0f;
+    s_turn_seq.effective_deg_per_ms = 0.100f;
+    s_turn_seq.iteration = 0;
+
+    // 初回パルス時間: 停止後の慣性滑り（約7〜9度）を見越し、目標角度から先行して停止
+    // 90度目標時: (90 - 7) / 0.100 = 830ms (実機で約82度まで回転し滑りで88〜92度に到達)
+    // 180度目標時: (180 - 15) / 0.100 = 1650ms
+    const float initial_target_deg = (target_deg <= 90.0f) ? (target_deg - 7.0f) : (target_deg - 15.0f);
+    s_turn_seq.pulse_duration_ms = static_cast<uint32_t>(initial_target_deg / s_turn_seq.effective_deg_per_ms);
+    s_turn_seq.current_spin_right = spin_right;
+    s_turn_seq.sub_step = TurnSubStep::PulseRotate;
+
+    // 新規ログエントリの初期化
+    s_total_turns_counter++;
+    s_current_turn = TurnHistoryEntry{};
+    s_current_turn.turn_id = s_total_turns_counter;
+    s_current_turn.timestamp_s = now_ms / 1000;
+    s_current_turn.target_deg = target_deg;
+    s_current_turn.spin_right = spin_right;
+    s_current_turn.init_pulse_ms = s_turn_seq.pulse_duration_ms;
+
+    s_turn_last_us = esp_timer_get_time();
+    AtomicMotionClient::send_command(spin_right ? AtomicMotionClient::CmdSpinRight : AtomicMotionClient::CmdSpinLeft);
+
+    // 首は正面固定
+    state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
+
+    s_drive_state = AutoDriveState::Turning;
+    s_state_start_ms = now_ms;
+
+    ESP_LOGI(kTag, "Start turn sequence #%u: target=%.1f deg, spin_%s, initial pulse=%u ms",
+             static_cast<unsigned>(s_current_turn.turn_id),
+             target_deg, spin_right ? "right" : "left", static_cast<unsigned>(s_turn_seq.pulse_duration_ms));
+}
 } // namespace
 
 esp_err_t AtomicMotionClient::init(int sda_pin, int scl_pin)
@@ -507,10 +626,18 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             }
             break;
 
-        case AutoDriveState::Standby:
+        case AutoDriveState::Standby: {
             // 停止待機中: モーター停止維持。画面タップでStartWaitへ移行する
             send_command(CmdStop);
+
+            // オフライン走行後にUSB接続された際、直近の旋回履歴をPCへ自動出力（3秒ごと）
+            static uint32_t s_last_history_dump_ms = 0;
+            if (s_turn_history_count > 0 && (now_ms - s_last_history_dump_ms >= 3000)) {
+                s_last_history_dump_ms = now_ms;
+                dump_turn_history();
+            }
             break;
+        }
 
         case AutoDriveState::StartWait: {
             send_command(CmdStop);
@@ -666,15 +793,9 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
                     // すでに10cm以上離れていれば直接旋回（または探索）へ
                     if (s_drive_type == DriveType::SonicOnly) {
                         ESP_LOGI(kTag, "Distance ok (%u mm). Turning left 90 deg.", dist_mm);
-                        s_target_turn_deg = 90.0f;
-                        s_turn_spin_right = false; // 左回転
-                        s_turn_integrated_deg = 0.0f;
-                        s_turn_last_us = esp_timer_get_time();
-                        send_command(CmdSpinLeft);
                         state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
                         state.set_balloon_text("左へ方向転換！", 1500);
-                        s_drive_state = AutoDriveState::Turning;
-                        s_state_start_ms = now_ms;
+                        start_turning(state, 90.0f, /*spin_right=*/false, now_ms);
                     } else {
                         ESP_LOGI(kTag, "Obstacle delay complete. Transitioning to StartScan (head moving).");
                         s_drive_state = AutoDriveState::StartScan;
@@ -694,15 +815,9 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
                 state.set_balloon_text("よし、ここまで下がったよ", 1500);
                 if (s_drive_type == DriveType::SonicOnly) {
                     ESP_LOGI(kTag, "Backing up complete (%u mm). Turning left 90 deg.", dist_mm);
-                    s_target_turn_deg = 90.0f;
-                    s_turn_spin_right = false; // 左回転
-                    s_turn_integrated_deg = 0.0f;
-                    s_turn_last_us = esp_timer_get_time();
-                    send_command(CmdSpinLeft);
                     state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
                     state.set_balloon_text("左へ方向転換！", 1500);
-                    s_drive_state = AutoDriveState::Turning;
-                    s_state_start_ms = now_ms;
+                    start_turning(state, 90.0f, /*spin_right=*/false, now_ms);
                 } else {
                     s_drive_state = AutoDriveState::StartScan;
                     s_state_start_ms = now_ms;
@@ -755,7 +870,21 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             // 現在のカメラフレームを VLM で評価
             const auto& pt = kScanPoints[s_scan_index];
             ESP_LOGI(kTag, "Evaluating view for %s (try %d/3)...", pt.name, s_eval_retry_count + 1);
-            VlmEvaluation eval = VlmClient::evaluate_current_view(pt.name);
+
+            // 近接センサ(LTR-553ALS-WA)の読み取り
+            ProximityInfo prox_info;
+            auto prox_opt = board::Ltr553Proximity::read();
+            if (prox_opt.has_value()) {
+                prox_info.available = true;
+                prox_info.ps_raw = prox_opt->ps_raw;
+                prox_info.obstacle_near = prox_opt->obstacle_near;
+                ESP_LOGI(kTag, "LTR-553 proximity for %s: raw=%u, obstacle_near=%d",
+                         pt.name, prox_info.ps_raw, prox_info.obstacle_near);
+            } else {
+                ESP_LOGW(kTag, "LTR-553 proximity read failed for %s", pt.name);
+            }
+
+            VlmEvaluation eval = VlmClient::evaluate_current_view(pt.name, &prox_info);
 
             if (!eval.success) {
                 s_eval_retry_count++;
@@ -788,13 +917,15 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             s_scan_evals[s_scan_index] = eval;
 
             char buf[64];
-            std::snprintf(buf, sizeof(buf), "%s: %d点 (%s)", pt.name, eval.score, eval.passable ? "OK" : "NG");
+            std::snprintf(buf, sizeof(buf), "%s: %d点 (%s%s)",
+                          pt.name, eval.score, eval.passable ? "OK" : "NG",
+                          eval.proximity.obstacle_near ? ",近接NG" : "");
             state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
             state.set_balloon_text(buf, 2000);
 
             s_scan_index++;
-            if (s_scan_index < 4) {
-                // 次の方向へ首を向ける（※まだ喋らない！）
+            if (s_scan_index < 2) {
+                // 次の方向（左90度）へ首を向ける（※まだ喋らない！）
                 ESP_LOGI(kTag, "Next scan target %d: %s (yaw=%.1f deg) - rotating head first",
                          s_scan_index, kScanPoints[s_scan_index].name, kScanPoints[s_scan_index].yaw_deg);
                 state.servo.target_yaw_deg.store(kScanPoints[s_scan_index].yaw_deg, std::memory_order_relaxed);
@@ -805,8 +936,8 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
                 s_drive_state = AutoDriveState::ScanHeadMoving;
                 s_state_start_ms = now_ms;
             } else {
-                // 4方向完了、首を正面に戻して判定へ
-                ESP_LOGI(kTag, "Scan complete for all 4 directions. Returning head to center.");
+                // 左右2方向完了、首を正面に戻して判定へ
+                ESP_LOGI(kTag, "Scan complete for both 90 deg directions. Returning head to center.");
                 state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
                 state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
                 state.set_balloon_text("判定中…", 1500);
@@ -819,134 +950,200 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
         case AutoDriveState::Decision:
             // 首が正面に戻るのを待つ (800ms) かつ 発話終了待機
             if (now_ms - s_state_start_ms >= 800 && !is_speech_cooling_down(now_ms, speech)) {
-                // 4方向の評価を集計
-                int best_idx = -1;
-                int best_score = -1;
-                for (int i = 0; i < 4; ++i) {
-                    if (s_scan_evals[i].success) {
-                        // passable優先、スコア比較（passable=falseはスコア半減で重み付け）
-                        int effective_score = s_scan_evals[i].score;
-                        if (!s_scan_evals[i].passable) {
-                            effective_score /= 2;
-                        }
-                        if (effective_score > best_score) {
-                            best_score = effective_score;
-                            best_idx = i;
-                        }
-                    }
+                // 左右2方向 (0: 右90°, 1: 左90°) の評価を集計
+                // 近接センサで障害物がある場合や passable=false の場合はNG
+                const bool right_ok = s_scan_evals[0].success && s_scan_evals[0].passable &&
+                                      !s_scan_evals[0].proximity.obstacle_near && (s_scan_evals[0].score >= 40);
+                const bool left_ok  = s_scan_evals[1].success && s_scan_evals[1].passable &&
+                                      !s_scan_evals[1].proximity.obstacle_near && (s_scan_evals[1].score >= 40);
+
+                int chosen_idx = -1;
+                if (right_ok && left_ok) {
+                    // 両方OKの場合はスコアが高い方を選択（同点なら右優先）
+                    chosen_idx = (s_scan_evals[0].score >= s_scan_evals[1].score) ? 0 : 1;
+                } else if (right_ok) {
+                    chosen_idx = 0;
+                } else if (left_ok) {
+                    chosen_idx = 1;
                 }
 
-                if (best_idx < 0 || best_score < 25) {
-                    // 全方向障害物（袋小路）：180度Uターン
-                    ESP_LOGW(kTag, "All directions blocked (best score=%d). Executing 180 deg U-turn.", best_score);
+                if (chosen_idx < 0) {
+                    // 左右どちらもNGだった場合は最初の進行方向から180度反転 (Uターン)
+                    ESP_LOGW(kTag, "Both left and right blocked (R: pass=%d/score=%d/prox=%d, L: pass=%d/score=%d/prox=%d). Executing 180 deg turnaround.",
+                             s_scan_evals[0].passable, s_scan_evals[0].score, s_scan_evals[0].proximity.obstacle_near,
+                             s_scan_evals[1].passable, s_scan_evals[1].score, s_scan_evals[1].proximity.obstacle_near);
                     state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
                     say_step(speech, state, "行き止まり！", U"ゆきどまりだ、ゆーたーんするよ", 2500);
-                    s_target_turn_deg = 180.0f;
-                    s_turn_spin_right = true;
+                    start_turning(state, 180.0f, /*spin_right=*/true, now_ms);
                 } else {
-                    // 最善方向へ進路決定
-                    const auto& best_pt = kScanPoints[best_idx];
-                    ESP_LOGI(kTag, "Best direction: %s (score=%d)", best_pt.name, best_score);
+                    // 良い方を選択して90度旋回
+                    const auto& best_pt = kScanPoints[chosen_idx];
+                    ESP_LOGI(kTag, "Chosen direction: %s (score=%d)", best_pt.name, s_scan_evals[chosen_idx].score);
                     char buf[32];
                     std::snprintf(buf, sizeof(buf), "%sへ進路変更！", best_pt.name);
                     state.set_balloon_text(buf, 2000);
                     state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
+                    say_step(speech, state, "方向転換するよ", U"しんこうほうこう、へんこう", 2000);
 
-                    s_target_turn_deg = std::abs(best_pt.yaw_deg);
-                    s_turn_spin_right = (best_pt.yaw_deg < 0); // 負が右、正が左
+                    const bool spin_right = (chosen_idx == 0); // 0: 右90°, 1: 左90°
+                    start_turning(state, 90.0f, spin_right, now_ms);
                 }
-
-                // 首は確実に正面（0度）に固定（首を動かすとIMUが首の回転角速度を拾って誤停止するため）
-                state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
-
-                // 旋回開始
-                s_turn_integrated_deg = 0.0f;
-                s_turn_last_us = esp_timer_get_time();
-                state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
-                say_step(speech, state, "方向転換するよ", U"しんこうほうこう、へんこう", 2000);
-                send_command(s_turn_spin_right ? CmdSpinRight : CmdSpinLeft);
-                s_drive_state = AutoDriveState::Turning;
-                s_state_start_ms = now_ms;
             }
             break;
 
         case AutoDriveState::Turning: {
-            // 旋回中もコマンドを毎ループ継続送信
-            send_command(s_turn_spin_right ? CmdSpinRight : CmdSpinLeft);
-
             const int64_t now_us = esp_timer_get_time();
             const float dt = (now_us - s_turn_last_us) / 1000000.0f;
             s_turn_last_us = now_us;
 
+            // 1. IMU角速度の取得と目標方向への累積角度更新
             float gx = 0, gy = 0, gz = 0;
+            float abs_gy = 0.0f;
             if (M5.Imu.getGyro(&gx, &gy, &gz)) {
-                // CoreS3垂直搭載時の車体旋回軸はY軸（ヨー回転）。
-                // ピッチやロールの微振動・首の揺れを排除するため、Y軸角速度の絶対値のみを積算する
-                float omega = std::abs(gy);
-                // 静止時のノイズ・ドリフトを除去（不感帯: 8.0 deg/s未満はカット）
-                if (omega < 8.0f) {
-                    omega = 0.0f;
-                } else if (omega > 500.0f) {
-                    omega = 500.0f; // 衝撃ショックによる異常値スパイクをクランプ
+                // CoreS3垂直搭載時、車体ヨー回転はY軸。
+                // 実機測定: ay = +0.98g なので +Y 軸は天頂方向（上向き）。
+                // 右手系角速度:
+                // 右旋回(CW)時は gy < 0
+                // 左旋回(CCW)時は gy > 0
+                // したがって、原点0度から目標方向への正の累積角度(accumulated_deg)を得るには:
+                // initial_right == true (右旋回目標) のときは -gy が正の旋回速度
+                // initial_right == false (左旋回目標) のときは +gy が正の旋回速度
+                abs_gy = std::abs(gy);
+                if (abs_gy < 3.0f) {
+                    gy = 0.0f; // 静止ノイズ不感帯カット (実測静止バイアス約0.75 deg/s)
+                } else if (abs_gy > 500.0f) {
+                    gy = (gy > 0) ? 500.0f : -500.0f; // 衝撃スパイク保護
                 }
-                s_turn_integrated_deg += omega * dt;
+                const float omega = s_turn_seq.initial_right ? -gy : +gy;
+                s_turn_seq.accumulated_deg += omega * dt;
             }
-
-            const uint32_t turn_elapsed_ms = now_ms - s_state_start_ms;
-            // モーター停止コマンド送信から完全停止までの慣性・通信遅延を考慮した先行停止角
-            // 45度旋回（斜め）: 加速過渡期のためオーバーシュートは約10度（停止閾値35度、ショートせず45〜47度に着地）
-            // 90度旋回（直角）: 定常速度のためオーバーシュート19.5度（停止閾値70.5度、90〜91度に着地）
-            // 180度旋回（Uターン）: 最高速定常時のためオーバーシュート約19.5度（停止閾値160.5度）
-            float stop_threshold_deg = 0.0f;
-            if (s_target_turn_deg <= 45.0f) {
-                stop_threshold_deg = s_target_turn_deg * (32.0f / 45.0f); // 45度時: 32.0度
-            } else if (s_target_turn_deg <= 90.0f) {
-                const float t = (s_target_turn_deg - 45.0f) / 45.0f;
-                const float overshoot = 10.0f + t * (19.5f - 10.0f);     // 10.0度〜19.5度へ線形補間
-                stop_threshold_deg = s_target_turn_deg - overshoot;      // 90度時: 70.5度
-            } else {
-                stop_threshold_deg = s_target_turn_deg - 19.5f;          // 180度時: 160.5度
-            }
-
-            // 実測角速度に基づく旋回所要時間: 90度なら約1080ms、45度なら約600ms、180度なら約2160ms
-            const uint32_t target_duration_ms = (s_target_turn_deg <= 45.0f) ? 600 : static_cast<uint32_t>((s_target_turn_deg / 90.0f) * 1080.0f);
-            // 最低旋回時間ガード（45度でも最低400msを確保）
-            const uint32_t min_turn_ms = std::max<uint32_t>(400, static_cast<uint32_t>((s_target_turn_deg / 90.0f) * 500.0f));
 
             // 旋回テレメトリログ (150msごと)
             static uint32_t s_last_turn_log_ms = 0;
             if (now_ms - s_last_turn_log_ms >= 150) {
                 s_last_turn_log_ms = now_ms;
-                ESP_LOGI(kTag, "Turning: elapsed=%u ms, integrated=%.1f/%.1f deg (stop_thresh=%.1f), gyro=[%.1f, %.1f, %.1f]",
-                         turn_elapsed_ms, s_turn_integrated_deg, s_target_turn_deg, stop_threshold_deg, gx, gy, gz);
+                ESP_LOGI(kTag, "Turning: step=%d, iter=%d, accumulated=%.1f/%.1f deg, gyro=[%.1f, %.1f, %.1f]",
+                         static_cast<int>(s_turn_seq.sub_step), s_turn_seq.iteration,
+                         s_turn_seq.accumulated_deg, s_turn_seq.target_deg, gx, gy, gz);
             }
 
-            // 完了条件: 最低旋回時間を経過しており、かつ（ジャイロが先行停止角度に達した、または標準所要時間が経過した）
-            const bool turn_finished = (turn_elapsed_ms >= min_turn_ms) &&
-                                       (s_turn_integrated_deg >= stop_threshold_deg || turn_elapsed_ms >= target_duration_ms);
+            // 2. 収束型サブステップ制御
+            switch (s_turn_seq.sub_step) {
+            case TurnSubStep::PulseRotate: {
+                // キャタピラ回転コマンドを定期送信
+                send_command(s_turn_seq.current_spin_right ? CmdSpinRight : CmdSpinLeft);
 
-            // 安全上限ガード: 大回り（オーバーシュート）を防止するための最大時間キャップ
-            const uint32_t max_turn_limit_ms = static_cast<uint32_t>((s_target_turn_deg / 90.0f) * 1300.0f);
-            if (turn_finished || (turn_elapsed_ms >= max_turn_limit_ms)) {
-                send_command(CmdStop);
-                ESP_LOGI(kTag, "Turn complete: elapsed=%u ms, integrated=%.1f deg (target=%.1f deg, thresh=%.1f deg).",
-                         turn_elapsed_ms, s_turn_integrated_deg, s_target_turn_deg, stop_threshold_deg);
-
-                // 車体が新進路へ旋回完了したため、首を正面（0度）に戻して新進路をまっすぐ見据える
-                state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
-
-                if (s_drive_type == DriveType::SonicOnly) {
-                    // 自律運転（距離センサー）: 旋回後の前方距離確認ステートへ
-                    ESP_LOGI(kTag, "SonicOnly: Entering VerifySonicOnly state.");
-                    s_drive_state = AutoDriveState::VerifySonicOnly;
-                    s_state_start_ms = now_ms;
-                } else {
-                    state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
-                    say_step(speech, state, "カメラで確認中", U"じゃまなものわ、ないかな", 2500);
-                    s_drive_state = AutoDriveState::VerifyCamera;
+                const uint32_t pulse_elapsed_ms = now_ms - s_state_start_ms;
+                // 設定されたパルス時間が経過したらキャタピラ停止
+                if (pulse_elapsed_ms >= s_turn_seq.pulse_duration_ms) {
+                    send_command(CmdStop);
+                    if (s_turn_seq.iteration == 0) {
+                        s_current_turn.init_accum_deg = s_turn_seq.accumulated_deg;
+                    }
+                    ESP_LOGI(kTag, "Turn pulse finished (%u ms). Accumulated=%.1f deg. Entering WaitSettle.",
+                             pulse_elapsed_ms, s_turn_seq.accumulated_deg);
+                    s_turn_seq.sub_step = TurnSubStep::WaitSettle;
                     s_state_start_ms = now_ms;
                 }
+                break;
             }
+
+            case TurnSubStep::WaitSettle: {
+                // キャタピラ停止コマンドを維持
+                send_command(CmdStop);
+
+                // 停止後の慣性滑りと車体振動が静止・安定するまで待機
+                // ユーザー要望: 旋回終了後、1秒間しっかり静止待機して車体とIMUが完全静止してから判定する
+                const uint32_t settle_elapsed = now_ms - s_state_start_ms;
+                if (settle_elapsed >= 1000) {
+                    if (s_turn_seq.iteration == 0) {
+                        s_current_turn.settle_ms = settle_elapsed;
+                        s_current_turn.settled_deg = s_turn_seq.accumulated_deg;
+                        s_current_turn.error_deg = s_turn_seq.target_deg - s_turn_seq.accumulated_deg;
+                    }
+                    s_turn_seq.sub_step = TurnSubStep::Evaluate;
+                }
+                break;
+            }
+
+            case TurnSubStep::Evaluate: {
+                send_command(CmdStop);
+
+                // 原点(0度)から静止時点での累積角度と目標角度との差分を計算
+                // error > 0: 不足（当初の向きへさらに回転が必要）
+                // error < 0: 行き過ぎ・オーバーシュート（逆向きへ戻す補正回転が必要）
+                const float error = s_turn_seq.target_deg - s_turn_seq.accumulated_deg;
+                const float step_delta = std::abs(s_turn_seq.accumulated_deg - s_turn_seq.last_step_start_deg);
+
+                // 今回のステップでの実測角速度（deg/ms）を推定して学習・更新
+                if (s_turn_seq.pulse_duration_ms > 0 && step_delta > 2.0f) {
+                    float measured_rate = step_delta / static_cast<float>(s_turn_seq.pulse_duration_ms);
+                    measured_rate = std::clamp(measured_rate, 0.060f, 0.180f);
+                    s_turn_seq.effective_deg_per_ms = 0.6f * s_turn_seq.effective_deg_per_ms + 0.4f * measured_rate;
+                }
+
+                // 許容誤差: 目標90度に対して±14.0度 (76〜104度) 以内、または微調整1回完了で即座に完了
+                // 初回旋回でほぼ90度（76〜104度）に着地していれば、余計な追加回転を一切起こさず即座に前進へ移行する
+                if (std::abs(error) <= 14.0f || s_turn_seq.iteration >= 1) {
+                    s_current_turn.iterations = s_turn_seq.iteration;
+                    s_current_turn.final_deg = s_turn_seq.accumulated_deg;
+                    record_turn_history(s_current_turn);
+                    dump_turn_history();
+
+                    ESP_LOGI(kTag, "Turn CONVERGED! Target=%.1f deg, Final=%.1f deg (error=%.1f deg) in %d iterations (rate=%.4f deg/ms)",
+                             s_turn_seq.target_deg, s_turn_seq.accumulated_deg, error, s_turn_seq.iteration, s_turn_seq.effective_deg_per_ms);
+
+                    // 首を正面（0度）に戻す
+                    state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
+
+                    if (s_drive_type == DriveType::SonicOnly) {
+                        ESP_LOGI(kTag, "SonicOnly: Entering VerifySonicOnly state.");
+                        s_drive_state = AutoDriveState::VerifySonicOnly;
+                        s_state_start_ms = now_ms;
+                    } else {
+                        state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
+                        say_step(speech, state, "カメラで確認中", U"じゃまなものわ、ないかな", 2500);
+                        s_drive_state = AutoDriveState::VerifyCamera;
+                        s_state_start_ms = now_ms;
+                    }
+                    break;
+                }
+
+                // どうしても14度以上ズレていた場合のみ、最大1回だけごくわずかな極小チョン当て（35〜55ms）
+                s_turn_seq.iteration++;
+                s_turn_seq.last_step_start_deg = s_turn_seq.accumulated_deg;
+
+                // error > 0 (不足) なら当初の向き、error < 0 (行き過ぎ) なら逆向き
+                if (error > 0) {
+                    s_turn_seq.current_spin_right = s_turn_seq.initial_right;
+                } else {
+                    s_turn_seq.current_spin_right = !s_turn_seq.initial_right;
+                }
+
+                // 微小補正時間 (ms) の計算
+                float needed_deg = std::abs(error);
+                if (needed_deg > 6.0f) {
+                    needed_deg -= 3.0f; // 停止時の滑りを考慮
+                }
+                uint32_t corr_ms = static_cast<uint32_t>(needed_deg / s_turn_seq.effective_deg_per_ms);
+                // 補正パルスは極小のチョン当て（35〜55ms）に制限し、過剰回転を完全に防止
+                corr_ms = std::clamp<uint32_t>(corr_ms, 35, 55);
+                s_turn_seq.pulse_duration_ms = corr_ms;
+
+                s_current_turn.corr_pulse_ms = corr_ms;
+                s_current_turn.corr_spin_right = s_turn_seq.current_spin_right;
+
+                ESP_LOGI(kTag, "Turn Eval [iter %d]: target=%.1f, accumulated=%.1f, error=%.1f deg -> corr_dir=%s, duration=%u ms (rate=%.4f deg/ms)",
+                         s_turn_seq.iteration, s_turn_seq.target_deg, s_turn_seq.accumulated_deg, error,
+                         s_turn_seq.current_spin_right ? "RIGHT" : "LEFT",
+                         static_cast<unsigned>(corr_ms), s_turn_seq.effective_deg_per_ms);
+
+                s_turn_seq.sub_step = TurnSubStep::PulseRotate;
+                s_state_start_ms = now_ms;
+                send_command(s_turn_seq.current_spin_right ? CmdSpinRight : CmdSpinLeft);
+                break;
+            }
+            } // switch (sub_step)
             break;
         }
 
@@ -977,28 +1174,17 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
                         s_sonic_retried = true;
                         state.face.expression.store(static_cast<int>(avatar::Expression::Doubt), std::memory_order_relaxed);
                         say_step(speech, state, "まだ行き止まり！", U"まだ、ゆきどまりだ、もういっかい、まがるよ", 2000);
-                        s_target_turn_deg = 90.0f;
-                        s_turn_spin_right = false; // 再度左90度回転
-                        s_turn_integrated_deg = 0.0f;
-                        s_turn_last_us = esp_timer_get_time();
-                        send_command(CmdSpinLeft);
-                        s_drive_state = AutoDriveState::Turning;
-                        s_state_start_ms = now_ms;
+                        start_turning(state, 90.0f, /*spin_right=*/false, now_ms);
                     } else {
                         // 2回旋回しても障害物がある場合（袋小路）：さらに左に回って抜け道を探す
                         ESP_LOGW(kTag, "SonicOnly: Still blocked after U-turn. Turning left again.");
-                        s_target_turn_deg = 90.0f;
-                        s_turn_spin_right = false;
-                        s_turn_integrated_deg = 0.0f;
-                        s_turn_last_us = esp_timer_get_time();
-                        send_command(CmdSpinLeft);
-                        s_drive_state = AutoDriveState::Turning;
-                        s_state_start_ms = now_ms;
+                        start_turning(state, 90.0f, /*spin_right=*/false, now_ms);
                     }
                 }
             }
             break;
         }
+
 
         case AutoDriveState::VerifyCamera:
             // 旋回直後の手ブレ静止待ち (800ms) かつ 発話終了後1秒待機

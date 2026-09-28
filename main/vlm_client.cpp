@@ -92,7 +92,7 @@ void VlmClient::configure(std::string endpoint, std::string model, std::string a
              s_endpoint.c_str(), s_model.c_str(), !s_api_key.empty());
 }
 
-VlmEvaluation VlmClient::evaluate_current_view(const char* direction_label)
+VlmEvaluation VlmClient::evaluate_current_view(const char* direction_label, const ProximityInfo* proximity)
 {
     VlmEvaluation eval;
     eval.success = false;
@@ -153,16 +153,32 @@ VlmEvaluation VlmClient::evaluate_current_view(const char* direction_label)
     esp_camera_fb_return(fb);
 
     // 3. プロンプトと JSON リクエストペイロードの作成
+    char prox_section[256] = "";
+    if (proximity != nullptr && proximity->available) {
+        if (proximity->obstacle_near) {
+            std::snprintf(prox_section, sizeof(prox_section),
+                          "【重要センサー情報】至近距離の近接センサー(LTR-553)が値 %u を計測し、顔の目の前（数cm〜10cm以内）に障害物を検知しています（危険）。",
+                          proximity->ps_raw);
+        } else {
+            std::snprintf(prox_section, sizeof(prox_section),
+                          "【センサー情報】至近距離の近接センサー(LTR-553)の値は %u で、直前10cm以内には至近障害物は検知されていません。",
+                          proximity->ps_raw);
+        }
+    }
+
     // PSRAM 上に文字列を構築
     char prompt_raw[1024];
     std::snprintf(prompt_raw, sizeof(prompt_raw),
                   "幅10cmの小型自律走行ロボットの進路選択です。ロボットがこの方向（向き: %s）を向いて撮影した画像です。"
+                  "%s"
                   "この進行方向について安全に走れる空間の広さ・奥行きを評価し、次のJSON形式のみで出力してください: "
                   "{\"passable\": trueまたはfalse, \"score\": 0〜100, \"reason\": \"理由\"} "
                   "【判定基準】奥まで床が見通せて広い空間や通路がある開けた方向は高スコア(70〜100)。"
                   "直前1m以内に壁や箱などの障害物があり塞がっている方向は低スコア(0〜39, passable:false)。"
+                  "もし近接センサーで至近距離に障害物が検知されている場合は、危険と判断してpassable: false、低スコア(0〜25)としてください。"
                   "空間の広さに応じてスコアに明確な差をつけてください。",
-                  direction_label ? direction_label : "正面");
+                  direction_label ? direction_label : "正面",
+                  prox_section);
     const std::string prompt_escaped = json_escape(prompt_raw);
 
     std::string payload;
@@ -285,6 +301,20 @@ VlmEvaluation VlmClient::evaluate_current_view(const char* direction_label)
     }
 
     cJSON_Delete(root);
+
+    if (proximity != nullptr) {
+        eval.proximity = *proximity;
+        // 近接センサーが至近距離障害物を検知している場合の安全フェールセーフ
+        if (proximity->available && proximity->obstacle_near) {
+            if (eval.passable || eval.score > 35) {
+                ESP_LOGW(kTag, "VLM evaluated passable/high score but proximity sensor detected close obstacle (ps=%u). Overriding to NG.",
+                         proximity->ps_raw);
+                eval.passable = false;
+                eval.score = std::min(eval.score, 25);
+                eval.reason += " (近接センサーによる至近障害物検知のためNG)";
+            }
+        }
+    }
 
     ESP_LOGI(kTag, "Evaluation for '%s': success=%d, passable=%d, score=%d, reason='%s'",
              direction_label, eval.success, eval.passable, eval.score, eval.reason.c_str());

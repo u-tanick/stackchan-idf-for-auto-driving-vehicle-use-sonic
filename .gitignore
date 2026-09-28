@@ -48,3 +48,5 @@ components/jtts/test/host/build/
 
 # ADR-001 release packaging output (script/pack_release.py, `make pack`)
 release/
+/scratch/
+boot_log.txt

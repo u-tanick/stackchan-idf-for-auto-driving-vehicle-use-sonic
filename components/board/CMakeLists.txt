@@ -4,6 +4,7 @@ set(_board_srcs
     "camera_gc0308.cpp"
     "io_expander_py32.cpp"
     "led_strip.cpp"
+    "ltr553.cpp"
     "nekomimi_led_strip.cpp"
     "si12t_touch.cpp"
 )

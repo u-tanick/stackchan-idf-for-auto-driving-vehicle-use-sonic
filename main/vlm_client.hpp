@@ -8,11 +8,18 @@
 
 namespace stackchan::app {
 
+struct ProximityInfo {
+    bool available{false};
+    std::uint16_t ps_raw{0};
+    bool obstacle_near{false};
+};
+
 struct VlmEvaluation {
     bool success{false};
     bool passable{false};
     int score{0}; // 0..100
     std::string reason;
+    ProximityInfo proximity{};
 };
 
 enum class VlmStatus {
@@ -30,8 +37,9 @@ public:
     // エンドポイント、モデル名、APIキーを設定（空欄の場合はデフォルト/キーなし）
     static void configure(std::string endpoint, std::string model, std::string api_key);
 
-    // 現在のカメラフレームを取得し、ローカルVLMに送信して指定方向の通行可否とスコアを評価
-    static VlmEvaluation evaluate_current_view(const char* direction_label = "front");
+    // 現在のカメラフレームを取得し、近接センサ情報を加味してローカルVLMに送信、指定方向の通行可否とスコアを評価
+    static VlmEvaluation evaluate_current_view(const char* direction_label = "front",
+                                               const ProximityInfo* proximity = nullptr);
 
     // VLMサーバーの現在の利用可能性ステータスを取得
     static VlmStatus get_status();

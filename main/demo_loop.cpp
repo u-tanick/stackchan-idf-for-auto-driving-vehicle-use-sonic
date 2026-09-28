@@ -284,6 +284,7 @@ constexpr const char* kTag = "stackchan";
                 }
             }
         }
+
         // BtnB (StopWatch Blue / G1) — manual expression cycle with haptic
         // confirmation. wasPressed() is false on boards without BtnB so the
         // check is harmless universally.
