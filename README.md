@@ -1,3 +1,5 @@
+[English](README.en.md)
+
 # stackchan-idf-for-auto-driving-vehicle-use-sonic
 
 M5Stack CoreS3 + Atomic Motion Base + 超音波測距センサー（Sonic Unit）を組み合わせた、**超音波自律走行に特化した車輪型スタックチャン**の ESP-IDF ファームウェアです。
@@ -31,13 +33,15 @@ M5Stack CoreS3 + Atomic Motion Base + 超音波測距センサー（Sonic Unit�
 
 ## 🛠️ ハードウェア構成
 
-| パーツ | 接続・仕様 | 備考 |
-|---|---|---|
-| **M5Stack CoreS3** | ESP32-S3 / 16MB Flash / 8MB PSRAM / 320×240 タッチLCD | コントローラー本体 |
-| **Atomic Motion Base** | I2C (アドレス `0x38`) / DCモーター駆動 | 走行用ベース |
-| **超音波測距センサー** | M5Stack Unit Sonic (Atomic Motion の Port B / C に接続) | 前方障害物検知 (20〜4000mm)。Base 経由で I2C (0x38) 経由にて取得 |
-| **SCS0009 サーボ ×2** | UART1 (TX GPIO 6 / RX GPIO 7, 1Mbps) | スタックチャンの首（Yaw / Pitch） |
-| **内蔵 IMU** | BMI270 (I2C) | 旋回角度の正確なオドメトリ |
+| # | パーツ | 接続・仕様 | 備考 |
+|---|---|---|---|
+| 1| **M5Stack CoreS3** | ESP32-S3 / 16MB Flash / 8MB PSRAM / 320×240 タッチLCD | コントローラー本体 |
+| 2| **SCS0009 サーボ ×2** | UART1 (TX GPIO 6 / RX GPIO 7, 1Mbps) | スタックチャンの首（Yaw / Pitch） |
+| 3| **内蔵 IMU** | BMI270 (I2C) | 旋回角度の正確なオドメトリ |
+| 4| **Atomic Motion Base** | I2C (アドレス `0x38`) / DCモーター駆動 | 走行用ベース |
+| 5| **超音波測距センサー** | M5Stack Unit Sonic (Atomic Motion の Port B  に接続) | 前方障害物検知 (20〜4000mm)。Base 経由で I2C (0x38) 経由にて取得 |
+
+※ 1～3はM5StackChanのハードウェア構成に相当します
 
 ---
 

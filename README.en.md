@@ -1,187 +1,130 @@
 [日本語](README.md)
 
-# stackchan-idf
+# stackchan-idf-for-auto-driving-vehicle-use-sonic
 
-Firmware for Stack-chan running on M5Stack CoreS3 / AtomS3R / AtomS3 / StopWatch (C152),
-written against ESP-IDF 5.5 / C++20. Supports AI voice conversation (OpenAI / Gemini /
-XiaoZhi), three configuration paths (BLE / Wi-Fi STA / SoftAP), and device-side OTA.
+ESP-IDF firmware for a **wheeled Stack-chan specialized in ultrasonic autonomous driving**, combining M5Stack CoreS3, Atomic Motion Base, and an Ultrasonic Distance Sensor (Unit Sonic).
 
-## Web Flasher / Settings page
+This repository is forked from [ciniml/stackchan-idf](https://github.com/ciniml/stackchan-idf) and optimized specifically for obstacle-avoiding autonomous driving using an ultrasonic sensor.
 
-Released firmware can be flashed straight from the browser (Chrome / Edge):
+---
 
-- **Flash**: <https://ciniml.github.io/stackchan-idf/>
-- **BLE Settings**: <https://ciniml.github.io/stackchan-idf/settings.html> (Web Bluetooth, desktop Chrome / Edge only)
-- **Wi-Fi Settings**: once the device is on Wi-Fi, `http://stackchan-XXXXXX.local/` (mDNS)
-- **iOS / SoftAP Settings**: trigger AP mode on-device (per-board, see below), scan the
-  Wi-Fi QR shown on the LCD with iPhone Camera → join → captive portal pops the
-  settings page automatically
+## 🚀 Key Features
 
-Push a tag `vX.Y.Z` and CI builds for all four boards, attaches the artifacts to
-a Release, and the Pages site picks them up automatically.
+- **Ultrasonic Autonomous Driving (SonicOnly Mode)**:
+  - Eliminates mode selection screens and complex settings. Tap the screen after boot to immediately begin autonomous driving.
+  - Continuously monitors front obstacles and walls with the ultrasonic sensor.
+- **High-Precision 90° Turn Correction via IMU (6-Axis Gyro)**:
+  - Automatically calibrates angular turn rate (deg/ms) based on floor friction and battery voltage.
+  - Automatically compensates for undershoot and overshoot relative to the target 90° turn using millisecond-level micro-pulses.
+  - Promptly resumes forward motion after turning with high stability.
+- **Automatic Backup on Close Proximity**:
+  - If an obstacle is detected closer than 10 cm, the vehicle automatically backs up for a short duration (~350 ms) to secure clearance before turning.
+- **Offline Turn Data Logging**:
+  - Automatically records target angle, final reached angle, error, iteration count, and effective angular rate in memory for each turn.
+  - Cleared automatically upon reboot, preventing memory exhaustion during long runs.
+- **Rich Stack-chan Emotional Expressions**:
+  - Troubled face (Doubt), balloon text, and katakoto robotic voice alerts upon obstacle detection.
+  - Happy face (Happy) and voice announcement upon completing a turn.
+  - Continuous neck gestures and breathing animations even while driving.
+- **Streamlined, Clean Codebase**:
+  - Experimental code such as ESP-NOW (JoyCon remote receiver) and VLM (camera vision scanning) has been completely removed for a lightweight, robust architecture.
 
-## Supported boards
+---
 
-| Board | Slug | Display | Notable |
+## 🛠️ Hardware Requirements
+
+| # | Component | Interface / Spec | Remarks |
 |---|---|---|---|
-| CoreS3 + Stack-chan base | `cores3` | 320×240 IPS + touch | Default. 2 servos, head touch sensor, INA226 battery gauge |
-| CoreS3 + Takao Base | `cores3` | same | Half-duplex servo on Port A; no servo VM control / no battery gauge |
-| AtomS3R + Atomic ECHO BASE ("AtomNyan") | `atoms3r` | 128×128 LCD | No servos, ES8311 audio, BtnA-driven UI / AP toggle |
-| AtomS3 (no PSRAM) + ECHO BASE | `atoms3` | 128×128 LCD | Slim profile, no conversation / RTP |
-| M5 StopWatch (C152) | `stopwatch` | 466×466 round AMOLED + touch | No servos, gaze-follow on touch, ES8311 audio |
+| 1 | **M5Stack CoreS3** | ESP32-S3 / 16MB Flash / 8MB PSRAM / 320×240 Touch LCD | Main controller |
+| 2 | **SCS0009 Servos ×2** | UART1 (TX GPIO 6 / RX GPIO 7, 1Mbps) | Stack-chan neck (Yaw / Pitch) |
+| 3 | **Built-in IMU** | BMI270 (I2C) | Accurate odometry for turning angle |
+| 4 | **Atomic Motion Base** | I2C (Address `0x38`) / DC Motor Driver | Driving base |
+| 5 | **Ultrasonic Sensor** | M5Stack Unit Sonic (Connected to Atomic Motion Port B) | Front obstacle detection (20–4000mm). Read via Base over I2C (0x38) |
 
-Build with `make build BOARD=<slug>` (default `cores3`). The board is detected at
-boot and broadcast via `set_board_kind()` so UI tabs and feature toggles grey out
-appropriately.
+*Note: Items 1 to 3 correspond to the standard M5StackChan hardware configuration.*
 
-## Features
+---
 
-- **AI voice conversation**: WebSocket to one of OpenAI Realtime / Google Gemini
-  Live / a XiaoZhi server, streaming mic input → reply audio with mouth-sync.
-  The half-duplex CoreS3 mutes the mic while speaking; interrupt a reply
-  (barge-in) with an LCD tap or a head touch (Si12T). Turns are detected by
-  server-side VAD. OpenAI / Gemini drive expression, head pose and robotic
-  speech via tools (`set_expression` / `set_head_pose` / `speak_katakoto`);
-  XiaoZhi maps its reply emotion to an expression. Reply text streams into
-  the balloon.
-- **Avatar rendering**: 30 fps with M5GFX. Breath / saccade / blink animators,
-  six expressions (Neutral / Happy / Sad / Angry / Doubt / Sleepy). The face
-  layout and animation is driven by an **Avatar DSL** (`.avdsl` source →
-  `.avbc` bytecode) that can be replaced live over BLE / Wi-Fi.
-- **Mic-driven lip-sync**: FFT + per-band log + spectral flux estimate of mouth
-  opening, with an EWMA noise-floor AGC for ambient drift.
-- **Servos**: SCS0009 yaw + pitch over UART1 (1 Mbps). Trapezoidal-velocity
-  `PathGenerator`; torque only engaged while moving. Per-board range
-  calibration (ServoLimits) persisted in NVS.
-- **Speaker / audio**: Boot arpeggio (C5–E5–G5, can be disabled), jtts random
-  babble, AAC record + playback, BLE audio streaming, Wi-Fi RTP receive
-  (L16 / μ-law / AAC). Volume is **0..200%**, live-controlled from BLE /
-  Wi-Fi / on-device UI.
-- **NeoPixel**: Nekomimi LED-strip animations (rainbow / solid / lip-sync
-  level-meter mode).
-- **LT timer**: Talk-time assistant. "Soon" notice N seconds before the end,
-  on-the-dot announcement, repeated over-time call-outs (jtts).
-- **On-device UI**:
-  - CoreS3 / StopWatch (touch panel): tap top-right corner for a 5-tab UI
-    (info / settings / control / range / conversation / LT)
-  - AtomS3R / AtomS3 (button only): BtnA short-press toggles the status
-    overlay, long-press cycles `operation_mode`
-- **Speech balloon**: 24 px Japanese-capable Gothic font on a rounded white
-  panel; long text scrolls right-to-left as a marquee.
-- **BLE settings service** (NimBLE GATT): configure Wi-Fi, API keys and OTA
-  from `tools/settings.html` (Web Bluetooth). Bluetooth 4.2+ Just Works
-  pairing plus an application-layer X25519 + AES-256-GCM session, with
-  optional password auth. Settings land in NVS; Apply reboots.
-- **Wi-Fi settings service**: once Wi-Fi connects, the device serves an HTTP
-  server (port 80) + a built-in `settings_wifi.html`, advertised over mDNS
-  (`stackchan-XXXXXX.local`). Covers SSID, provider, API keys, system prompt,
-  extra HTTP headers, jtts, Avatar DSL, OTA — everything the BLE page covers.
-- **SoftAP provisioning (iOS-friendly)**: when STA is unset / failing, trigger
-  AP mode on-device (`Stackchan-XXXXXX` + WPA2). LCD shows a Wi-Fi QR; the
-  iPhone Camera scans → joins → **the captive portal automatically opens
-  `settings_wifi.html`** (DNS hijack + HTTP 404 catch-all). `require_auth`
-  is bypassed while AP is up, so the settings UI is immediately reachable.
-- **OTA updates**: dual OTA partitions, boot verification with rollback.
-  - **BLE**: settings.html → encrypted chunks
-  - **Wi-Fi local file**: upload a `.bin` from settings_wifi.html
-  - **Wi-Fi device-side fetch** (v0.7.4+): `POST /api/ota/release {tag}` —
-    the device pulls its own per-board binary from GitHub Pages over its
-    STA link and applies it (STA must be up).
+## 🔄 Autonomous Driving State Machine
 
-## Hardware (CoreS3 + Stack-chan base path)
+```
+ [Boot] ──> InitWait ──> Standby (Wait for screen tap)
+                            │ (Screen tap)
+                            ▼
+                        StartWait (1.5s countdown)
+                            │
+                            ▼
+     ┌────────────────>  Forward (Forward driving)
+     │                      │
+     │                      ▼ (Distance <= 200mm)
+     │                 ObstacleDetected (Stop & expression change)
+     │                      │
+     │                      ▼
+     │                 ObstacleDelay (1.0s complete stop)
+     │                      │
+     │         ┌────────────┴────────────┐
+     │         ▼ (Distance < 100mm)       ▼ (Distance >= 100mm)
+     │     BackingUp (350ms backup)      │
+     │         └────────────┬────────────┘
+     │                      ▼
+     │                   Turning (IMU 90° spin & fine correction)
+     │                      │
+     │                      ▼
+     │               VerifySonicOnly (Wait 400ms to verify clear front)
+     │                      │
+     └──────────────────────┘ (Resume forward driving if clear)
+```
 
-- M5Stack CoreS3 (ESP32-S3, 8 MB Quad-SPI PSRAM, 16 MB flash)
-- Stack-chan base (PY32 IO expander @ 0x6F, two SCS0009 servos)
-  - Internal I²C: AXP2101 (0x34) / touch (0x38) — managed by M5Unified
-  - PY32 pin 0: servo motor-voltage enable (wait 200 ms after ON before using the bus)
-  - Servo bus (SCS0009): UART1, TX GPIO 6 / RX GPIO 7, 1 Mbps, 8 N 1
-    - Yaw  ID = 1, zero_pos = 460
-    - Pitch ID = 2, zero_pos = 620
-  - 1 step ≈ 0.3125° (`deg = (raw - zero) * 5 / 16`)
-  - Head touch sensor Si12T @ 0x68 (3 zones, for nadenade / barge-in)
-- Other boards' pin layout: see each `sdkconfig.defaults.<board>` and
-  `components/board/board.cpp`.
+- **Pause**: Tapping the screen while driving returns the state to `Standby` and safely stops the vehicle.
 
-## Setup
+---
 
-With ESP-IDF 5.5 installed (tested against 5.5.4; 5.4.2 still builds):
+## 💻 Build and Flash Instructions
 
-```sh
-git clone <this repo>
-cd stackchan-idf
+Built and tested against ESP-IDF 5.5 (5.5.4 / 5.5.5).
+
+### 1. Clone the Repository and Initialize Submodules
+
+```bash
+git clone https://github.com/u-tanick/stackchan-idf-for-auto-driving-vehicle-use-sonic.git
+cd stackchan-idf-for-auto-driving-vehicle-use-sonic
 git submodule update --init --recursive
-tools/apply-m5-patches.sh                    # apply the one-line M5Unified fix
-make set-target BOARD=cores3                 # first time only; per-board build dirs
-make build      BOARD=cores3
-make flash      BOARD=cores3 PORT=/dev/ttyACM0
-make monitor    BOARD=cores3 PORT=/dev/ttyACM0
 ```
 
-Replace `BOARD=` with `atoms3r` / `atoms3` / `stopwatch` to build for those
-boards; each lands under its own `build-<board>/` directory.
+### 2. Environment Setup & Build (Windows PowerShell Example)
 
-`tools/apply-m5-patches.sh` just zero-initialises a `buf` array in
-`M5Unified` `RTC_PowerHub_Class::setAlarmIRQ` so it stops tripping the
-GCC 14 `-Werror=maybe-uninitialized` check.
+```powershell
+$env:IDF_TOOLS_PATH = 'C:\Espressif'
+. C:\esp\v5.5.4\esp-idf\export.ps1
 
-API keys for OpenAI / Gemini are not baked into the build — supply them at
-runtime from the BLE / Wi-Fi settings interface (stored in NVS). A
-compile-time default can be given via `sdkconfig.defaults.local` (gitignored).
-
-## Boot sequence (CoreS3 default path)
-
-1. M5 / Avatar init, startup arpeggio (C5–E5–G5, can be disabled).
-2. Load settings from NVS, start the BLE settings service (always advertising).
-3. If an SSID is stored, start the Wi-Fi STA connection (non-blocking).
-   On STA up → start mDNS + HTTP config server + SNTP.
-4. Mic loopback test (record 2 s, play it back) as a sanity check.
-5. Servo power on → ping (Yaw / Pitch) → 1.5 s settle.
-6. Start the render task (30 fps face, core 1) and servo task (20 ms tick,
-   core 0). If conversation is enabled, the conversation task waits for
-   Wi-Fi and starts the AI dialogue.
-7. demo_loop begins — idle: random babble, random head pose, nadenade
-   reactions; during a conversation the AI task drives avatar + audio.
-8. Tap top-right for the on-device UI; tap the screen during a reply to
-   barge in; the Control tab's "AP モード" row enters SoftAP provisioning.
-
-## Repository layout
-
-```
-.
-├── components/
-│   ├── avatar/              face rendering + animators (breath / saccade / blink, 6 expressions)
-│   ├── avatar_vm/           Avatar DSL bytecode VM + NVS storage
-│   ├── board/               CoreS3 / AtomS3R / StopWatch HW bring-up (board auto-detect)
-│   ├── scs_servo/           SCS0009 driver + PathGenerator (trapezoidal velocity)
-│   ├── jtts/                Japanese katakoto TTS (babble / speak_katakoto / LT calls)
-│   ├── conversation/        AI voice-conversation clients (OpenAI / Gemini / XiaoZhi)
-│   ├── config_service/      BLE GATT settings service + NVS + OTA + X25519/AES-GCM
-│   ├── wifi_config_service/ Wi-Fi HTTP config + built-in web page + release OTA
-│   ├── telegram/            Telegram Bot API (TLS) notification client (oss)
-│   ├── M5GFX/               submodule (upstream)
-│   ├── M5Unified/           submodule (upstream + 1 patch)
-│   └── tl_expected/         tl::expected backport (submodule)
-├── main/                    app_main, render/servo task, demo_loop, ap_screen,
-│                            captive_portal, device_ui, atom_status, wifi_sta
-├── patches/                 upstream-targeted patches
-├── tools/                   apply-m5-patches.sh, monitor_log.py, settings.html,
-│                            avatar_dsl/ (compiler + WASM glue)
-├── assets/                  .avdsl sources (default_face, omega_mouth, aokko_face)
-├── partitions.csv           OTA layout (ota_0 / ota_1 / nvs / storage)
-├── sdkconfig.defaults*      shared + per-board (.cores3 / .atoms3r / .atoms3 / .stopwatch)
-└── Makefile                 thin wrapper around idf.py (BOARD= switch)
+idf.py build
 ```
 
-## License
+### 3. Flash Firmware & Monitor Logs
 
-First-party sources (`components/board`, `components/scs_servo`,
-`components/avatar`, `components/avatar_vm`, `components/jtts`,
-`components/conversation`, `components/config_service`,
-`components/wifi_config_service`, `components/telegram`, `main`, `tools`)
-are released under the **Boost Software License 1.0** ([LICENSE](LICENSE)).
+```powershell
+idf.py -p COMx flash monitor
+```
+*(Replace `COMx` with your CoreS3 serial port. Press `Ctrl+]` to exit the monitor)*
 
-The submodules (`components/M5GFX`, `components/M5Unified`,
-`components/tl_expected/expected`) and managed_components
-(`espressif/esp_audio_codec`, `espressif/esp_websocket_client`,
-`espressif/mdns`, `espressif/esp_jpeg`, `espressif/esp32-camera`, etc.)
-keep their respective upstream licenses.
+---
+
+## 📚 Base Repository (stackchan-idf) Features
+
+This project is built upon the advanced avatar control and communications stack of [ciniml/stackchan-idf](https://github.com/ciniml/stackchan-idf).
+
+For details on common features and upstream specifications, please refer to the preserved [UPSTREAM_README.en.md](docs/UPSTREAM_README.en.md) (or [UPSTREAM_README.md](docs/UPSTREAM_README.md)):
+
+- **AI Voice Conversation**: OpenAI Realtime / Google Gemini Live / XiaoZhi (WebSocket) integration
+- **Avatar Rendering & Avatar DSL**: 30 fps animations with M5GFX and live DSL bytecode updates
+- **Audio / Lip-Sync**: FFT-based microphone mouth-sync and jtts speech synthesis
+- **Web Configuration / Provisioning**: Web Bluetooth (BLE), Wi-Fi HTTP (mDNS), and SoftAP captive portal
+- **Dual OTA Updates**: On-device firmware updates via web UI
+
+---
+
+## 📄 License
+
+The source code in this repository is distributed under the **Boost Software License 1.0** ([LICENSE](LICENSE)) conforming to the upstream project.
+
+For third-party components and audio data attribution, see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
