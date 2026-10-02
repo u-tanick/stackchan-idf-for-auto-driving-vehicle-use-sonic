@@ -22,8 +22,6 @@ set(_main_priv_reqs
     esp_event
     app_update
     lwip
-    espnow_poc
-    espnow_remote
     flash_layout
     fatfs
     esp_http_server
@@ -71,7 +69,6 @@ set(_main_srcs
     "wifi_sta.cpp"
     "ws_camera_stream.cpp"
     "atomic_motion_client.cpp"
-    "vlm_client.cpp"
 )
 if(CONFIG_STACKCHAN_CONVERSATION_ENABLED)
     list(APPEND _main_srcs "conversation_task.cpp")

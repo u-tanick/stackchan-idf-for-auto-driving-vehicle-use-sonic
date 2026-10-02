@@ -52,9 +52,6 @@
 #include "qr_task.hpp"
 #include "render_task.hpp"
 #include "dance.hpp"
-#include "dance_poc.hpp"
-#include "espnow_poc/espnow_poc.hpp"
-#include "espnow_remote/espnow_remote.hpp"
 #include "screens.hpp"
 #include "servo_limits.hpp"
 #include "servo_task.hpp"
@@ -70,7 +67,6 @@
 #endif
 #include "wifi_sta.hpp"
 #include "ws_camera_stream.hpp"
-#include "vlm_client.hpp"
 
 #include <jtts/jtts.hpp>
 #ifdef CONFIG_TELEGRAM_PHASE1_ENABLED
@@ -365,24 +361,6 @@ extern "C" void app_main()
         }
     }
 
-    if (cfg.llm_url.empty()) {
-        cfg.llm_url = "http://192.168.11.6:1234/v1/chat/completions";
-    }
-    if (cfg.llm_model.empty()) {
-        cfg.llm_model = "qwen3.5-9b-vlm";
-    }
-
-    // Configure VLM endpoint, model, and optional API key from persistent config
-    stackchan::app::VlmClient::configure(cfg.llm_url, cfg.llm_model, cfg.llm_api_key);
-
-#if defined(CONFIG_STACKCHAN_ESPNOW_POC)
-    // [ESP-NOW PoC] 通常起動をスキップし、M5Stack 公式 Stack-chan 互換の ESP-NOW
-    // 送受信だけ走らせる。固定チャネル + AP 非接続が前提なので通常 WiFi と排他。
-    // NVS 初期化済み (espnow_storage が要求)。
-    stackchan::app::espnow_poc_run();
-    ESP_LOGW(kTag, "ESP-NOW PoC mode active — normal app startup skipped");
-    for (;;) vTaskDelay(pdMS_TO_TICKS(1000));
-#endif
 
 #if defined(CONFIG_STACKCHAN_ASR_ENABLED)
     const bool asr_mode = (cfg.operation_mode == stackchan::config::OperationMode::AsrLocal);

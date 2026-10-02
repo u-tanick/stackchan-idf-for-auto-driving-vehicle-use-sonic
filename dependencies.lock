@@ -9,18 +9,8 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 1.7.19~2
-  espressif/cmake_utilities:
-    component_hash: 05165f30922b422b4b90c08845e6d449329b97370fbd06309803d8cb539d79e3
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=4.1'
-    source:
-      registry_url: https://components.espressif.com
-      type: service
-    version: 1.1.1
   espressif/dl_fft:
-    component_hash: 3e8f7d34e04bfa6333f289a6d126745bebe0cee9311b81a6a5d106047f63ef65
+    component_hash: 965be7152132b365061abf5fc5fc7b85e525f73b94a204cdda61cfe9572c0d77
     dependencies:
     - name: idf
       require: private
@@ -28,7 +18,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 0.7.0
+    version: 0.8.0
   espressif/esp-dsp:
     component_hash: 12e44db246517a627bc0fe2b255b8335410c0215c98bfba2df5a8e3edea839ef
     dependencies:
@@ -39,20 +29,6 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 1.8.0
-  espressif/esp-now:
-    component_hash: 217f4e2c1672bcc71e5890fb3659528bbce5f1a8a995b1668fec9374acbd0f45
-    dependencies:
-    - name: espressif/cmake_utilities
-      registry_url: https://components.espressif.com
-      require: private
-      version: '>=0.5.3'
-    - name: idf
-      require: private
-      version: '>=4.4'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 2.5.3
   espressif/esp-sr:
     component_hash: 809d0041cdddd98a278f0d5afef7bb60a451290577b98cf718dfffc91bdcbd9b
     dependencies:
@@ -156,12 +132,11 @@ dependencies:
   m5stack/m5gfx:
     dependencies: []
     source:
-      path: C:\Users\funky\Documents\_work\_history\202609_sonic\repo\stackchan-idf-for-auto-driving-vehicle\third_party\m5gfx
+      path: C:\Users\funky\Documents\_work\_history\202609_sonic\repo\stackchan-idf-for-auto-driving-vehicle-use-sonic\third_party\m5gfx
       type: local
     version: 0.2.23
 direct_dependencies:
 - espressif/esp-dsp
-- espressif/esp-now
 - espressif/esp-sr
 - espressif/esp32-camera
 - espressif/esp_audio_codec
@@ -170,6 +145,6 @@ direct_dependencies:
 - espressif/mdns
 - espressif/quirc
 - m5stack/m5gfx
-manifest_hash: f354f2d47690daeb1634bacfb39602e875397a7176a8a2ab857e09e597b2c4b3
+manifest_hash: f85a5d35c9f1444a4ff731f1ac5209943151a9981b279c9b86b369aa1fec5817
 target: esp32s3
 version: 2.0.0
