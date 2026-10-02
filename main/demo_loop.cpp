@@ -29,7 +29,6 @@
 #include "speech.hpp"
 #include "wifi_sta.hpp"
 #include "atomic_motion_client.hpp"
-#include "mode_select_screen.hpp"
 
 namespace stackchan::app {
 
@@ -337,12 +336,11 @@ constexpr const char* kTag = "stackchan";
         // 起動時に未接続で発話後、電源がONになって接続復帰した場合（自動検知）
         if (s_atom_power_prompted && app::AtomicMotionClient::is_connected()) {
             s_atom_power_prompted = false;
-            ESP_LOGI(kTag, "AtomS3 Lite connected! Transitioning to mode select screen.");
+            ESP_LOGI(kTag, "AtomS3 Lite connected! Setting up autonomous standby.");
             g_state->face.bg_color.store(0x0000u, std::memory_order_relaxed);
             g_state->face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
-            g_state->set_balloon_text("", 0);
+            g_state->set_balloon_text("タップでスタート！", 5000);
             speech.stop();
-            app::mode_select::show(); // 3モード選択画面に移行！
             next_speech_ms = now_ms + 6000;
         }
 
@@ -400,14 +398,13 @@ constexpr const char* kTag = "stackchan";
                 if (s_atom_power_prompted) {
                     // 未接続警告中に画面タップされた場合：再度電源が入っているかをチェック
                     if (app::AtomicMotionClient::is_connected()) {
-                        // 電源ON検知！3モード選択画面へ移行
+                        // 電源ON検知！自律運転待機へ移行
                         s_atom_power_prompted = false;
-                        ESP_LOGI(kTag, "Tap detected AtomS3 Lite connected! Transitioning to mode select.");
+                        ESP_LOGI(kTag, "Tap detected AtomS3 Lite connected! Ready in Standby.");
                         g_state->face.bg_color.store(0x0000u, std::memory_order_relaxed);
                         g_state->face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
-                        g_state->set_balloon_text("", 0);
+                        g_state->set_balloon_text("タップでスタート！", 5000);
                         speech.stop();
-                        app::mode_select::show(); // 3モード選択画面に移行！
                         next_speech_ms = now_ms + 6000;
                     } else {
                         // まだ検知できない場合：メッセージ更新＆再発話

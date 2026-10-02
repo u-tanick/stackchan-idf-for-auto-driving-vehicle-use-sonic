@@ -71,7 +71,7 @@ menu "Stack-chan feature gates"
 
     config STACKCHAN_ESPNOW_REMOTE_ENABLED
         bool "Enable ESP-NOW remote-control receiver mode"
-        default y
+        default n
         help
             OperationMode::EspNowRemote — receive M5Stack official Stack-chan
             compatible ESP-NOW pose packets (8-byte [id, yaw, pitch, speed,

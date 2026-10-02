@@ -45,9 +45,7 @@ public:
     static void tick(SharedState& state, Speech& speech);
 
     enum class DriveType {
-        SonicOnly,    // 自律運転（距離センサーのみ、壁検知で左90度旋回）
-        SonicCamera,  // 自律運転（距離＋カメラ、VLM推論）
-        JoyCManual,   // JoyC操作（ESPNow）
+        SonicOnly,    // 自律運転（超音波距離センサーのみ、壁検知で左90度旋回）
     };
 
     static void set_drive_type(DriveType type, SharedState& state);

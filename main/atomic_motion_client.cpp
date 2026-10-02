@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: BSL-1.0
 
 #include "atomic_motion_client.hpp"
-#include "mode_select_screen.hpp"
 #include "speech.hpp"
 #include "wifi_sta.hpp"
 
@@ -127,7 +126,7 @@ bool s_start_speech_active = false;
 uint32_t s_start_delay_ms = 0;
 uint32_t s_last_toggle_ms = 0;
 AtomicMotionClient::DriveType s_drive_type = AtomicMotionClient::DriveType::SonicOnly;
-bool s_mode_selected = false;
+bool s_mode_selected = true;
 bool s_drive_type_speech_pending = false;
 uint32_t s_mode_selected_ms = 0;
 bool s_standby_prompt_shown = false;
@@ -361,18 +360,8 @@ esp_err_t AtomicMotionClient::read_status(Status& out_status)
                  data[0], data[1], data[2], out_status.distance_mm);
     }
 
-    // Read JoyC active flag (0x05)
-    uint8_t joy_byte = 0;
-    if (M5.Ex_I2C.start(kDefaultSlaveAddr, false, kI2cFreq) &&
-        M5.Ex_I2C.write(0x05) &&
-        M5.Ex_I2C.stop() &&
-        M5.Ex_I2C.start(kDefaultSlaveAddr, true, kI2cFreq) &&
-        M5.Ex_I2C.read(&joy_byte, 1) &&
-        M5.Ex_I2C.stop()) {
-        out_status.joy_active = (joy_byte != 0);
-    } else {
-        M5.Ex_I2C.stop();
-    }
+    // JoyC inactive
+    out_status.joy_active = false;
 
     // Read Robot Mode (0x04)
     uint8_t mode_byte = 0;
@@ -494,34 +483,6 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
                      state.driving.is_moving.load(std::memory_order_relaxed) ? 1 : 0);
         }
 
-        // 手動操縦モード（JoyC）のときの画面案内表示および走行中発話
-        // モード選択直後（3.5秒間）は「JoyC操作モード」の吹き出しを維持するため上書きしない
-        if (current_mode == SharedState::Driving::Mode::Manual && (now_ms - s_mode_selected_ms >= 3500)) {
-            static int s_last_joy_active_state = -1;
-            const int joy_now = status.joy_active ? 1 : 0;
-            if (joy_now != s_last_joy_active_state) {
-                s_last_joy_active_state = joy_now;
-                if (joy_now) {
-                    state.set_balloon_text("JoyC操縦中 (受信中)", 3000);
-                    state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
-                } else {
-                    state.set_balloon_text("JoyC待機中 (TX OFF)", 3000);
-                    state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
-                }
-            }
-
-            // JoyC走行中（通信中）のランダム定期発話（4〜8秒間隔、4種からランダム選択、吹き出し表示）
-            if (joy_now && now_ms >= s_next_drive_speech_ms && !speech.is_speaking() && !s_speech_pending) {
-                s_is_regular_driving_speech = true;
-                s_speech_pending = true;
-                const size_t phrase_idx = esp_random() % (sizeof(kForwardDrivingPhrases) / sizeof(kForwardDrivingPhrases[0]));
-                const auto& phrase = kForwardDrivingPhrases[phrase_idx];
-                state.set_balloon_text(phrase.display, 2000);
-                speech.say(phrase.reading);
-                s_next_drive_speech_ms = now_ms + 4000 + (esp_random() % 4001);
-            }
-        }
-
         // 障害物検知時の画面演出（フキダシ・セリフ・表情フィードバック）
         // ※超音波センサーによる演出は、自律走行モード(Autonomous)の走行中のみ有効（JoyC手動モードでは使用しない）
         const bool ultrasonic_active = (s_drive_state == AutoDriveState::Forward ||
@@ -584,16 +545,10 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
         }
     }
 
-    // モード選択時の案内発話保留があれば再生
+    // モード設定時の案内発話保留があれば再生
     if (s_drive_type_speech_pending && !speech.is_speaking()) {
         s_drive_type_speech_pending = false;
-        if (s_drive_type == DriveType::JoyCManual) {
-            say_step(speech, state, "JoyC操作モード", U"じょいしー、そうさもーど", 3500);
-        } else if (s_drive_type == DriveType::SonicOnly) {
-            say_step(speech, state, "距離センサーモード", U"きょりせんさー、もーど", 3500);
-        } else if (s_drive_type == DriveType::SonicCamera) {
-            say_step(speech, state, "カメラ確認中…", U"きょりと、かめらもーど、ちぇっくちゅう", 3000);
-        }
+        say_step(speech, state, "距離センサーモード", U"きょりせんさー、もーど", 3500);
     }
 
     // 自律運転待機時、モード選択後に「タップでスタート！」の案内吹き出しを表示（タップされるまで待機）
@@ -613,14 +568,15 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
 
         switch (s_drive_state) {
         case AutoDriveState::InitWait:
-            // 起動後 15 秒（サーボセルフテスト完了）待機してからモード選択画面を表示 (Atom接続時のみ)
+            // 起動後 15 秒（サーボセルフテスト完了）待機してからStandby（タップでスタート待機）へ移行 (Atom接続時のみ)
             if (now_ms >= 15000 && is_connected()) {
                 send_command(CmdStop);
                 state.servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
                 state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
                 state.face.bg_color.store(0x0000u, std::memory_order_relaxed);
-                ESP_LOGI(kTag, "Servo self-test complete & Atom connected. Showing mode select screen.");
-                mode_select::show();
+                ESP_LOGI(kTag, "Servo self-test complete & Atom connected. Direct to Standby.");
+                s_mode_selected = true;
+                s_standby_prompt_shown = false;
                 s_drive_state = AutoDriveState::Standby;
                 s_state_start_ms = now_ms;
             }
@@ -1262,20 +1218,12 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
             state.face.bg_color.store(0xF800u, std::memory_order_relaxed); // エラー停止中は赤色を維持
             // 画面タップがあれば復帰
             if (M5.Touch.getCount() > 0) {
-                if (s_init_check_failed) {
-                    ESP_LOGI(kTag, "Screen tapped in ErrorHold (init check failed). Returning to mode select...");
-                    s_init_check_failed = false;
-                    state.face.bg_color.store(0x0000u, std::memory_order_relaxed); // 標準黒
-                    state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
-                    mode_select::show();
-                    s_drive_state = AutoDriveState::Standby;
-                } else {
-                    ESP_LOGI(kTag, "Screen tapped in ErrorHold. Resuming scan sequence...");
-                    state.face.bg_color.store(0x0000u, std::memory_order_relaxed); // 標準黒
-                    state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
-                    say_step(speech, state, "再探索するよ", U"もういちど、さがすよ", 1500);
-                    s_drive_state = AutoDriveState::StartScan;
-                }
+                ESP_LOGI(kTag, "Screen tapped in ErrorHold. Resuming standby...");
+                s_init_check_failed = false;
+                state.face.bg_color.store(0x0000u, std::memory_order_relaxed); // 標準黒
+                state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
+                s_standby_prompt_shown = false;
+                s_drive_state = AutoDriveState::Standby;
                 s_state_start_ms = now_ms;
             }
             break;
@@ -1285,15 +1233,11 @@ void AtomicMotionClient::tick(SharedState& state, Speech& speech)
     // 走行中フラグの更新（LED点灯連動用: 起動時テスト＆自律走行常時点灯）
     bool is_moving_now = false;
     if (s_drive_state == AutoDriveState::InitWait) {
-        // 起動時LED点灯テスト: サーボ自己診断中（起動からモード選択画面が出るまで）は本体LEDも点灯
+        // 起動時LED点灯テスト: サーボ自己診断中は本体LEDも点灯
         is_moving_now = true;
-    } else if (current_mode == SharedState::Driving::Mode::Manual) {
-        // JoyC手動操縦モード: モード選択済み(s_mode_selected)なら点灯
-        is_moving_now = s_mode_selected || state.driving.joy_active.load(std::memory_order_relaxed);
     } else {
-        // 自律走行モード: ユーザー要望により、モード選択後はモーター動作時だけでなく常時点灯
-        // （探索中・待機中・旋回中・確認中も含めて常時点灯。エラー停止中のみ消灯）
-        is_moving_now = s_mode_selected && (s_drive_state != AutoDriveState::ErrorHold);
+        // 超音波自律走行モード: 常時点灯（エラー停止中のみ消灯）
+        is_moving_now = (s_drive_state != AutoDriveState::ErrorHold);
     }
     state.driving.is_moving.store(is_moving_now, std::memory_order_relaxed);
 }
@@ -1352,37 +1296,20 @@ void AtomicMotionClient::toggle_start_stop(SharedState& state, Speech& speech)
 
 void AtomicMotionClient::set_drive_type(DriveType type, SharedState& state)
 {
-    s_drive_type = type;
+    (void)type;
+    s_drive_type = DriveType::SonicOnly;
     s_mode_selected = true;
-    s_drive_type_speech_pending = true;
+    s_drive_type_speech_pending = false;
     s_mode_selected_ms = esp_timer_get_time() / 1000;
     s_standby_prompt_shown = false;
 
-    if (type == DriveType::JoyCManual) {
-        state.driving.mode.store(SharedState::Driving::Mode::Manual, std::memory_order_relaxed);
-        set_mode(SharedState::Driving::Mode::Manual);
-        state.set_balloon_text("JoyC操作モード", 3500);
-        state.face.expression.store(static_cast<int>(avatar::Expression::Happy), std::memory_order_relaxed);
-        state.face.bg_color.store(0x0000u, std::memory_order_relaxed);
-        send_command(CmdStop);
-    } else if (type == DriveType::SonicOnly) {
-        state.driving.mode.store(SharedState::Driving::Mode::Autonomous, std::memory_order_relaxed);
-        set_mode(SharedState::Driving::Mode::Autonomous);
-        state.set_balloon_text("距離センサーモード", 3500);
-        state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
-        state.face.bg_color.store(0x0000u, std::memory_order_relaxed);
-        s_drive_state = AutoDriveState::Standby;
-        send_command(CmdStop);
-    } else if (type == DriveType::SonicCamera) {
-        state.driving.mode.store(SharedState::Driving::Mode::Autonomous, std::memory_order_relaxed);
-        set_mode(SharedState::Driving::Mode::Autonomous);
-        state.set_balloon_text("カメラ確認中…", 3000);
-        state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
-        state.face.bg_color.store(0x0000u, std::memory_order_relaxed);
-        s_init_check_failed = false;
-        s_drive_state = AutoDriveState::CameraCheck;
-        send_command(CmdStop);
-    }
+    state.driving.mode.store(SharedState::Driving::Mode::Autonomous, std::memory_order_relaxed);
+    set_mode(SharedState::Driving::Mode::Autonomous);
+    state.set_balloon_text("距離センサーモード", 3500);
+    state.face.expression.store(static_cast<int>(avatar::Expression::Neutral), std::memory_order_relaxed);
+    state.face.bg_color.store(0x0000u, std::memory_order_relaxed);
+    s_drive_state = AutoDriveState::Standby;
+    send_command(CmdStop);
 }
 
 AtomicMotionClient::DriveType AtomicMotionClient::get_drive_type()
