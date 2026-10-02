@@ -35,7 +35,7 @@ M5Stack CoreS3 + Atomic Motion Base + 超音波測距センサー（Sonic Unit�
 |---|---|---|
 | **M5Stack CoreS3** | ESP32-S3 / 16MB Flash / 8MB PSRAM / 320×240 タッチLCD | コントローラー本体 |
 | **Atomic Motion Base** | I2C (アドレス `0x38`) / DCモーター駆動 | 走行用ベース |
-| **超音波測距センサー** | M5Stack Unit Sonic (Port A / I2C または GPIO) | 前方障害物検知 (20〜4000mm) |
+| **超音波測距センサー** | M5Stack Unit Sonic (Atomic Motion の Port B / C に接続) | 前方障害物検知 (20〜4000mm)。Base 経由で I2C (0x38) 経由にて取得 |
 | **SCS0009 サーボ ×2** | UART1 (TX GPIO 6 / RX GPIO 7, 1Mbps) | スタックチャンの首（Yaw / Pitch） |
 | **内蔵 IMU** | BMI270 (I2C) | 旋回角度の正確なオドメトリ |
 
